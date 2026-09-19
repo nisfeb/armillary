@@ -10,7 +10,7 @@ You connect the upstream providers you already pay for, import their model lists
 
 Every amount on the ship is an integer number of microdollars, one dollar being 1,000,000, and a charge always rounds up. An account's ledger is append-only and the balance is the fold over it, so the cached number on the account row can always be rebuilt from the rows that are the truth.
 
-This is phase 2: the vendor half, the proxy path, and the account channel over ames, with a stub payment rail to prove the whole loop against. Stripe and BTCPay payments and direct provider leases are phases 3 to 5.
+This is phase 4: the vendor half, the proxy path, the account channel over ames, and both money rails, the card through Stripe and bitcoin through BTCPay Server. Direct provider leases are phase 5.
 
 ## Try it
 
@@ -125,7 +125,9 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 | route | answers |
 |---|---|
 | `POST /hooks/stripe` | Stripe's webhook. The body is trusted for the event type and the object id and nothing else; the object is read back from Stripe before anything is credited. A bad or missing signature is 400 when the signing secret is set; everything else answers 200, including a failed read |
+| `POST /hooks/btcpay` | BTCPay's webhook. The body is trusted for the event type and the invoice id and nothing else; the invoice is read back from BTCPay before anything is credited. A bad or missing signature is 401 when the webhook secret is set; everything else answers 200, including a failed read |
 | `GET /pay/return?ship&sid` | where Stripe sends the browser. It verifies the session itself, so a payment lands even when the webhook does not. `&cancelled=1` says so instead |
+| `GET /pay/return?ship&nonce&rail=btcpay` | where BTCPay sends the browser. The nonce finds the checkout row, the row holds the invoice id, and the invoice is read back the same way |
 | `GET` and `POST /pay/stub` | the stub rail's own page, in stub mode only |
 
 ### On a customer ship, owner cookie
@@ -139,7 +141,7 @@ These are what a client on the customer's own ship calls, over the cookie it alr
 | `GET /api/keys` | the inference keys this ship holds, never their secrets |
 | `POST /api/keys` | `{"name"}`: ask the vendor for a key and wait for it. Answers `{"id", "name", "secret"}` once, or 202 `{"pending": true, "nonce"}` after thirty seconds, which is not a failure |
 | `DELETE /api/keys/<id>` | tell the vendor to revoke it and forget it here at once |
-| `POST /api/checkout` | `{"rail", "plan" or "amount"}`: open a checkout and answer `{"url"}`, or 202 with the nonce. 502 with the vendor's reason when the vendor refused it |
+| `POST /api/checkout` | `{"rail", "plan" or "amount"}`: `rail` is `stripe` for a card or `btcpay` for bitcoin. Opens a checkout and answers `{"url"}`, or 202 with the nonce. 502 with the vendor's reason when the vendor refused it. A subscription plan is card only |
 | `POST /api/cancel-subscription` | ask the vendor to stop the subscription renewing; 202, and the view says when Stripe confirms |
 | `GET /api/inference` | everything a client needs: `{"mode": "proxy", "base_url", "key", "models"}`. 404 `no key yet` when this ship holds none |
 | `GET /api/catalog` | the vendor's public catalog with prices, read live; 502 `vendor unreachable` when the vendor does not answer. On a ship that is nobody's customer this is the owner's own catalog instead |
@@ -158,7 +160,7 @@ curl -s -b jar "$API/inference"
 
 The ops go over ames from this ship's armillary desk into the vendor's inbox, signed by ames, so the source ship is the identity and no password or claim token exists. The answers come back in an account view on the vendor that this ship alone may peek, through a usergroup the vendor makes for it. A minted key's secret crosses that way once and is cleared as soon as this ship says it has it.
 
-Topping up opens a checkout with the vendor and answers a URL to open in a browser. In stub mode that URL is the vendor's own page with one button and no money moves, which is how the whole loop is proved without a rail. In live mode it is a Stripe Checkout Session, and `docs/payments.md` is how that half works.
+Topping up opens a checkout with the vendor and answers a URL to open in a browser. In stub mode that URL is the vendor's own page with one button and no money moves, which is how the whole loop is proved without a rail. In live mode it is a Stripe Checkout Session on the card rail or a BTCPay invoice on the bitcoin one, and `docs/payments.md` is how both halves work.
 
 A ship can be its own customer: point `vendor.json` at itself and the page shows both halves with a note saying so. That is what `scripts/ship-matrix.py` runs against with two arguments.
 
@@ -167,10 +169,10 @@ Live updates come from the instance's change beacon, streamed through grubbery's
 ### The repository
 
 - `code/` is the desk: the nexus at `code/nex/armillary/app.hoon` with the page beside it, the model in `code/lib/armillary.hoon` (pure, import-free, unit-tested), the marcs under `code/mar`. `code/version.json` is what replicates.
-- `code/lib/armillary-http.hoon` and `code/lib/armillary-stripe.hoon` are the card rail's pure half: percent encoding, form bodies, HMAC-SHA256 and the Stripe request builders and readers. Import-free like the model, so each one builds in both places, which is why the small encoders appear in both.
+- `code/lib/armillary-http.hoon`, `code/lib/armillary-stripe.hoon` and `code/lib/armillary-btcpay.hoon` are the two rails' pure half: percent encoding, form bodies, HMAC-SHA256, decimal dollars, and each rail's request builders and readers. Import-free like the model, so each one builds in both places, which is why the small encoders appear in all three.
 - `tests/lib/armillary.hoon`, `tests/lib/armillary-http.hoon` and `tests/lib/armillary-stripe.hoon` are the unit suites, run with `-test` on a dev ship.
-- `scripts/` holds the gates, all against a dev ship: `api-matrix.py` (the story above, over HTTP), `ship-matrix.py` (the account channel and the card rail, one ship or two), `page-smoke.py`, `fake-provider.py` (the OpenAI-compatible stub) and `fake-stripe.py` (the Stripe stub), `code-closure.py` and `weir-check.py`. `live-matrix.py` is run by hand against Stripe test mode.
-- `docs/`: the design at `docs/superpowers/specs/2026-09-19-armillary-design.md` and the plans under `docs/superpowers/plans`; `docs/channel.md` for the account channel over ames; `docs/payments.md` for the card rail; `docs/releasing.md` for how a release reaches ricsul and its subscribers.
+- `scripts/` holds the gates, all against a dev ship: `api-matrix.py` (the story above, over HTTP), `ship-matrix.py` (the account channel and both rails, one ship or two), `page-smoke.py`, `fake-provider.py` (the OpenAI-compatible stub), `fake-stripe.py` (the Stripe stub) and `fake-btcpay.py` (the BTCPay stub), `code-closure.py` and `weir-check.py`. `live-matrix.py` is run by hand against Stripe test mode and a real BTCPay store.
+- `docs/`: the design at `docs/superpowers/specs/2026-09-19-armillary-design.md` and the plans under `docs/superpowers/plans`; `docs/channel.md` for the account channel over ames; `docs/payments.md` for both money rails; `docs/releasing.md` for how a release reaches ricsul and its subscribers.
 - Family: [lattice](https://github.com/nisfeb/lattice), [auspex](https://github.com/nisfeb/auspex), [calendar](https://github.com/nisfeb/calendar), [orrery](https://github.com/nisfeb/orrery), [register](https://github.com/nisfeb/register), installed from `~ricsul-bilwyt` the same way.
 
 © nisfeb

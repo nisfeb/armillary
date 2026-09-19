@@ -8,10 +8,11 @@ cookie jar; with PEER and PJAR the customer is that other ship, with two
 arguments it is HOST itself, which the vendor allows.
 
 The stub provider must already be listening on 127.0.0.1:3399 with the
-key "stub-key", and fake-stripe.py on 127.0.0.1:3400 with the secret
-"whsec_gate" and HOST as its ship url: this script starts neither. Exits
-1 on any failure. Safe to rerun: it sweeps the account, the provider and
-the plans it made, both before it starts and after it finishes."""
+key "stub-key", fake-stripe.py on 127.0.0.1:3400 and fake-btcpay.py on
+127.0.0.1:3401, both with the secret "whsec_gate" and HOST as their ship
+url: this script starts none of them. Exits 1 on any failure. Safe to
+rerun: it sweeps the account, the provider and the plans it made, both
+before it starts and after it finishes."""
 import json, subprocess, sys, time
 
 HOST, JAR = sys.argv[1], sys.argv[2]
@@ -22,8 +23,12 @@ PORT = '3399'
 STUB = 'http://127.0.0.1:' + PORT
 SPORT = '3400'
 SSTUB = 'http://127.0.0.1:' + SPORT
+BPORT = '3401'
+BSTUB = 'http://127.0.0.1:' + BPORT
 WHSEC = 'whsec_gate'
 STRIPE_KEY = 'sk_test_gate'
+BTC_KEY = 'btcpay-gate-1234'
+BTC_STORE = 'gatestore'
 PLAN = {'id': 'gate-pro', 'name': 'Gate Pro', 'kind': 'subscription',
         'price': 2500000, 'credit': 3000000, 'interval': 'month'}
 PLAN_CREDIT = PLAN['credit']
@@ -151,13 +156,15 @@ def settings(host, jar, **over):
     """the whole settings document, with the fields this call changes"""
     doc = {'markup_pct': MARKUP, 'min_topup': 5000000, 'public_url': '',
            'mode': 'stub', 'refuse_comets': False, 'stripe_key': '',
-           'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com'}
+           'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com',
+           'btcpay_url': '', 'btcpay_store': '', 'btcpay_key': '',
+           'btcpay_webhook_secret': ''}
     doc.update(over)
     return curl('PUT', api(host) + '/settings', doc, jar=jar)
 
 
 def stub_post(url):
-    """a plain POST to the Stripe stub, no cookie and no body"""
+    """a plain POST to a rail stub, no cookie and no body"""
     return curl('POST', url)
 
 
@@ -185,7 +192,8 @@ def broom():
     curl('DELETE', api(HOST) + '/providers/stub', jar=JAR)
     curl('DELETE', api(HOST) + '/plans/' + PLAN['id'], jar=JAR)
     # null clears a secret, blank would keep it
-    settings(HOST, JAR, stripe_key=None, stripe_webhook_secret=None)
+    settings(HOST, JAR, stripe_key=None, stripe_webhook_secret=None,
+             btcpay_key=None, btcpay_webhook_secret=None)
     settle()
 
 
@@ -425,13 +433,89 @@ check('the subscription clears on the account',
       dictish(view.get('subscription')).get('active') is False and view.get('plan') == '',
       (view.get('subscription'), view.get('plan')))
 
+print('the bitcoin rail')
+# whatever the card rail left behind is the floor the bitcoin rail adds to
+BASE2 = dictish(fresh(PEER, PJAR)).get('balance', 0)
+BTC = 7000000
+code, d = settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
+                   public_url=HOST, mode='live', btcpay_url=BSTUB, btcpay_store=BTC_STORE,
+                   btcpay_key=BTC_KEY, btcpay_webhook_secret=WHSEC)
+check('the vendor goes live against the BTCPay stub', code == 200, (code, d))
+settle(2)
+
+code, d = curl('POST', api(PEER) + '/checkout', {'rail': 'btcpay', 'plan': PLAN['id']},
+               jar=PJAR, timeout=180)
+check('a subscription on the bitcoin rail is 502 with the reason',
+      code == 502 and 'card only' in err_of(d), (code, d))
+view = wait_view(PEER, PJAR, lambda v: any(
+    r.get('rail') == 'btcpay' and r.get('status') == 'refused'
+    for r in dictish(v.get('checkouts')).values()))
+refused = [r for r in dictish(view.get('checkouts')).values()
+           if r.get('rail') == 'btcpay' and r.get('status') == 'refused']
+check('the bitcoin refusal shows in the view with its note',
+      len(refused) >= 1 and 'card only' in str(refused[0].get('note')), refused[:1])
+
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'btcpay', 'amount': BTC},
+                jar=PJAR, timeout=180)
+burl = dictish(co).get('url', '')
+bnonce = dictish(co).get('nonce', '')
+check('a bitcoin top-up answers a BTCPay checkout url',
+      code == 200 and burl.startswith(BSTUB + '/stub/pay/'), (code, co))
+INV = burl.rsplit('/', 1)[-1]
+
+before = len(ledger_of(HOST, JAR, CUST))
+code, d = stub_post(BSTUB + '/stub/processing/' + INV)
+check('the stub marks the invoice processing', code == 200, (code, str(d)[:120]))
+view = wait_view(PEER, PJAR, lambda v: dictish(
+    dictish(v.get('checkouts')).get(bnonce)).get('status') == 'processing', tries=15)
+check('the row shows processing',
+      dictish(dictish(view.get('checkouts')).get(bnonce)).get('status') == 'processing',
+      dictish(view.get('checkouts')).get(bnonce))
+check('and a payment seen on chain credits nothing yet',
+      len(ledger_of(HOST, JAR, CUST)) == before, before)
+
+code, d = stub_post(BSTUB + '/stub/pay/' + INV)
+check('the stub settles the invoice', code == 200, (code, str(d)[:120]))
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BASE2 + BTC, tries=15)
+check('the bitcoin credit lands within thirty seconds',
+      view.get('balance') == BASE2 + BTC, (BASE2 + BTC, view.get('balance')))
+row = dictish(dictish(view.get('checkouts')).get(bnonce))
+check('the checkout row is paid and holds the invoice id',
+      row.get('status') == 'paid' and row.get('sid') == INV, row)
+
+code, d = stub_post(BSTUB + '/stub/pay/' + INV)
+check('settling twice answers the record again', code == 200, (code, str(d)[:120]))
+settle(6)
+credits = [r for r in ledger_of(HOST, JAR, CUST) if r.get('ref') == INV]
+check('a replayed invoice credits once', len(credits) == 1, credits)
+
+code, text = page(HOST + '/apps/armillary/pay/return?ship=' + CUST +
+                  '&nonce=' + bnonce + '&rail=btcpay')
+check('the bitcoin return page for a settled invoice says it was received',
+      code == 200 and 'received' in text.lower(), (code, text[:200]))
+
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'btcpay', 'amount': BTC},
+                jar=PJAR, timeout=180)
+eurl = dictish(co).get('url', '')
+enonce = dictish(co).get('nonce', '')
+check('a second bitcoin top-up answers its own url',
+      code == 200 and eurl.startswith(BSTUB + '/stub/pay/'), (code, co))
+code, d = stub_post(BSTUB + '/stub/expire/' + eurl.rsplit('/', 1)[-1])
+check('the stub expires the invoice', code == 200, (code, str(d)[:120]))
+view = wait_view(PEER, PJAR, lambda v: dictish(
+    dictish(v.get('checkouts')).get(enonce)).get('status') == 'expired', tries=15)
+check('the expired row says so',
+      dictish(dictish(view.get('checkouts')).get(enonce)).get('status') == 'expired',
+      dictish(view.get('checkouts')).get(enonce))
+
 settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB)
 settle()
 code, d = curl('GET', api(HOST) + '/settings', jar=JAR)
 check('the vendor is back in stub mode', dictish(d).get('mode') == 'stub', d)
 log = raw(HOST, JAR, '/tr/log')
-check('the audit ring holds the stripe outcomes and no secret',
-      'stripe.' in log and STRIPE_KEY not in log and WHSEC not in log, log[:200])
+check('the audit ring holds both rails and no secret',
+      'stripe.' in log and 'btcpay.' in log and STRIPE_KEY not in log
+      and WHSEC not in log and BTC_KEY not in log, log[:200])
 
 broom()
 print()

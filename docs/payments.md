@@ -1,18 +1,18 @@
 # Payments
 
-A customer buys credit with a card. The vendor makes a Stripe Checkout Session, the person pays on Stripe's own page, and the vendor credits the ship's account once it has read the payment back from Stripe. Bitcoin is phase 4 and answers `unavailable` until then.
+A customer buys credit with a card or with bitcoin. On the card rail the vendor makes a Stripe Checkout Session; on the bitcoin rail it makes one BTCPay Server invoice, whose checkout page offers both on chain and Lightning. Either way the person pays on the rail's own page, and the vendor credits the ship's account once it has read the payment back from the rail. Subscriptions are card only.
 
 ## The checkout flow
 
 1. The customer ship pokes a `checkout` op into the vendor's inbox with a rail, a nonce, and either a plan id or an amount in microdollars. That is the account channel, `docs/channel.md`.
-2. The vendor's inbox fiber reads settings. In stub mode it answers its own `/pay/stub` page and nothing else happens. In live mode, for the `stripe` rail, it builds a Checkout Session and sends it.
-3. Every refusal is a checkout row with status `refused` and a `note` saying which field was wrong: `stripe_key: not set`, `plan: unknown`, `amount: below the minimum`, `plan and amount: choose one`, `plan: not on Stripe yet`. The customer only ever sees the view, so a refusal has to live there.
-4. On a 2xx, the row is written with the session url, status `pending` and the session id. The customer's `POST /api/checkout` answers that url, or 502 with the note when the row was refused.
-5. The person pays. Stripe sends them to `<public_url>/apps/armillary/pay/return?ship=<ship>&sid=<session>`, and sends the vendor a webhook.
+2. The vendor's inbox fiber reads settings. In stub mode it answers its own `/pay/stub` page and nothing else happens. In live mode it builds a Stripe Checkout Session for the `stripe` rail and a BTCPay invoice for the `btcpay` rail, and sends it.
+3. Every refusal is a checkout row with status `refused` and a `note` saying which field was wrong: `stripe_key: not set` or `btcpay: not set`, `plan: unknown`, `amount: below the minimum`, `plan and amount: choose one`, `plan: not on Stripe yet`, `plan: subscriptions are card only`. The customer only ever sees the view, so a refusal has to live there.
+4. On a 2xx, the row is written with the rail's url, status `pending` and the rail's own id for it: the session id on Stripe, the invoice id on BTCPay. The customer's `POST /api/checkout` answers that url, or 502 with the note when the row was refused.
+5. The person pays. Stripe sends them to `<public_url>/apps/armillary/pay/return?ship=<ship>&sid=<session>`; BTCPay sends them to the same page with `?ship=<ship>&nonce=<nonce>&rail=btcpay`. Both also send the vendor a webhook.
 
 A top-up is `mode=payment` with one inline line item at the amount. A subscription is `mode=subscription` on the plan's Stripe Price, with the ship and the plan id in the subscription's own metadata, so an invoice months later still says which plan it renews.
 
-The Stripe call runs inside the inbox fiber. That serializes every customer's ops behind one slow call, for up to two minutes. It is marked in the code with a `ponytail:` comment; a spawned fiber per op is the upgrade when a vendor has enough customers to feel it.
+The rail's call runs inside the inbox fiber. That serializes every customer's ops behind one slow call, for up to two minutes. It is marked in the code with a `ponytail:` comment; a spawned fiber per op is the upgrade when a vendor has enough customers to feel it.
 
 ## The two verification paths
 
@@ -74,3 +74,65 @@ Without a public URL the return page still proves the whole flow: it verifies th
 `scripts/fake-stripe.py PORT SECRET SHIP_URL` stands in for Stripe: Checkout Sessions, Invoices, Products, Prices, Subscriptions, and the pages that pretend to be a person paying. `POST /stub/pay/<session>` pays one, `POST /stub/renew/<sub>` invents the next invoice, `POST /stub/delete/<sub>` reports the subscription gone, and `GET /stub/state` dumps the store. It signs its webhooks with SECRET, or posts them unsigned when SECRET is `-`.
 
 `api-matrix.py` and `ship-matrix.py` both run against it. `live-matrix.py` is the one run by hand, against Stripe test mode with a key from `STRIPE_TEST_KEY`; it prints the checkout url for a person to pay with `4242 4242 4242 4242` and then polls the customer's balance.
+
+## BTCPay Server
+
+BTCPay gives both bitcoin rails from one invoice. Its checkout page offers an on-chain address and a Lightning invoice, it watches the chain, it counts confirmations, and it settles Lightning at once. Nothing in this codebase watches addresses, so BTCPay is the whole of the bitcoin side.
+
+### The flow
+
+A checkout is `POST <btcpay_url>/api/v1/stores/<btcpay_store>/invoices` with `Authorization: token <btcpay_key>` and a JSON body: `amount` as decimal dollars rounded up to the cent, `currency` `USD`, `metadata` carrying the ship and the nonce, and `checkout` carrying `redirectURL`, `redirectAutomatically` and `expirationMinutes` 60. The answer's `checkoutLink` is the url the customer opens, and its `id` is the invoice id the row keeps. The row expires in an hour, which is what the invoice was asked for.
+
+A `checkout` op on the `btcpay` rail with a subscription plan is refused `plan: subscriptions are card only`. A bitcoin customer tops up.
+
+### The two verification paths
+
+Both end in one arm, `+credit-btc-invoice`, which reads the invoice back from BTCPay and does what its `status` says:
+
+| status | what happens |
+|---|---|
+| `Processing` | the row becomes `processing`, nothing is credited. On chain this is the wait for the store's confirmation count |
+| `Settled` | the invoice's `amount` is credited as microdollars with `ref` the invoice id and `rail` `btcpay`, and the row becomes `paid` |
+| `Expired` | the row becomes `expired` |
+| `Invalid` | the row becomes `invalid` |
+
+The credit is deduped by its ref, so running it twice answers `already recorded` and writes nothing.
+
+- **The webhook**, `POST /hooks/btcpay`, public and without a cookie. `InvoiceSettled`, `InvoiceProcessing`, `InvoiceExpired` and `InvoiceInvalid` each run the arm; every other type answers 200 and does nothing. The outcome goes into the audit ring as `btcpay.webhook`.
+- **The return page**, `GET /pay/return?ship&nonce&rail=btcpay`. BTCPay's redirect carries no invoice id, so the nonce finds the checkout row and the row holds the id. This is the one place the ship in the query is used, and only to find the row: the invoice's own metadata is what says whose account this is. A settled invoice says the payment was received; a processing one says the payment was seen and the balance updates once it settles.
+
+### The webhook's trust rule
+
+The body is read for exactly two things: `type` and `invoiceId`. The amount, the ship and the status all come from reading the invoice back with the vendor's own api key.
+
+When `btcpay_webhook_secret` is set, the `BTCPay-Sig` header is checked first: the header must read `sha256=` followed by the lowercase hex HMAC-SHA256 of the raw body with the secret, compared with a fold that does not stop at the first difference. A bad or missing signature is 401 and nothing else happens. Everything past a good signature answers 200, even a failed read, because BTCPay retries a failed delivery six times.
+
+An invoice with no checkout row on the named ship is refused `unknown invoice`. The row is written before the url is ever answered.
+
+### The settings
+
+| field | what it is |
+|---|---|
+| `btcpay_url` | the instance, such as `https://btcpay.example.com`. A trailing slash is stripped when it is read |
+| `btcpay_store` | the store id the invoices belong to |
+| `btcpay_key` | the api key. Masked on every read; a blank field on save keeps what is stored, an explicit `null` clears it |
+| `btcpay_webhook_secret` | the store webhook's secret, the same rules |
+
+Neither secret ever appears unmasked on a read route, in `/tr/log`, in `/tr/inbox`, or in the account view.
+
+### What BTCPay needs from the owner
+
+1. A BTCPay Server store, self-hosted or hosted, with a wallet on it.
+2. An api key on that store with `btcpay.store.cancreateinvoice` and `btcpay.store.canviewinvoices`, and nothing else.
+3. A webhook on the store pointing at `<public_url>/apps/armillary/hooks/btcpay`, with a secret, subscribed to `InvoiceSettled`, `InvoiceProcessing`, `InvoiceExpired` and `InvoiceInvalid`.
+4. The store id, the instance url, the api key and the webhook secret, pasted into the Payments view.
+
+Subscriptions are card only, so a store with no Stripe key beside it sells top-ups and nothing else.
+
+Without a public URL the return page still proves the whole flow: it verifies the invoice from the browser's own visit. The webhook is proven on the production ship, which is the register rule.
+
+### Proving it
+
+`scripts/fake-btcpay.py PORT SECRET SHIP_URL` stands in for BTCPay: the two Greenfield invoice routes and a checkout page with three buttons. `POST /stub/pay/<id>` settles an invoice the way Lightning does, `POST /stub/processing/<id>` marks it seen the way a chain payment does, `POST /stub/expire/<id>` expires it, and `GET /stub/state` dumps the store. It signs its webhooks with SECRET, or posts them unsigned when SECRET is `-`.
+
+`api-matrix.py` and `ship-matrix.py` both run against it. `live-matrix.py` is the run by hand, against a real store, with `BTCPAY_URL`, `BTCPAY_STORE` and `BTCPAY_KEY` in the environment; it prints the invoice url for a person to pay from a testnet wallet and then polls the customer's balance for half an hour.

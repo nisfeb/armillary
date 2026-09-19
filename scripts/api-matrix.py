@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
-"""api-matrix.py HOST JAR PROVIDER_PORT [STRIPE_PORT]
-The HTTP gate for armillary: spec sections 4, 5, 7 and 8 against two
+"""api-matrix.py HOST JAR PROVIDER_PORT [STRIPE_PORT] [BTCPAY_PORT]
+The HTTP gate for armillary: spec sections 4, 5, 7 and 8 against three
 stubs. HOST like http://localhost:8080; JAR a curl cookie jar from
 POST /~/login; PROVIDER_PORT the port fake-provider.py listens on with
 the key "stub-key"; STRIPE_PORT the port fake-stripe.py listens on with
-the secret "whsec_gate" and this HOST as its ship url, 3400 by default.
-It starts nothing: the runner starts both stubs first. Exits 1 on any
-failure. Safe to rerun: it deletes the account, the provider and the
-plans it made, both before it starts and after it finishes."""
+the secret "whsec_gate" and this HOST as its ship url, 3400 by default;
+BTCPAY_PORT the port fake-btcpay.py listens on with the same secret and
+the same ship url, 3401 by default. It starts nothing: the runner
+starts all three stubs first. Exits 1 on any failure. Safe to rerun: it
+deletes the account, the provider and the plans it made, both before it
+starts and after it finishes."""
 import hashlib, hmac, json, subprocess, sys, time
 
 HOST, JAR, PORT = sys.argv[1], sys.argv[2], sys.argv[3]
 SPORT = sys.argv[4] if len(sys.argv) > 4 else '3400'
+BPORT = sys.argv[5] if len(sys.argv) > 5 else '3401'
 SSTUB = 'http://127.0.0.1:' + SPORT
+BSTUB = 'http://127.0.0.1:' + BPORT
 WHSEC = 'whsec_gate'
 STRIPE_KEY = 'sk_test_gate'
+BTC_KEY = 'btcpay-gate-1234'
+BTC_STORE = 'gatestore'
 HOOK = HOST + '/apps/armillary/hooks/stripe'
+BHOOK = HOST + '/apps/armillary/hooks/btcpay'
 RETURN = HOST + '/apps/armillary/pay/return'
 API = HOST + '/apps/armillary/api'
 V1 = HOST + '/apps/armillary/v1'
@@ -85,7 +92,9 @@ def settings(**over):
     """the whole settings document, with the fields this call changes"""
     doc = {'markup_pct': MARKUP, 'min_topup': 5000000, 'public_url': '',
            'mode': 'stub', 'refuse_comets': False, 'stripe_key': '',
-           'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com'}
+           'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com',
+           'btcpay_url': '', 'btcpay_store': '', 'btcpay_key': '',
+           'btcpay_webhook_secret': ''}
     doc.update(over)
     return curl('PUT', API + '/settings', doc)
 
@@ -113,6 +122,28 @@ def hook(event_type, oid, sig=None):
     return int(code or 0), data
 
 
+def btc_signed(payload):
+    """a BTCPay-Sig header over the raw body, as a store webhook makes one"""
+    mac = hmac.new(WHSEC.encode(), payload.encode(), hashlib.sha256)
+    return 'sha256=' + mac.hexdigest()
+
+
+def btc_hook(event_type, iid, sig=None):
+    """post a BTCPay webhook the way the stub does, signed unless told otherwise"""
+    payload = json.dumps({'type': event_type, 'invoiceId': iid, 'storeId': BTC_STORE})
+    cmd = ['curl', '-s', '-m', '180', '-X', 'POST', '-w', '\n%{http_code}',
+           '-H', 'content-type: application/json',
+           '-H', 'BTCPay-Sig: ' + (btc_signed(payload) if sig is None else sig),
+           '-d', payload, BHOOK]
+    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    text, _, code = out.rpartition('\n')
+    try:
+        data = json.loads(text) if text else None
+    except json.JSONDecodeError:
+        data = text
+    return int(code or 0), data
+
+
 def page(url):
     out = subprocess.run(['curl', '-s', '-m', '60', '-w', '\n%{http_code}', url],
                          capture_output=True, text=True).stdout
@@ -128,8 +159,9 @@ def broom():
     curl('DELETE', API + '/accounts/' + SHIP)
     curl('DELETE', API + '/providers/stub')
     # null clears a secret, blank would keep it: the ship is left with
-    # no Stripe key and back in stub mode
-    settings(stripe_key=None, stripe_webhook_secret=None)
+    # no rail secrets at all and back in stub mode
+    settings(stripe_key=None, stripe_webhook_secret=None,
+             btcpay_key=None, btcpay_webhook_secret=None)
     # the catalog outlives a dropped provider on purpose, so the gate
     # clears it by hand or a rerun imports nothing
     curl('PUT', API + '/catalog', [])
@@ -474,6 +506,51 @@ check('the return page without a sid says pending',
 settings()
 settle()
 
+print('btcpay: the settings')
+code, d = settings(stripe_key=STRIPE_KEY, stripe_webhook_secret=WHSEC, stripe_url=SSTUB,
+                   public_url=HOST, mode='live', btcpay_url=BSTUB + '/',
+                   btcpay_store=BTC_STORE, btcpay_key=BTC_KEY, btcpay_webhook_secret=WHSEC)
+check('PUT /api/settings takes the two BTCPay secrets', code == 200, (code, d))
+settle()
+code, d = curl('GET', API + '/settings')
+check('the btcpay key reads masked', dictish(d).get('btcpay_key', '').endswith('1234')
+      and 'btcpay-gate' not in dictish(d).get('btcpay_key', ''), d)
+check('the btcpay webhook secret reads masked',
+      dictish(d).get('btcpay_webhook_secret', '').endswith('gate')
+      and 'whsec_' not in dictish(d).get('btcpay_webhook_secret', ''), d)
+check('the btcpay url is not masked and loses its trailing slash',
+      dictish(d).get('btcpay_url') == BSTUB, d)
+check('the store id is not masked', dictish(d).get('btcpay_store') == BTC_STORE, d)
+code, d = settings(stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
+                   public_url=HOST, mode='live', btcpay_url=BSTUB,
+                   btcpay_store=BTC_STORE, btcpay_key='', btcpay_webhook_secret='')
+settle()
+code, d = curl('GET', API + '/settings')
+check('a blank BTCPay secret keeps the stored one',
+      dictish(d).get('btcpay_key', '').endswith('1234')
+      and dictish(d).get('btcpay_webhook_secret', '').endswith('gate'), d)
+
+print('btcpay: the webhook')
+code, d = btc_hook('InvoiceSettled', 'inv_nope', sig='sha256=deadbeef')
+check('a bad BTCPay signature is 401', code == 401 and err_of(d) == 'signature', (code, d))
+code, d = btc_hook('InvoiceSettled', 'inv_nope', sig='')
+check('a missing BTCPay signature is 401 when the secret is set', code == 401, (code, d))
+code, d = btc_hook('InvoicePaymentSettled', 'inv_1')
+check('an unrelated BTCPay event is 200 and does nothing',
+      code == 200 and dictish(d).get('ok') is True, (code, d))
+before = ledger()
+code, d = btc_hook('InvoiceSettled', 'inv_does_not_exist')
+check('a settled event naming an unknown invoice is 200', code == 200, (code, d))
+settle(2)
+check('and credits nothing', len(ledger()) == len(before), (len(before), len(ledger())))
+
+print('btcpay: the return page')
+code, text = page(RETURN + '?ship=' + SHIP + '&nonce=not-a-row&rail=btcpay')
+check('the btcpay return page with an unknown nonce is 200 and says pending',
+      code == 200 and 'pending' in text.lower(), (code, text[:200]))
+settings()
+settle()
+
 print('the audit ring')
 code, log = curl('GET', API + '/log')
 text = json.dumps(log)
@@ -481,10 +558,11 @@ ops = set(r.get('op') for r in (log if isinstance(log, list) else []))
 check('GET /api/log answers the ring', code == 200 and isinstance(log, list) and len(log) > 0, (code, str(log)[:200]))
 for op in ('set-provider', 'set-catalog', 'open-account', 'add-key', 'credit', 'debit', 'refund',
            'drop-key', 'close-account', 'set-plan', 'drop-plan',
-           'stripe.webhook', 'stripe.return'):
+           'stripe.webhook', 'stripe.return', 'btcpay.webhook'):
     check('the ring holds an entry for ' + op, op in ops, sorted(ops))
 check('the ring never carries a secret', 'stub-key' not in text and 'prov-key' not in text and
-      STRIPE_KEY not in text and WHSEC not in text and (SEC1 or 'x') not in text, text[:300])
+      STRIPE_KEY not in text and WHSEC not in text and BTC_KEY not in text
+      and (SEC1 or 'x') not in text, text[:300])
 out = subprocess.run(['curl', '-s', '-m', '30', '-b', JAR, INSTANCE + '/tr/last?raw=1'],
                      capture_output=True, text=True).stdout
 check('tr/last reads ok after the last op', '"ok"' in out and 'stub-key' not in out, out[:200])

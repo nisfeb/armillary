@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """live-matrix.py HOST JAR PEER PJAR
 The one run this family cannot automate: a real Stripe test-mode key, a
-real card, a real person clicking. HOST is the vendor with its owner
-cookie jar, PEER the customer ship with its own; the two may be the same
-ship, which makes it its own customer.
+real BTCPay store, real money, a real person clicking. HOST is the
+vendor with its owner cookie jar, PEER the customer ship with its own;
+the two may be the same ship, which makes it its own customer.
 
-The key comes from the environment variable STRIPE_TEST_KEY and from
-nowhere else: never a file in this repo, and it is never printed. Run it
-by hand:
+Every secret comes from the environment and from nowhere else: never a
+file in this repo, and none of them is ever printed. The card half reads
+STRIPE_TEST_KEY; the bitcoin half reads BTCPAY_URL, BTCPAY_STORE and
+BTCPAY_KEY, and runs only when all three are set. Run it by hand:
 
     STRIPE_TEST_KEY=rk_test_... python3 scripts/live-matrix.py \\
         http://localhost:8080 wex.cookies http://localhost:8080 wex.cookies
 
-It reports what it saw and asserts nothing about timing. Stripe takes as
-long as it takes, and a webhook that never arrives is still a pass for
-the return page, which is the point of having both. It restores stub
-mode and clears the key on the way out, however it ends.
+    BTCPAY_URL=https://btcpay.example.com BTCPAY_STORE=... BTCPAY_KEY=... \\
+        STRIPE_TEST_KEY=rk_test_... python3 scripts/live-matrix.py ...
+
+It reports what it saw and asserts nothing about timing. A rail takes as
+long as it takes, a chain confirmation takes longer still, and a webhook
+that never arrives is still a pass for the return page, which is the
+point of having both. It restores stub mode and clears every key on the
+way out, however it ends.
 """
 import json
 import os
@@ -34,6 +39,10 @@ if not KEY:
 PLAN = {'id': 'live-pro', 'name': 'Live Pro', 'kind': 'subscription',
         'price': 2500000, 'credit': 3000000, 'interval': 'month'}
 POLL_SECONDS = 600
+BTC_URL = os.environ.get('BTCPAY_URL', '')
+BTC_STORE = os.environ.get('BTCPAY_STORE', '')
+BTC_KEY = os.environ.get('BTCPAY_KEY', '')
+BTC_POLL_SECONDS = 1800
 
 
 def api(host):
@@ -62,7 +71,9 @@ def dictish(d):
 def settings(**over):
     doc = {'markup_pct': 130, 'min_topup': 5000000, 'public_url': '',
            'mode': 'stub', 'refuse_comets': False, 'stripe_key': '',
-           'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com'}
+           'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com',
+           'btcpay_url': '', 'btcpay_store': '', 'btcpay_key': '',
+           'btcpay_webhook_secret': ''}
     doc.update(over)
     return curl('PUT', api(HOST) + '/settings', doc, jar=JAR)
 
@@ -72,25 +83,26 @@ def account():
     return dictish(d)
 
 
-def wait_for(label, ok):
-    """poll the customer's own account until ok, for up to ten minutes"""
+def wait_for(label, ok, seconds=POLL_SECONDS):
+    """poll the customer's own account until ok, for up to seconds"""
     started = time.time()
-    while time.time() - started < POLL_SECONDS:
+    while time.time() - started < seconds:
         a = account()
         if ok(a):
             print('  %s after %ds' % (label, int(time.time() - started)))
             return a
         time.sleep(10)
         print('  waiting on %s, %ds so far' % (label, int(time.time() - started)))
-    print('  gave up on %s after %ds' % (label, POLL_SECONDS))
+    print('  gave up on %s after %ds' % (label, seconds))
     return account()
 
 
 def restore():
     curl('DELETE', api(HOST) + '/plans/' + PLAN['id'], jar=JAR)
     curl('PUT', api(PEER) + '/vendor', {'ship': ''}, jar=PJAR)
-    settings(stripe_key=None, stripe_webhook_secret=None)
-    print('restored: stub mode, no Stripe key')
+    settings(stripe_key=None, stripe_webhook_secret=None,
+             btcpay_key=None, btcpay_webhook_secret=None)
+    print('restored: stub mode, no rail keys')
 
 
 PUBLIC = os.environ.get('ARMILLARY_PUBLIC_URL', HOST)
@@ -145,5 +157,31 @@ try:
     print('  the owner sees %s' % json.dumps(dictish(acct).get('subscription')))
     print('\nwhat is left: cancel the subscription in the Stripe dashboard, or')
     print('POST /api/cancel-subscription on the customer, and watch the webhook.')
+
+    if not (BTC_URL and BTC_STORE and BTC_KEY):
+        print('\nno BTCPay environment set, so the bitcoin half is skipped.')
+    else:
+        print('\na bitcoin top-up')
+        code, d = settings(stripe_key='', public_url=PUBLIC, mode='live',
+                           btcpay_url=BTC_URL, btcpay_store=BTC_STORE, btcpay_key=BTC_KEY)
+        print('  btcpay settings: %s' % code)
+        time.sleep(2)
+        base = dictish(account()).get('balance', 0)
+        code, co = curl('POST', api(PEER) + '/checkout',
+                        {'rail': 'btcpay', 'amount': 10000000}, jar=PJAR, timeout=180)
+        url = dictish(co).get('url', '')
+        if not url:
+            print('  no invoice url: %s %s' % (code, co))
+        else:
+            print('  pay this invoice from a testnet wallet, on chain or over Lightning:')
+            print('  %s' % url)
+            after = wait_for('the bitcoin credit', lambda a: a.get('balance', 0) > base,
+                             seconds=BTC_POLL_SECONDS)
+            rows = [r for r in after.get('ledger', []) if r.get('rail') == 'btcpay']
+            print('  balance %d, newest btcpay row %s' %
+                  (after.get('balance', 0), json.dumps(rows[0]) if rows else 'none'))
+            nonce = dictish(co).get('nonce', '')
+            row = dictish(dictish(after.get('checkouts')).get(nonce))
+            print('  the checkout row is %s' % json.dumps(row))
 finally:
     restore()
