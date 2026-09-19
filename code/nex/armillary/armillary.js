@@ -210,6 +210,9 @@
         '<div class="field"><label>&nbsp;</label><button data-mint="1">Mint a key</button></div></div>';
     }
     out += '</div>';
+    // the same renderer the customer reads, so the owner sees each
+    // checkout's rail and where it got to
+    out += checkoutRows(d && d.checkouts);
     out += '<div class="card"><h2>Ledger</h2>';
     if (!rows.length) out += '<p class="muted">Nothing yet.</p>';
     else {
@@ -295,29 +298,51 @@
         ? '<p class="muted">API base <code>' + esc(s.stripe_url) + '</code>, not Stripe itself.</p>' : '') +
       '<p class="muted">Paste this into Stripe as the endpoint: <code>' + esc(hook) + '</code></p>' +
       '<button data-save-stripe="1">Save</button></div>';
+    var bhook = (pub || 'your public URL') + '/apps/armillary/hooks/btcpay';
+    out += '<div class="card"><h2>BTCPay Server</h2>' +
+      '<p class="muted">One invoice offers on chain and Lightning. The api key and the webhook secret are shown masked. Leave a field blank to keep what is stored.</p>' +
+      '<div class="inline">' +
+      '<div class="field"><label for="bt-url">Instance URL</label>' +
+      '<input id="bt-url" value="' + esc(s.btcpay_url || '') + '" placeholder="https://btcpay.example.com"></div>' +
+      '<div class="field"><label for="bt-store">Store id</label>' +
+      '<input id="bt-store" value="' + esc(s.btcpay_store || '') + '"></div>' +
+      '<div class="field"><label for="bt-key">API key</label>' +
+      '<input id="bt-key" type="password" placeholder="leave blank to keep"></div>' +
+      '<div class="field"><label for="bt-hook">Webhook secret</label>' +
+      '<input id="bt-hook" type="password" placeholder="leave blank to keep"></div>' +
+      '</div>' +
+      '<p>Key <code>' + esc(s.btcpay_key || 'not set') + '</code>, ' +
+      'webhook secret <code>' + esc(s.btcpay_webhook_secret || 'not set') + '</code></p>' +
+      '<p class="muted">Add a webhook on the store pointing at <code>' + esc(bhook) + '</code> ' +
+      'with the events InvoiceSettled, InvoiceProcessing, InvoiceExpired and InvoiceInvalid.</p>' +
+      '<p class="muted">Subscriptions are card only. A bitcoin customer tops up.</p>' +
+      '<button data-save-btcpay="1">Save</button></div>';
     out += '<div class="card"><h2>Plans</h2>' +
       (plans.length ? planRows(plans, !!s.stripe_key) : '<p class="muted">No plans yet.</p>') +
       '</div>';
     var cur = editing ? (plans.filter(function (p) { return p.id === editing; })[0] || null) : null;
     out += planForm(cur);
+    out += ringCard('Recent Stripe outcomes', 'stripe.', log);
+    out += ringCard('Recent BTCPay outcomes', 'btcpay.', log);
+    return out;
+  }
+  // the last ten ring rows whose op starts with one rail's name
+  function ringCard(title, prefix, log) {
     var rows = (log || []).filter(function (r) {
-      return String(r.op || '').indexOf('stripe.') === 0;
+      return String(r.op || '').indexOf(prefix) === 0;
     }).slice(0, 10);
-    out += '<div class="card"><h2>Recent Stripe outcomes</h2>';
-    if (!rows.length) out += '<p class="muted">Nothing yet.</p>';
-    else {
-      out += thead(['At', 'What', 'Ok', 'Why']);
-      rows.forEach(function (r) {
-        out += '<tr>' +
-          cell('At', fmtTime(r.at)) +
-          cell('What', esc(r.op)) +
-          cell('Ok', r.ok ? 'yes' : 'no') +
-          cell('Why', esc(r.why || '')) +
-          '</tr>';
-      });
-      out += '</tbody></table>';
-    }
-    return out + '</div>';
+    var out = '<div class="card"><h2>' + esc(title) + '</h2>';
+    if (!rows.length) return out + '<p class="muted">Nothing yet.</p></div>';
+    out += thead(['At', 'What', 'Ok', 'Why']);
+    rows.forEach(function (r) {
+      out += '<tr>' +
+        cell('At', fmtTime(r.at)) +
+        cell('What', esc(r.op)) +
+        cell('Ok', r.ok ? 'yes' : 'no') +
+        cell('Why', esc(r.why || '')) +
+        '</tr>';
+    });
+    return out + '</tbody></table></div>';
   }
 
   // ---- the customer's own views ----
@@ -338,6 +363,20 @@
     });
     return out + '</tbody></table>';
   }
+  // a rail as a person names it, rather than as the ship stores it
+  function railName(r) {
+    if (r === 'stripe') return 'Card';
+    if (r === 'btcpay') return 'Bitcoin';
+    return r || '';
+  }
+  // processing is the on-chain wait: the money is seen and not yet
+  // confirmed, so the row says why it has not become a credit
+  function statusLine(c) {
+    var s = c.status || '';
+    if (s === 'processing') return 'processing &middot; waiting for confirmations';
+    if (s === 'refused' && c.note) return esc(s) + ' &middot; ' + esc(c.note);
+    return esc(s);
+  }
   function checkoutRows(obj) {
     var keys = Object.keys(obj || {});
     if (!keys.length) return '';
@@ -347,9 +386,9 @@
       var c = obj[n] || {};
       out += '<tr>' +
         cell('Order', '<code>' + esc(n) + '</code>') +
-        cell('Rail', esc(c.rail)) +
+        cell('Rail', esc(railName(c.rail))) +
         cell('Amount', esc(dollars(c.amount)), 'num') +
-        cell('Status', esc(c.status)) +
+        cell('Status', statusLine(c)) +
         cell('', c.url ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">Open</a>' : '') +
         '</tr>';
     });
@@ -396,8 +435,9 @@
       planButtons(plans) +
       '<div class="field"><label for="t-amount">Top up, dollars</label><input id="t-amount" value=""></div>' +
       '<div class="field"><label>Rail</label>' +
-      '<label><input type="radio" name="rail" value="stripe" checked> card</label> ' +
-      '<label><input type="radio" name="rail" value="btcpay"> bitcoin</label></div>' +
+      '<label><input type="radio" name="rail" value="stripe" checked> Card</label> ' +
+      '<label><input type="radio" name="rail" value="btcpay"> Bitcoin</label>' +
+      '<span class="muted">Subscriptions are card only.</span></div>' +
       '<div class="field"><label>&nbsp;</label><button data-topup="1">Top up</button></div>' +
       '</div></div>';
     out += checkoutRows(d && d.checkouts);
@@ -509,6 +549,30 @@
   var myPlans = [];                    // the vendor's plans, as the customer reads them
 
   function say(msg, bad) { statusEl.textContent = msg; statusEl.className = 'status' + (bad ? ' bad' : ''); }
+  // the settings PUT replaces the document whole, so a save from one
+  // card carries the other card's stored fields back with it. Every
+  // secret goes out blank, which is what keeps what the ship holds.
+  function saveSettings(extra) {
+    var was = st0 || {};
+    var modeEl = view.querySelector('input[name="st-mode"]:checked');
+    var pubEl = document.getElementById('st-pub');
+    var body = {
+      markup_pct: was.markup_pct || 130,
+      min_topup: was.min_topup === undefined ? 5000000 : was.min_topup,
+      public_url: pubEl ? pubEl.value.trim() : (was.public_url || ''),
+      mode: modeEl ? modeEl.value : (was.mode || 'stub'),
+      refuse_comets: !!was.refuse_comets,
+      stripe_key: '',
+      stripe_webhook_secret: '',
+      stripe_url: was.stripe_url || '',
+      btcpay_url: was.btcpay_url || '',
+      btcpay_store: was.btcpay_store || '',
+      btcpay_key: '',
+      btcpay_webhook_secret: '',
+    };
+    Object.keys(extra).forEach(function (k) { body[k] = extra[k]; });
+    return post('/settings', body, 'PUT');
+  }
   function api(path, opts) {
     return fetch(API + path, opts).then(function (r) {
       if (!r.ok) {
@@ -746,21 +810,20 @@
       api('/keys/' + seg(d.dropKey), { method: 'DELETE' })
         .then(later).catch(function (e) { say(e.message, true); });
     } else if (d.saveStripe) {
-      var pub = document.getElementById('st-pub').value.trim();
-      var modeEl = view.querySelector('input[name="st-mode"]:checked');
       // a blank secret keeps what the ship holds, which is what an
       // untouched field sends
-      var was = st0 || {};
-      post('/settings', {
-        markup_pct: was.markup_pct || 130,
-        min_topup: was.min_topup === undefined ? 5000000 : was.min_topup,
-        public_url: pub,
-        mode: modeEl ? modeEl.value : 'stub',
-        refuse_comets: !!was.refuse_comets,
+      saveSettings({
         stripe_key: document.getElementById('st-key').value.trim(),
         stripe_webhook_secret: document.getElementById('st-hook').value.trim(),
-        stripe_url: was.stripe_url || '',
-      }, 'PUT').then(function () { say('saved'); later(); })
+      }).then(function () { say('saved'); later(); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.saveBtcpay) {
+      saveSettings({
+        btcpay_url: document.getElementById('bt-url').value.trim(),
+        btcpay_store: document.getElementById('bt-store').value.trim(),
+        btcpay_key: document.getElementById('bt-key').value.trim(),
+        btcpay_webhook_secret: document.getElementById('bt-hook').value.trim(),
+      }).then(function () { say('saved'); later(); })
         .catch(function (e) { say(e.message, true); });
     } else if (d.planEdit) {
       planEditing = d.planEdit; refresh();
@@ -794,8 +857,14 @@
         .catch(function (e) { say(e.message, true); });
     } else if (d.buy) {
       var plan = myPlans.filter(function (p) { return p.id === d.buy; })[0] || {};
+      var buyRailEl = view.querySelector('input[name="rail"]:checked');
+      var buyRail = buyRailEl ? buyRailEl.value : 'stripe';
+      if (plan.kind === 'subscription' && buyRail !== 'stripe') {
+        say('subscriptions are card only; choose Card to subscribe', true);
+        return;
+      }
       say('opening a checkout');
-      post('/checkout', { rail: 'stripe', plan: d.buy })
+      post('/checkout', { rail: buyRail, plan: d.buy })
         .then(function (r) {
           if (r.url) { window.open(r.url, '_blank', 'noopener'); say('checkout open'); }
           else say('the vendor has not answered yet; it will show under Checkouts');
