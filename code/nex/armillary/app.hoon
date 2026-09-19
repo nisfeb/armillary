@@ -36,6 +36,7 @@
 /<  arm     /lib/armillary.hoon
 /<  ahttp   /lib/armillary-http.hoon
 /<  astripe  /lib/armillary-stripe.hoon
+/<  abtc     /lib/armillary-btcpay.hoon
 /&  icon  icon.svg
 /&  page-html  armillary.html
 /&  page-css   armillary.css
@@ -518,7 +519,7 @@
   ;<  ~  bind:m  (over:io (rf 0 / %'settings.json') [[/ %json] doc])
   ;<  ~  bind:m  (note 'set-settings' & '' '' --0)
   (pure:m &)
-::  +kept-secrets: a settings row with its two Stripe secrets resolved
+::  +kept-secrets: a settings row with its four rail secrets resolved
 ::  against what is stored. Both the writer and the route that answers
 ::  the save use it, so the answer says what was kept.
 ::
@@ -528,7 +529,15 @@
   =/  key=@t  (keep-secret incoming `stored 'stripe_key' stripe-key.s)
   =/  hook=@t
     (keep-secret incoming `stored 'stripe_webhook_secret' stripe-webhook-secret.s)
-  s(stripe-key key, stripe-webhook-secret hook)
+  =/  bkey=@t  (keep-secret incoming `stored 'btcpay_key' btcpay-key.s)
+  =/  bhook=@t
+    (keep-secret incoming `stored 'btcpay_webhook_secret' btcpay-webhook-secret.s)
+  %=  s
+    stripe-key             key
+    stripe-webhook-secret  hook
+    btcpay-key             bkey
+    btcpay-webhook-secret  bhook
+  ==
 ::  +keep-secret: a blank incoming secret keeps the stored one, an
 ::  explicit null clears it, anything else replaces it
 ::
@@ -1556,8 +1565,8 @@
   ^-  @t
   ?:(=('' public-url.s) 'http://localhost:8080' public-url.s)
 ::  +inbox-checkout: stub mode answers a local page that credits the
-::  account; live mode makes a real Stripe Checkout Session. Bitcoin is
-::  phase 4 and says so.
+::  account; live mode makes a real Stripe Checkout Session on the card
+::  rail and a real BTCPay invoice on the bitcoin one.
 ::
 ++  inbox-checkout
   |=  [src=@p rail=@t plan=@t amount=@ud nonce=@t]
@@ -1582,10 +1591,13 @@
     ;<  ~  bind:m
       (put-checkout src nonce rail plan amount url '' expires 'pending' '')
     (note-inbox 'checkout' & '' who)
-  ?.  =('stripe' rail)
-    %-  refuse-checkout
-    [src nonce rail plan amount expires 'unavailable' 'bitcoin is not on this vendor yet']
-  (stripe-checkout src s plan amount nonce expires)
+  ?:  =('stripe' rail)  (stripe-checkout src s plan amount nonce expires)
+  ::  a bitcoin invoice lives an hour, which is what the create call
+  ::  asks BTCPay for, so the row says the same
+  ?:  =('btcpay' rail)
+    (btcpay-checkout src s plan amount nonce (add now ~h1))
+  %-  refuse-checkout
+  [src nonce rail plan amount expires 'refused' 'rail: stripe or btcpay']
 ::  +stripe-checkout: the live card rail. Every 400-class refusal is a
 ::  row with status refused and a note naming the field, since the
 ::  customer reads the view and nothing else.
@@ -1652,13 +1664,85 @@
         cancel
     ==
   (finish-checkout src nonce plan price.u.row expires req)
+::  +btcpay-checkout: the live bitcoin rail. One BTCPay invoice offers
+::  both on chain and Lightning, so there is one call here and not two.
+::  Every 400-class refusal is a row with status refused and a note
+::  naming the field, since the customer reads the view and nothing
+::  else.
+::
+++  btcpay-checkout
+  |=  [src=@p s=settings:arm plan=@t amount=@ud nonce=@t expires=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  plans=(list plan:arm)  bind:m  (plans-of 0)
+  =/  row=(unit plan:arm)  ?:(=('' plan) ~ (find-plan:arm plans plan))
+  =/  named=?  !=('' plan)
+  =/  found=?  ?=(^ row)
+  =/  subbed=?  ?:(?=(^ row) ?=(%subscription kind.u.row) |)
+  =/  unset=?
+    ?|  =('' btcpay-url.s)
+        =('' btcpay-store.s)
+        =('' btcpay-key.s)
+    ==
+  =/  bad=@t
+    ?:  unset  'btcpay: not set'
+    ?:  &(named !=(0 amount))  'plan and amount: choose one'
+    ?:  &(named !found)  'plan: unknown'
+    ?:  subbed  'plan: subscriptions are card only'
+    ?:  &(!named (lth amount min-topup.s))  'amount: below the minimum'
+    ''
+  ?.  =('' bad)
+    (refuse-checkout src nonce 'btcpay' plan amount expires 'refused' bad)
+  ::  a top-up plan's price is the amount; a bare amount is its own
+  =/  micro=@ud  ?~(row amount price.u.row)
+  =/  base=@t  (public-of s)
+  =/  back=@t
+    %^  rap  3  base
+    :~  '/apps/armillary/pay/return?ship='
+        (url-encode:ahttp who)
+        '&nonce='
+        (url-encode:ahttp nonce)
+        '&rail=btcpay'
+    ==
+  =/  req=request:http
+    %-  invoice-request:abtc
+    :*  btcpay-url.s
+        btcpay-store.s
+        btcpay-key.s
+        who
+        nonce
+        micro
+        back
+    ==
+  (finish-btc-checkout src nonce plan micro expires req)
+::  +finish-btc-checkout: the call to BTCPay and the row it leaves
+::  behind. The checkout link is the page that offers both rails.
+::
+++  finish-btc-checkout
+  |=  [src=@p nonce=@t plan=@t amount=@ud expires=@da req=request:http]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  res=[status=@ud body=@t]  bind:m  (fetch req)
+  ?.  (two-xx status.res)
+    =/  why=@t  (btcpay-why status.res body.res)
+    (refuse-checkout src nonce 'btcpay' plan amount expires 'refused' why)
+  =/  got  (read-invoice:abtc body.res)
+  ?~  got
+    %-  refuse-checkout
+    [src nonce 'btcpay' plan amount expires 'refused' 'btcpay answered no invoice']
+  ;<  ~  bind:m
+    %-  put-checkout
+    [src nonce 'btcpay' plan amount link.u.got id.u.got expires 'pending' '']
+  (note-inbox 'checkout' & '' who)
 ::  +finish-checkout: the call to Stripe and the row it leaves behind
 ::
 ::    ponytail: this fetch runs in the inbox fiber, so every other
-::    customer's op waits behind it for as long as Stripe takes, up to
-::    two minutes. One spawned fiber per op is the upgrade; one slow
-::    call blocking the queue is the price until a vendor has enough
-::    customers to feel it.
+::    customer's op waits behind it for as long as the rail takes, up
+::    to two minutes, on Stripe and on BTCPay alike. One spawned fiber
+::    per op is the upgrade; one slow call blocking the queue is the
+::    price until a vendor has enough customers to feel it.
 ::
 ++  finish-checkout
   |=  [src=@p nonce=@t plan=@t amount=@ud expires=@da req=request:http]
@@ -2143,7 +2227,7 @@
   ;<  jon=json  bind:m  (read-json (rf up / %'settings.json'))
   =/  got  (de-settings:arm jon)
   ?:  ?=(%| -.got)
-    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm])
+    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm '' '' '' ''])
   (pure:m p.got)
 ::  +two-xx: did the upstream say yes
 ::
@@ -2159,6 +2243,19 @@
   =/  msg=@t  (read-error:arm body)
   =/  said=@t  ?:(=('' msg) 'no message' msg)
   (rap 3 'stripe answered ' (crip code) ': ' said ~)
+::  +btcpay-why: what BTCPay said went wrong. A Greenfield error is
+::  JSON with a message; anything else is left off rather than echoed,
+::  since an HTML error page is no use to a customer and the api key
+::  is never in either.
+::
+++  btcpay-why
+  |=  [status=@ud body=@t]
+  ^-  @t
+  ?:  =(0 status)  'btcpay did not answer within two minutes'
+  =/  code=tape  (a-co:co status)
+  =/  msg=@t  (read-error:arm body)
+  ?:  =('' msg)  (rap 3 'btcpay answered ' (crip code) ~)
+  (rap 3 'btcpay answered ' (crip code) ': ' msg ~)
 ::  ==  providers
 ::
 ++  serve-providers

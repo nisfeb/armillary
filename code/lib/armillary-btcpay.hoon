@@ -177,7 +177,7 @@
         ['metadata' meta]
         ['checkout' check]
     ==
-  =/  body=octs  (as-octs:mimes:html (crip (en:json:html doc)))
+  =/  body=octs  (as-octs:mimes:html (en:json:html doc))
   [%'POST' (invoices-at url store) (heads key) `body]
 ::  +invoice-get-request: read an invoice back. This is the
 ::  verification: a webhook says only which invoice moved.

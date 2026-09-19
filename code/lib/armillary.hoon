@@ -804,13 +804,26 @@
       stripe-key=@t
       stripe-webhook-secret=@t
       stripe-url=@t
+      btcpay-url=@t
+      btcpay-store=@t
+      btcpay-key=@t
+      btcpay-webhook-secret=@t
   ==
 ::  +stripe-base: where Stripe's API lives. A blank stripe_url is the
 ::  real one; the gate points it at the stub instead.
 ::
 ++  stripe-base  'https://api.stripe.com'
-::  +starter-settings: what a fresh install holds. Phase 4 adds the
-::  BTCPay fields.
+::  +no-slash: a base url without its trailing slash, so a route glued
+::  on to it never carries two
+::
+++  no-slash
+  |=  t=@t
+  ^-  @t
+  =/  tap=tape  (trip t)
+  ?~  tap  t
+  ?.  =('/' (rear `tape`tap))  t
+  (crip (snip `tape`tap))
+::  +starter-settings: what a fresh install holds.
 ::
 ++  starter-settings
   ^-  json
@@ -823,6 +836,10 @@
       ['stripe_key' s+'']
       ['stripe_webhook_secret' s+'']
       ['stripe_url' s+stripe-base]
+      ['btcpay_url' s+'']
+      ['btcpay_store' s+'']
+      ['btcpay_key' s+'']
+      ['btcpay_webhook_secret' s+'']
   ==
 ++  de-settings
   |=  jon=json
@@ -836,6 +853,10 @@
   ?:  (gth (met 3 url) max-url)  [%| 'public_url: at most 500 bytes']
   =/  sur=@t  (gs jon 'stripe_url')
   ?:  (gth (met 3 sur) max-url)  [%| 'stripe_url: at most 500 bytes']
+  =/  bur=@t  (gs jon 'btcpay_url')
+  ?:  (gth (met 3 bur) max-url)  [%| 'btcpay_url: at most 500 bytes']
+  =/  bst=@t  (gs jon 'btcpay_store')
+  ?:  (gth (met 3 bst) max-id)  [%| 'btcpay_store: at most 64 bytes']
   =/  amode=?(%stub %live)  ?:(=('live' mode) %live %stub)
   :-  %&
   :*  pct
@@ -846,6 +867,10 @@
       (gs jon 'stripe_key')
       (gs jon 'stripe_webhook_secret')
       ?:(=('' sur) stripe-base sur)
+      (no-slash bur)
+      bst
+      (gs jon 'btcpay_key')
+      (gs jon 'btcpay_webhook_secret')
   ==
 ++  en-settings
   |=  s=settings
@@ -859,6 +884,10 @@
       ['stripe_key' s+stripe-key.s]
       ['stripe_webhook_secret' s+stripe-webhook-secret.s]
       ['stripe_url' s+stripe-url.s]
+      ['btcpay_url' s+btcpay-url.s]
+      ['btcpay_store' s+btcpay-store.s]
+      ['btcpay_key' s+btcpay-key.s]
+      ['btcpay_webhook_secret' s+btcpay-webhook-secret.s]
   ==
 ::  ==  plans
 ::
