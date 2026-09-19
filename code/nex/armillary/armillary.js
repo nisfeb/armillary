@@ -218,8 +218,126 @@
     return out + '</div>';
   }
 
+  // ---- the customer's own views ----
+  // the ledger table is the same one the owner reads, so one renderer
+  // serves both sides
+  function ledger(rows) {
+    if (!rows.length) return '<p class="muted">Nothing yet.</p>';
+    var out = thead(['At', 'Kind', { name: 'Amount', num: true }, 'Model', { name: 'Tokens', num: true }, 'Ref']);
+    rows.forEach(function (r) {
+      out += '<tr>' +
+        cell('At', fmtTime(r.at)) +
+        cell('Kind', esc(r.kind)) +
+        cell('Amount', esc(dollars(r.amount)), 'num') +
+        cell('Model', esc(r.model)) +
+        cell('Tokens', r.kind === 'debit' ? esc(r.in + ' in, ' + r.out + ' out') : '', 'num') +
+        cell('Ref', '<code>' + esc(r.ref) + '</code>') +
+        '</tr>';
+    });
+    return out + '</tbody></table>';
+  }
+  function checkoutRows(obj) {
+    var keys = Object.keys(obj || {});
+    if (!keys.length) return '';
+    var out = '<div class="card"><h2>Checkouts</h2>' +
+      thead(['Order', 'Rail', { name: 'Amount', num: true }, 'Status', '']);
+    keys.forEach(function (n) {
+      var c = obj[n] || {};
+      out += '<tr>' +
+        cell('Order', '<code>' + esc(n) + '</code>') +
+        cell('Rail', esc(c.rail)) +
+        cell('Amount', esc(dollars(c.amount)), 'num') +
+        cell('Status', esc(c.status)) +
+        cell('', c.url ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">Open</a>' : '') +
+        '</tr>';
+    });
+    return out + '</tbody></table></div>';
+  }
+  function myAccount(d) {
+    var vendor = (d && d.vendor) || '';
+    var out = '<h1>Account</h1>' +
+      '<div class="card"><h2>Vendor</h2><p>' +
+      (vendor ? '<code>' + esc(vendor) + '</code>' : '<span class="muted">none set</span>') +
+      (d && d.stale !== undefined ? ' <span class="muted">read ' + esc(d.stale) + 's ago</span>' : '') +
+      '</p><div class="inline">' +
+      '<div class="field"><label for="v-ship">Set vendor</label>' +
+      '<input id="v-ship" value="' + esc(vendor) + '" placeholder="~wex"></div>' +
+      '<div class="field"><label>&nbsp;</label><button data-set-vendor="1">Save</button>' +
+      '<button data-refresh-view="1">Refresh</button></div></div></div>';
+    if (!vendor) return out + '<p class="muted">Name a vendor ship above to open an account on it.</p>';
+    out += '<div class="card"><h2>Balance</h2>' +
+      '<p style="font-size:1.6rem;margin:.2rem 0">' + signed(d && d.balance) + '</p>' +
+      '<div class="inline">' +
+      '<div class="field"><label for="t-amount">Top up, dollars</label><input id="t-amount" value=""></div>' +
+      '<div class="field"><label>Rail</label>' +
+      '<label><input type="radio" name="rail" value="stripe" checked> card</label> ' +
+      '<label><input type="radio" name="rail" value="btcpay"> bitcoin</label></div>' +
+      '<div class="field"><label>&nbsp;</label><button data-topup="1">Top up</button></div>' +
+      '</div></div>';
+    out += checkoutRows(d && d.checkouts);
+    return out + '<div class="card"><h2>Ledger</h2>' + ledger((d && d.ledger) || []) + '</div>';
+  }
+  function myKeys(keys, cfg, minted) {
+    var out = '<h1>Keys</h1><div class="card">';
+    if (minted) {
+      out += '<div class="secret"><p>Copy this now. The vendor keeps only a salted hash of it.</p>' +
+        '<code>' + esc(minted.secret) + '</code>' +
+        '<p><button data-dismiss="1">Done</button></p></div>';
+    }
+    if (!keys.length) out += '<p class="muted">No keys yet.</p>';
+    else {
+      out += thead(['Id', 'Name', 'Made', '']);
+      keys.forEach(function (k) {
+        out += '<tr>' +
+          cell('Id', '<code>' + esc(k.id) + '</code>') +
+          cell('Name', esc(k.name)) +
+          cell('Made', fmtTime(k.made)) +
+          cell('', '<button class="danger" data-drop-key="' + esc(k.id) + '" data-name="' + esc(k.name) + '">Revoke</button>') +
+          '</tr>';
+      });
+      out += '</tbody></table>';
+    }
+    out += '<div class="inline"><div class="field"><label for="my-k-name">New key name</label>' +
+      '<input id="my-k-name" value=""></div>' +
+      '<div class="field"><label>&nbsp;</label><button data-my-mint="1">Mint a key</button></div></div></div>';
+    out += '<div class="card"><h2>Inference config</h2>';
+    if (!cfg) out += '<p class="muted">No key yet, so there is nothing for a client to run on.</p>';
+    else {
+      out += '<p class="muted">This is what <code>GET /api/inference</code> answers.</p>' +
+        '<pre id="inference">' + esc(JSON.stringify(cfg, null, 2)) + '</pre>' +
+        '<button data-copy-inference="1">Copy</button>';
+    }
+    return out + '</div>';
+  }
+  function buyCatalog(rows, filter) {
+    var f = String(filter || '').toLowerCase();
+    var kept = (rows || []).filter(function (r) {
+      return !f || String(r.id).toLowerCase().indexOf(f) >= 0 || String(r.provider).toLowerCase().indexOf(f) >= 0;
+    });
+    var out = '<h1>Catalog</h1><div class="card">' +
+      '<div class="field"><label for="buy-filter">Filter</label>' +
+      '<input id="buy-filter" type="search" value="' + esc(filter || '') + '" placeholder="id or provider"></div>' +
+      '<span class="muted"> ' + kept.length + ' of ' + (rows || []).length + ' models</span></div>';
+    if (!kept.length) return out + '<p class="muted">The vendor offers nothing yet.</p>';
+    out += '<div class="card">' + thead(['Model', 'Provider',
+      { name: 'In $/M', num: true }, { name: 'Out $/M', num: true }, 'Tags']);
+    kept.forEach(function (r) {
+      out += '<tr>' +
+        cell('Model', '<code>' + esc(r.id) + '</code>') +
+        cell('Provider', esc(r.provider)) +
+        cell('In', esc(dollars(r.in, 4)), 'num') +
+        cell('Out', esc(dollars(r.out, 4)), 'num') +
+        cell('Tags', esc((r.tags || []).join(', '))) +
+        '</tr>';
+    });
+    return out + '</tbody></table></div>';
+  }
+
   function route(hash) {
     var h = String(hash || '').replace(/^#/, '') || 'providers';
+    // #account is this ship's own account on its vendor; #accounts/~ship
+    // is one of the accounts this ship sells to
+    if (h === 'account') return { name: 'my-account' };
     if (h.indexOf('accounts/') === 0) return { name: 'account', ship: h.slice(9) };
     return { name: h };
   }
@@ -237,6 +355,7 @@
   var render = {
     esc: esc, dollars: dollars, micro: micro, margin: margin,
     providers: providers, catalog: catalog, accounts: accounts, account: account,
+    myAccount: myAccount, myKeys: myKeys, buyCatalog: buyCatalog,
     route: route, sseEvent: sseEvent,
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = render; }
@@ -252,6 +371,11 @@
   var catRows = [];                    // the catalog as the page holds it, edited in place
   var catFilter = '';
   var acctSearch = '';
+  // the customer half. isVendor is true when this ship sells, isBuyer
+  // when it buys; both are true on a ship that is its own customer.
+  var isVendor = true, isBuyer = false;
+  var buyFilter = '';
+  var custMinted = null;               // a fetched secret shown once
 
   function say(msg, bad) { statusEl.textContent = msg; statusEl.className = 'status' + (bad ? ' bad' : ''); }
   function api(path, opts) {
@@ -279,8 +403,18 @@
     refreshing = true;
     var r = route(location.hash);
     if (r.name !== 'account') minted = null;
+    if (r.name !== 'keys') custMinted = null;
     var p;
-    if (r.name === 'catalog') {
+    if (r.name === 'my-account') {
+      p = api('/account').then(function (d) { view.innerHTML = myAccount(d); });
+    } else if (r.name === 'keys') {
+      p = api('/keys').then(function (keys) {
+        return api('/inference').catch(function () { return null; })
+          .then(function (cfg) { view.innerHTML = myKeys(keys || [], cfg, custMinted); });
+      });
+    } else if (r.name === 'catalog' && isBuyer && !isVendor) {
+      p = api('/catalog').then(function (rows) { view.innerHTML = buyCatalog(rows || [], buyFilter); });
+    } else if (r.name === 'catalog') {
       p = api('/catalog').then(function (rows) { catRows = rows || []; view.innerHTML = catalog(catRows, catFilter); });
     } else if (r.name === 'accounts') {
       p = api('/accounts').then(function (rows) { view.innerHTML = accounts(rows || [], acctSearch); });
@@ -333,13 +467,14 @@
   view.addEventListener('input', function (ev) {
     var el = ev.target;
     if (el.id === 'cat-filter') { catFilter = el.value; view.innerHTML = catalog(catRows, catFilter); var f = document.getElementById('cat-filter'); if (f) { f.focus(); f.setSelectionRange(f.value.length, f.value.length); } }
+    else if (el.id === 'buy-filter') { buyFilter = el.value; }
     else if (el.id === 'acct-search') { acctSearch = el.value; }
   });
   view.addEventListener('change', function (ev) {
     if (ev.target.name === 'kind') {
       var box = document.getElementById('p-prov');
       if (box) box.hidden = ev.target.value !== 'openrouter';
-    } else if (ev.target.id === 'acct-search') {
+    } else if (ev.target.id === 'acct-search' || ev.target.id === 'buy-filter') {
       refresh();
     }
   });
@@ -411,6 +546,52 @@
       var c = route(location.hash).ship;
       if (!confirm('Close ' + c + '? Every key is revoked and the ledger is kept.')) return;
       post('/accounts/' + seg(c) + '/close').then(later).catch(function (e) { say(e.message, true); });
+    } else if (d.setVendor) {
+      var v = document.getElementById('v-ship').value.trim();
+      say('setting the vendor');
+      post('/vendor', { ship: v }, 'PUT').then(function () { boot(); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.refreshView) {
+      say('reading the vendor');
+      api('/account?fresh=1').then(function (dd) { view.innerHTML = myAccount(dd); say(''); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.topup) {
+      var amount = micro(document.getElementById('t-amount').value);
+      var railEl = view.querySelector('input[name="rail"]:checked');
+      if (!amount || amount <= 0) { say('amount: dollars above zero', true); return; }
+      say('opening a checkout');
+      post('/checkout', { rail: railEl ? railEl.value : 'stripe', amount: amount })
+        .then(function (r) {
+          if (r.url) { window.open(r.url, '_blank', 'noopener'); say('checkout open'); }
+          else say('the vendor has not answered yet; it will show under Checkouts');
+          later();
+        })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.myMint) {
+      var mn = document.getElementById('my-k-name').value.trim();
+      if (!mn) { say('name: 1 to 200 bytes', true); return; }
+      say('asking the vendor for a key');
+      post('/keys', { name: mn }).then(function (k) {
+        if (k.secret) { custMinted = k; say(''); } else say('the key is on its way; it will show here');
+        refresh();
+      }).catch(function (e) { say(e.message, true); });
+    } else if (d.dropKey) {
+      if (!confirm('Revoke "' + d.name + '"? Its next request is refused.')) return;
+      api('/keys/' + seg(d.dropKey), { method: 'DELETE' })
+        .then(later).catch(function (e) { say(e.message, true); });
+    } else if (d.copyInference) {
+      var pre = document.getElementById('inference');
+      if (pre && navigator.clipboard) {
+        navigator.clipboard.writeText(pre.textContent).then(function () { say('copied'); },
+          function () { say('could not copy', true); });
+      } else if (pre) {
+        var sel = window.getSelection();
+        var rg = document.createRange();
+        rg.selectNodeContents(pre);
+        sel.removeAllRanges();
+        sel.addRange(rg);
+        say('selected');
+      }
     }
   });
 
@@ -466,7 +647,30 @@
       await new Promise(function (r) { setTimeout(r, 3000); });
     }
   }
-  refresh();
+  // ---- which half of the app this ship is ----
+  // vendor.json decides: empty means this ship sells only, our own ship
+  // means it sells and buys from itself, another ship means it buys.
+  // GET /api/account carries both, so one read settles it.
+  function boot() {
+    return api('/account').catch(function () { return {}; }).then(function (d) {
+      var vendor = (d && d.vendor) || '';
+      var self = (d && d.self) || '';
+      isBuyer = !!vendor;
+      isVendor = !vendor || vendor === self;
+      document.getElementById('nav-vendor').hidden = !isVendor;
+      document.getElementById('nav-customer').hidden = !isBuyer;
+      document.getElementById('both').hidden = !(isVendor && isBuyer);
+      var r = route(location.hash);
+      // a customer-only ship has no #providers to land on
+      if (!isVendor && (r.name === 'providers' || r.name === 'accounts')) {
+        location.hash = '#account';
+        return;
+      }
+      refresh();
+    });
+  }
+
+  boot();
   stream();
   setInterval(function () { if (!document.hidden) refresh(); }, 60000);
 })();

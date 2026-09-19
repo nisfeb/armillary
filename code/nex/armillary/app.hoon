@@ -1391,15 +1391,167 @@
   ;<  ~  bind:m  (poke-writer 0 op)
   ?:  stub  (note-inbox 'checkout' & '' who)
   (note-inbox 'checkout' | 'live rails are phase 3' who)
-::  +client-loop: the customer's fiber. Phase 3 fills it; for now it
-::  waits, so a ship with no vendor costs nothing.
+::  ==  the client: what this ship asks of its vendor
+::
+::  +client-loop: send what is queued, read the view, sleep five
+::  minutes or until prodded. A ship with no vendor waits and costs
+::  nothing. The poke that prods it is a prod and nothing else: what to
+::  send is in client.json, written by the writer before the prod.
 ::
 ++  client-loop
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   |-
+  ;<  vj=json  bind:m  (read-json (rf 0 / %'vendor.json'))
+  =/  vendor=(unit @p)  (slaw %p (gs:arm vj 'ship'))
+  ?~  vendor
+    ;<  *  bind:m  take-poke-from:io
+    $
+  ;<  ~  bind:m  (client-pass u.vendor)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m  (set-timer:io /tick (add now ~m5))
   ;<  *  bind:m  take-poke-from:io
+  ;<  ~  bind:m  (cancel-timer:io /tick)
   $
+::  +client-pass: one round with the vendor. Send every op not yet sent,
+::  then read the view once and take what it holds for us.
+::
+++  client-pass
+  |=  vendor=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  cj=json  bind:m  (read-json (rf 0 / %'client.json'))
+  =/  ops=json  (gj:arm cj 'ops')
+  =/  om=(map @t json)  ?:(?=([%o *] ops) p.ops ~)
+  =/  todo=(list [nonce=@t row=json])
+    (skim ~(tap by om) |=([n=@t j=json] !(gb:arm j 'sent')))
+  ;<  ~  bind:m  (send-queued vendor todo)
+  ::  the vendor's own writer runs only after our poke has landed, so a
+  ::  pass that sent something looks again a moment later rather than
+  ::  reading the account as it was before the op
+  ;<  ~  bind:m  ?~(todo (pure:(fiber:fiber:nexus ,~) ~) (nap ~s2))
+  ;<  got=(unit json)  bind:m  (peek-view vendor)
+  ?~  got  (pure:m ~)
+  (absorb-view vendor u.got)
+::  +send-queued: the ops waiting, one at a time. A remote ack is
+::  unobservable, so a timeout answers yes and the view is the truth.
+::
+++  send-queued
+  |=  [vendor=@p todo=(list [nonce=@t row=json])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  todo  (pure:m ~)
+  =/  n=@t  nonce.i.todo
+  =/  pay=json  (gj:arm row.i.todo 'payload')
+  ;<  ok=?  bind:m  (send-op vendor pay)
+  ;<  ~  bind:m
+    ?.  ok  (pure:(fiber:fiber:nexus ,~) ~)
+    ::  an op with no nonce of its own can never show in the view, so a
+    ::  send that was taken is the end of it; the rest waits to be seen
+    ?:  =('' (gs:arm pay 'nonce'))
+      (poke-writer 0 (pairs:enjs:format ~[['op' s+'drop-op'] ['nonce' s+n]]))
+    %+  poke-writer  0
+    %-  pairs:enjs:format
+    :~  ['op' s+'note-op']
+        ['nonce' s+n]
+        ['payload' pay]
+        ['sent' b+&]
+    ==
+  (send-queued vendor t.todo)
+::  +send-op: one op into the vendor's inbox. Our own ship is poked
+::  directly, since a ship cannot ames itself.
+::
+++  send-op
+  |=  [vendor=@p jon=json]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  our=@p  bind:m  get-our:io
+  ?:  =(vendor our)
+    ;<  *  bind:m  (poke-soft:io (rf 0 / %'inbox.sig') [[/ %json] jon])
+    (pure:m &)
+  (remote-poke-wait vendor [%& armillary-instance:arm %'inbox.sig'] jon)
+::  +sang-json: a peeked grub as JSON, however it travelled
+::
+++  sang-json
+  |=  s=sang:tarball
+  ^-  (unit json)
+  =/  a  (mole |.(!<(json (need-vase:tarball s))))
+  ?^  a  a
+  (mole |.(;;(json (sang-noun:tarball s))))
+::  +peek-view: our account on the vendor, read from the one file the
+::  vendor's usergroup lets this ship peek
+::
+++  peek-view
+  |=  vendor=@p
+  =/  m  (fiber:fiber:nexus ,(unit json))
+  ^-  form:m
+  ;<  our=@p  bind:m  get-our:io
+  ?:  =(vendor our)
+    ;<  jon=json  bind:m  (read-json (rf 0 (acct-dir our) %'view.json'))
+    (pure:m (view-doc jon))
+  =/  road=road:tarball
+    [%& %& (weld armillary-instance:arm (acct-dir our)) %'view.json']
+  ;<  vw=(unit view:nexus)  bind:m  (peek-remote-wait vendor road)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  jon=(unit json)  (sang-json sang.u.vw)
+  ?~  jon  (pure:m ~)
+  (pure:m (view-doc u.jon))
+::  +view-doc: a document that is really a view. An account the vendor
+::  has not opened yet reads as an empty object, and storing that would
+::  wipe what we already knew.
+::
+++  view-doc
+  |=  jon=json
+  ^-  (unit json)
+  ?.  ?=([%o *] jon)  ~
+  ?~  (de-view:arm jon)  ~
+  `jon
+::  +absorb-view: store the view, take any key waiting in it, and drop
+::  the ops the view now accounts for
+::
+++  absorb-view
+  |=  [vendor=@p jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m
+    (poke-writer 0 (pairs:enjs:format ~[['op' s+'store-view'] ['view' jon]]))
+  =/  v=(unit view:arm)  (de-view:arm jon)
+  ?~  v  (pure:m ~)
+  ;<  cj=json  bind:m  (read-json (rf 0 / %'client.json'))
+  =/  ops=json  (gj:arm cj 'ops')
+  =/  om=(map @t json)  ?:(?=([%o *] ops) p.ops ~)
+  ;<  ~  bind:m  (take-pending vendor keys-pending.u.v om)
+  ::  a checkout nonce the vendor now holds is an op that landed
+  =/  done=(list @t)
+    ?.  ?=([%o *] checkouts.u.v)  ~
+    (skim ~(tap in ~(key by p.checkouts.u.v)) |=(n=@t (~(has by om) n)))
+  (drop-ops done)
+::  +take-pending: a key the vendor minted for us. We store the secret,
+::  tell the vendor we have it so it clears the view, and drop the op.
+::
+++  take-pending
+  |=  [vendor=@p rows=(list [nonce=@t id=@t name=@t secret=@t]) om=(map @t json)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  rows  (pure:m ~)
+  =/  r  i.rows
+  ?.  (~(has by om) nonce.r)  (take-pending vendor t.rows om)
+  ;<  now=@da  bind:m  get-time:io
+  =/  k=held-key:arm  [id.r name.r secret.r now]
+  ;<  ~  bind:m
+    (poke-writer 0 (pairs:enjs:format ~[['op' s+'store-key'] ['key' (en-held:arm k)]]))
+  ;<  *  bind:m  (send-op vendor (en-inbox:arm [%got-key id.r]))
+  ;<  ~  bind:m
+    (poke-writer 0 (pairs:enjs:format ~[['op' s+'drop-op'] ['nonce' s+nonce.r]]))
+  (take-pending vendor t.rows om)
+++  drop-ops
+  |=  ns=(list @t)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  ns  (pure:m ~)
+  ;<  ~  bind:m
+    (poke-writer 0 (pairs:enjs:format ~[['op' s+'drop-op'] ['nonce' s+i.ns]]))
+  (drop-ops t.ns)
 ::  ==  HTTP
 ::
 ::  +send-json, +send-err: every error is OpenAI's shape, so one client
@@ -1632,6 +1784,19 @@
   ?:  &(=('POST' meth) ?=([%api %accounts @ %close ~] suffix))
     (own (serve-close eyre-id s2))
   ?:  &(=('GET' meth) ?=([%api %log ~] suffix))          (own (serve-log eyre-id))
+  ::  the customer's routes, what Talon calls on its own ship
+  ?:  &(=('GET' meth) ?=([%api %account ~] suffix))      (own (serve-my-account eyre-id args))
+  ?:  &(=('PUT' meth) ?=([%api %vendor ~] suffix))       (own (serve-set-vendor eyre-id jon))
+  ?:  &(=('GET' meth) ?=([%api %keys ~] suffix))         (own (serve-my-keys eyre-id))
+  ?:  &(=('POST' meth) ?=([%api %keys ~] suffix))        (own (serve-my-mint eyre-id jon))
+  ?:  &(=('DELETE' meth) ?=([%api %keys @ ~] suffix))    (own (serve-my-revoke eyre-id s2))
+  ?:  &(=('POST' meth) ?=([%api %checkout ~] suffix))    (own (serve-my-checkout eyre-id jon))
+  ?:  &(=('GET' meth) ?=([%api %inference ~] suffix))    (own (serve-inference eyre-id))
+  ::  leases are phase 5 and the subscription is phase 3
+  ?:  &(=('POST' meth) ?=([%api %lease ~] suffix))       (own (send-err eyre-id 501 'not yet'))
+  ?:  &(=('DELETE' meth) ?=([%api %lease ~] suffix))     (own (send-err eyre-id 501 'not yet'))
+  ?:  &(=('POST' meth) ?=([%api %'cancel-subscription' ~] suffix))
+    (own (send-err eyre-id 501 'not yet'))
   (send-err eyre-id 404 'no such route')
 ::  +ship-of: a ship named in a route. The segment carries its ~.
 ::
@@ -1785,12 +1950,22 @@
   (send-json eyre-id 200 (pairs:enjs:format ~[['added' (numb:enjs:format added)]]))
 ::  ==  the catalog
 ::
+::  +serve-catalog: our own catalog when this ship is nobody's customer
+::  or its own, which is the owner's editable rows; the vendor's public
+::  catalog, read live and never cached, when the vendor is elsewhere
+::
 ++  serve-catalog
   |=  eyre-id=@ta
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  jon=json  bind:m  (read-json (rf 1 / %'catalog.json'))
-  (send-json eyre-id 200 jon)
+  ;<  our=@p  bind:m  get-our:io
+  ;<  vendor=(unit @p)  bind:m  (vendor-of 1)
+  ?:  ?|(?=(~ vendor) =(u.vendor our))
+    ;<  jon=json  bind:m  (read-json (rf 1 / %'catalog.json'))
+    (send-json eyre-id 200 jon)
+  ;<  got=(unit json)  bind:m  (vendor-catalog 1)
+  ?~  got  (send-err eyre-id 502 'vendor unreachable')
+  (send-json eyre-id 200 u.got)
 ::  +serve-set-catalog: the whole catalog, replaced. A row naming a
 ::  provider that is not there is refused by index, the way the lib
 ::  names any other bad field.
@@ -2128,6 +2303,288 @@
   ::  request
   ;<  ~  bind:m  (poke-writer 1 op)
   (send-raw eyre-id status.res body.res)
+::  ==  Talon's routes, on the customer ship
+::
+::  +nap: park this fiber for a span. Only a request fiber uses it, and
+::  only to wait on something the client fiber is doing.
+::
+++  nap
+  |=  span=@dr
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  wir=wire  bind:m  (nonce:io /nap)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m  (set-timer:io wir (add now span))
+  ;<  ~  bind:m
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %poke * *]
+      ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+      ?.(=(wir !<(path q.sage.u.in)) [%skip ~] [%done ~])
+    ==
+  (cancel-timer:io wir)
+::  +vendor-of: the ship this one buys from, or ~
+::
+++  vendor-of
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(unit @p))
+  ^-  form:m
+  ;<  vj=json  bind:m  (read-json (rf up / %'vendor.json'))
+  (pure:m (slaw %p (gs:arm vj 'ship')))
+::  +prod-client: wake the client fiber. The payload says why; what to
+::  send is already in client.json.
+::
+++  prod-client
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  *  bind:m  (poke-soft:io (rf 1 / %'client.sig') [[/ %json] jon])
+  (pure:m ~)
+::  +fresh-nonce: an op's idempotency key, from entropy
+::
+++  fresh-nonce
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  (pure:m (secret-of:arm eny))
+::  +queue-at: one op onto the send queue under a nonce we chose
+::
+++  queue-at
+  |=  [n=@t payload=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  poke-writer  1
+  %-  pairs:enjs:format
+  :~  ['op' s+'note-op']
+      ['nonce' s+n]
+      ['payload' payload]
+      ['sent' b+|]
+  ==
+::  +held-keys: the inference keys this ship fetched
+::
+++  held-keys
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(list held-key:arm))
+  ^-  form:m
+  ;<  keys=json  bind:m  (read-json (rf up / %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  (pure:m (murn ~(tap by km) |=([k=@t j=json] (de-held:arm j))))
+::  +serve-my-account: the view this ship last read, with who it came
+::  from and how old it is. fresh=1 prods the client and waits.
+::
+++  serve-my-account
+  |=  [eyre-id=@ta args=quay:eyre]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  fresh=?  =('1' (fall (get-key:kv:html-utils 'fresh' args) ''))
+  ;<  our=@p  bind:m  get-our:io
+  ;<  vj=json  bind:m  (read-json (rf 1 / %'vendor.json'))
+  ;<  before=json  bind:m  (read-json (rf 1 / %'view.json'))
+  ;<  ~  bind:m
+    ?.  fresh  (pure:(fiber:fiber:nexus ,~) ~)
+    (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  ;<  doc=json  bind:m
+    ?.  fresh  (pure:(fiber:fiber:nexus ,json) before)
+    (await-fetched (gs:arm before 'fetched') 30)
+  ;<  now=@da  bind:m  get-time:io
+  =/  seen=(unit @da)  (gt:arm doc 'fetched')
+  =/  stale=@ud
+    ?~  seen  0
+    ?:  (lth now u.seen)  0
+    (div (sub now u.seen) ~s1)
+  =/  base=(map @t json)  ?:(?=([%o *] doc) p.doc ~)
+  =.  base  (~(put by base) 'vendor' s+(gs:arm vj 'ship'))
+  =.  base  (~(put by base) 'self' s+(scot %p our))
+  =.  base  (~(put by base) 'stale' (en-num:arm stale))
+  (send-json eyre-id 200 [%o base])
+::  +await-fetched: the view moved, or thirty seconds went by. The
+::  answer is whatever is stored either way.
+::
+++  await-fetched
+  |=  [was=@t left=@ud]
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ;<  doc=json  bind:m  (read-json (rf 1 / %'view.json'))
+  ?.  =(was (gs:arm doc 'fetched'))  (pure:m doc)
+  ?:  =(0 left)  (pure:m doc)
+  ;<  ~  bind:m  (nudge left)
+  ;<  ~  bind:m  (nap ~s1)
+  (await-fetched was (dec left))
+::  +serve-set-vendor: who this ship buys from. A fresh vendor is told
+::  hello at once, which is what opens the account over there.
+::
+++  serve-set-vendor
+  |=  [eyre-id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  got  (de-op-vendor:arm jon)
+  ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
+  =/  txt=@t  ?~(p.got '' (scot %p u.p.got))
+  ;<  ~  bind:m
+    (poke-writer 1 (pairs:enjs:format ~[['op' s+'set-vendor'] ['ship' s+txt]]))
+  ;<  ~  bind:m
+    ?~  p.got  (pure:(fiber:fiber:nexus ,~) ~)
+    ;<  n=@t  bind:(fiber:fiber:nexus ,~)  fresh-nonce
+    (queue-at n (en-inbox:arm [%hello ~]))
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+txt] ['ok' b+&]]))
+::  +serve-my-keys: the keys this ship holds, never their secrets
+::
+++  serve-my-keys
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  held=(list held-key:arm)  bind:m  (held-keys 1)
+  (send-json eyre-id 200 a+(turn held en-held-public:arm))
+::  +serve-my-mint: ask the vendor for a key and wait for it. Thirty
+::  seconds without one is 202 with the nonce, not a failure: the op is
+::  still queued and the next pass will land it.
+::
+++  serve-my-mint
+  |=  [eyre-id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  name=@t  (gs:arm jon 'name')
+  ?:  |(=('' name) (gth (met 3 name) max-name:arm))
+    (send-err eyre-id 400 'name: 1 to 200 bytes')
+  ;<  vendor=(unit @p)  bind:m  (vendor-of 1)
+  ?~  vendor  (send-err eyre-id 409 'vendor: not set')
+  ;<  held=(list held-key:arm)  bind:m  (held-keys 1)
+  =/  before=(set @t)  (sy (turn held |=(k=held-key:arm id.k)))
+  ;<  n=@t  bind:m  fresh-nonce
+  ;<  ~  bind:m  (queue-at n (en-inbox:arm [%mint-key name n]))
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  ;<  got=(unit held-key:arm)  bind:m  (await-key before 30)
+  ?~  got
+    %^  send-json  eyre-id  202
+    (pairs:enjs:format ~[['pending' b+&] ['nonce' s+n]])
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['id' s+id.u.got]
+      ['name' s+name.u.got]
+      ['made' (en-time:arm made.u.got)]
+      ['secret' s+(rap 3 id.u.got '.' secret.u.got ~)]
+  ==
+::  +await-key: a key id this ship did not hold a moment ago
+::
+++  await-key
+  |=  [before=(set @t) left=@ud]
+  =/  m  (fiber:fiber:nexus ,(unit held-key:arm))
+  ^-  form:m
+  ;<  held=(list held-key:arm)  bind:m  (held-keys 1)
+  =/  fresh=(list held-key:arm)
+    (skip held |=(k=held-key:arm (~(has in before) id.k)))
+  ?^  fresh  (pure:m `i.fresh)
+  ?:  =(0 left)  (pure:m ~)
+  ::  a nudge every third second, so a pass that peeked a moment too
+  ::  early is followed by one that does not
+  ;<  ~  bind:m  (nudge left)
+  ;<  ~  bind:m  (nap ~s1)
+  (await-key before (dec left))
+::  +nudge: prod the client every third second of a wait
+::
+++  nudge
+  |=  left=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  =(0 (mod left 3))  (pure:m ~)
+  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+::  +serve-my-revoke: the vendor is told to revoke it and this ship
+::  forgets it at once, so a key that is gone here is gone here even if
+::  the vendor is down
+::
+++  serve-my-revoke
+  |=  [eyre-id=@ta id=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  held=(list held-key:arm)  bind:m  (held-keys 1)
+  ?.  (lien held |=(k=held-key:arm =(id.k `@t`id)))
+    (send-err eyre-id 404 'no such key')
+  ;<  n=@t  bind:m  fresh-nonce
+  ;<  ~  bind:m  (queue-at n (en-inbox:arm [%drop-key `@t`id]))
+  ;<  ~  bind:m
+    (poke-writer 1 (pairs:enjs:format ~[['op' s+'forget-key'] ['id' s+`@t`id]]))
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  (send-json eyre-id 200 (pairs:enjs:format ~[['id' s+`@t`id] ['ok' b+&]]))
+::  +serve-my-checkout: ask the vendor to open a checkout and wait for
+::  the url to show in the view
+::
+++  serve-my-checkout
+  |=  [eyre-id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  rail=@t  (gs:arm jon 'rail')
+  ?.  |(=('stripe' rail) =('btcpay' rail))
+    (send-err eyre-id 400 'rail: stripe or btcpay')
+  =/  plan=@t  (gs:arm jon 'plan')
+  =/  amount=@ud  (gn:arm jon 'amount')
+  ?:  &(=('' plan) =(0 amount))  (send-err eyre-id 400 'plan or amount required')
+  ;<  vendor=(unit @p)  bind:m  (vendor-of 1)
+  ?~  vendor  (send-err eyre-id 409 'vendor: not set')
+  ;<  n=@t  bind:m  fresh-nonce
+  ;<  ~  bind:m  (queue-at n (en-inbox:arm [%checkout rail plan amount n]))
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  ;<  got=(unit json)  bind:m  (await-checkout n 30)
+  ?~  got
+    %^  send-json  eyre-id  202
+    (pairs:enjs:format ~[['pending' b+&] ['nonce' s+n]])
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['nonce' s+n]
+      ['url' s+(gs:arm u.got 'url')]
+      ['status' s+(gs:arm u.got 'status')]
+  ==
+++  await-checkout
+  |=  [n=@t left=@ud]
+  =/  m  (fiber:fiber:nexus ,(unit json))
+  ^-  form:m
+  ;<  doc=json  bind:m  (read-json (rf 1 / %'view.json'))
+  =/  row=json  (gj:arm (gj:arm doc 'checkouts') n)
+  ?:  ?=([%o *] row)  (pure:m `row)
+  ?:  =(0 left)  (pure:m ~)
+  ;<  ~  bind:m  (nudge left)
+  ;<  ~  bind:m  (nap ~s1)
+  (await-checkout n (dec left))
+::  +vendor-catalog: the vendor's public catalog, read live. Our own
+::  ship is read locally; another ship is peeked, which needs the
+::  vendor to have granted /public a peek on that file.
+::
+++  vendor-catalog
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(unit json))
+  ^-  form:m
+  ;<  our=@p  bind:m  get-our:io
+  ;<  vendor=(unit @p)  bind:m  (vendor-of up)
+  ?:  ?|(?=(~ vendor) =(u.vendor our))
+    ;<  jon=json  bind:m  (read-json (rf up / %'catalog-public.json'))
+    (pure:m `jon)
+  =/  road=road:tarball  [%& %& armillary-instance:arm %'catalog-public.json']
+  ;<  vw=(unit view:nexus)  bind:m  (peek-remote-wait u.vendor road)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  (pure:m (sang-json sang.u.vw))
+::  +serve-inference: the whole of Talon's integration. The newest key
+::  this ship holds, the vendor's proxy base and what it sells.
+::
+++  serve-inference
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  held=(list held-key:arm)  bind:m  (held-keys 1)
+  ?~  held  (send-err eyre-id 404 'no key yet')
+  =/  newest=held-key:arm
+    %+  roll  `(list held-key:arm)`t.held
+    |=  [k=held-key:arm best=_i.held]
+    ?:((gth made.k made.best) k best)
+  ;<  doc=json  bind:m  (read-json (rf 1 / %'view.json'))
+  =/  base=@t  (rap 3 (public-url-of doc) '/apps/armillary/v1' ~)
+  ;<  cat=(unit json)  bind:m  (vendor-catalog 1)
+  =/  models=(list @t)
+    ?.  ?=([~ %a *] cat)  ~
+    (turn p.u.cat |=(j=json ^-(@t (gs:arm j 'id'))))
+  =/  key=@t  (rap 3 id.newest '.' secret.newest ~)
+  (send-json eyre-id 200 (inference-json:arm 'proxy' base key models))
 ::  ==  the stub checkout, public
 ::
 ::  +safe-nonce: a nonce as it may appear in a URL and in HTML. Only
