@@ -940,4 +940,349 @@
   |=  jon=json
   ^-  (each settings @t)
   (de-settings (gj jon 'settings'))
+::  ==  the account channel over ames
+::
+::  +armillary-instance: where a desk install of this app sits on any
+::  ship. One ship addresses another's inbox and account view through
+::  this path, since a desk app cannot learn its own.
+::
+++  armillary-instance
+  ^-  path
+  /apps/'shell.shell'/desks/'armillary.desk'/desk/data/'armillary.armillary_app'
+::  +group-name: the usergroup that lets one customer ship read its own
+::  account view and nothing else. The ship's name without the sig, so
+::  ~wex reads armillary-wex.
+::
+++  group-name
+  |=  who=@p
+  ^-  @t
+  (rap 3 'armillary-' (rsh [3 1] (scot %p who)) ~)
+::  +is-comet: a self-signed identity. On the groundwire network a comet
+::  is paid for before ames will carry it, so the vendor takes them; a
+::  vendor elsewhere turns refuse_comets on.
+::
+++  is-comet  |=(who=@p ^-(? ?=(%pawn (clan:title who))))
+::  +$  inbox-op: everything a customer ship asks of its vendor. The
+::  source ship of the poke is the account: no op names a ship.
+::
++$  inbox-op
+  $%  [%hello ~]
+      [%refresh ~]
+      [%checkout rail=@t plan=@t amount=@ud nonce=@t]
+      [%mint-key name=@t nonce=@t]
+      [%got-key id=@t]
+      [%drop-key id=@t]
+      [%lease ~]
+      [%drop-lease ~]
+      [%cancel-subscription ~]
+  ==
+::  +de-inbox: one op from a poke, or the field that failed. A stranger
+::  sends this, so every branch is a clean refusal.
+::
+++  de-inbox
+  |=  jon=json
+  ^-  (each inbox-op @t)
+  =/  op=@t  (gs jon 'op')
+  ?:  =('hello' op)                (each-op [%hello ~])
+  ?:  =('refresh' op)              (each-op [%refresh ~])
+  ?:  =('lease' op)                (each-op [%lease ~])
+  ?:  =('drop-lease' op)           (each-op [%drop-lease ~])
+  ?:  =('cancel-subscription' op)  (each-op [%cancel-subscription ~])
+  ?:  =('checkout' op)
+    =/  rail=@t  (gs jon 'rail')
+    ?.  |(=('stripe' rail) =('btcpay' rail))  [%| 'rail: stripe or btcpay']
+    =/  nonce=@t  (gs jon 'nonce')
+    ?:  |(=('' nonce) (gth (met 3 nonce) max-id))  [%| 'nonce: 1 to 64 bytes']
+    =/  plan=@t  (gs jon 'plan')
+    =/  amount=@ud  (gn jon 'amount')
+    ?:  &(=('' plan) =(0 amount))  [%| 'plan or amount required']
+    (each-op [%checkout rail plan amount nonce])
+  ?:  =('mint-key' op)
+    =/  name=@t  (gs jon 'name')
+    ?:  |(=('' name) (gth (met 3 name) max-name))  [%| 'name: 1 to 200 bytes']
+    =/  nonce=@t  (gs jon 'nonce')
+    ?:  |(=('' nonce) (gth (met 3 nonce) max-id))  [%| 'nonce: 1 to 64 bytes']
+    (each-op [%mint-key name nonce])
+  ?:  =('got-key' op)
+    =/  id=@t  (gs jon 'id')
+    ?:  |(=('' id) (gth (met 3 id) max-id))  [%| 'id: 1 to 64 bytes']
+    (each-op [%got-key id])
+  ?:  =('drop-key' op)
+    =/  id=@t  (gs jon 'id')
+    ?:  |(=('' id) (gth (met 3 id) max-id))  [%| 'id: 1 to 64 bytes']
+    (each-op [%drop-key id])
+  [%| 'op: unknown']
+::  +each-op: a taken op, cast once so every branch above reads alike
+::
+++  each-op  |=(o=inbox-op ^-((each inbox-op @t) [%& o]))
+::  +en-inbox: the exact inverse of +de-inbox, so the customer side and
+::  the vendor side never disagree about the wire
+::
+++  en-inbox
+  |=  o=inbox-op
+  ^-  json
+  ?-    -.o
+      %hello                 (pairs:enjs:format ~[['op' s+'hello']])
+      %refresh               (pairs:enjs:format ~[['op' s+'refresh']])
+      %lease                 (pairs:enjs:format ~[['op' s+'lease']])
+      %drop-lease            (pairs:enjs:format ~[['op' s+'drop-lease']])
+      %cancel-subscription   (pairs:enjs:format ~[['op' s+'cancel-subscription']])
+      %checkout
+    %-  pairs:enjs:format
+    :~  ['op' s+'checkout']
+        ['rail' s+rail.o]
+        ['plan' s+plan.o]
+        ['amount' (en-num amount.o)]
+        ['nonce' s+nonce.o]
+    ==
+      %mint-key
+    %-  pairs:enjs:format
+    :~  ['op' s+'mint-key']
+        ['name' s+name.o]
+        ['nonce' s+nonce.o]
+    ==
+      %got-key   (pairs:enjs:format ~[['op' s+'got-key'] ['id' s+id.o]])
+      %drop-key  (pairs:enjs:format ~[['op' s+'drop-key'] ['id' s+id.o]])
+  ==
+::  +$  view: the account as its own ship reads it. The vendor writes it
+::  whole on every change and one usergroup lets that ship alone peek it.
+::
+::    keys_pending holds the secrets of keys minted and not yet fetched.
+::    That is the one place a secret crosses the wire, and a got-key
+::    clears it.
+::
++$  view
+  $:  ship=@p
+      balance=@sd
+      plan=@t
+      subscription=json
+      keys=(list json)
+      keys-pending=(list [nonce=@t id=@t name=@t secret=@t])
+      lease=json
+      checkouts=json
+      ledger=(list json)
+      public-url=@t
+      rev=@ud
+      updated=@da
+  ==
+++  en-view
+  |=  v=view
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['ship' s+(scot %p ship.v)]
+      ['balance' (en-sd balance.v)]
+      ['plan' s+plan.v]
+      ['subscription' subscription.v]
+      ['keys' a+keys.v]
+      :-  'keys_pending'
+      :-  %a
+      %+  turn  keys-pending.v
+      |=  [nonce=@t id=@t name=@t secret=@t]
+      ^-  json
+      %-  pairs:enjs:format
+      :~  ['nonce' s+nonce]
+          ['id' s+id]
+          ['name' s+name]
+          ['secret' s+secret]
+      ==
+      ['lease' lease.v]
+      ['checkouts' checkouts.v]
+      ['ledger' a+ledger.v]
+      ['public_url' s+public-url.v]
+      ['rev' (en-num rev.v)]
+      ['updated' (en-time updated.v)]
+  ==
+::  +de-view: a peeked view. A document without a ship or a rev is not a
+::  view, so the customer side keeps whatever it held.
+::
+++  de-view
+  |=  jon=json
+  ^-  (unit view)
+  ?.  ?=([%o *] jon)  ~
+  =/  who=(unit @p)  (slaw %p (gs jon 'ship'))
+  ?~  who  ~
+  ?.  (has-key jon 'rev')  ~
+  =/  pend=(list [nonce=@t id=@t name=@t secret=@t])
+    %+  turn  (ga jon 'keys_pending')
+    |=  j=json
+    ^-  [@t @t @t @t]
+    [(gs j 'nonce') (gs j 'id') (gs j 'name') (gs j 'secret')]
+  :-  ~
+  :*  u.who
+      (gsd jon 'balance')
+      (gs jon 'plan')
+      (gj jon 'subscription')
+      (ga jon 'keys')
+      pend
+      (gj jon 'lease')
+      (gj jon 'checkouts')
+      (ga jon 'ledger')
+      (gs jon 'public_url')
+      (gn jon 'rev')
+      (fall (gt jon 'updated') *@da)
+  ==
+::  +view-nonces: every nonce the view accounts for, from keys_pending
+::  and from checkouts. An op whose nonce is here landed on the vendor.
+::
+++  view-nonces
+  |=  v=view
+  ^-  (set @t)
+  =/  out=(set @t)
+    (~(gas in *(set @t)) (turn keys-pending.v |=([n=@t *] n)))
+  ?.  ?=([%o *] checkouts.v)  out
+  (~(gas in out) ~(tap in ~(key by p.checkouts.v)))
+::  ==  the customer's own keys
+::
+::  +$  held-key: an inference key this ship fetched. The secret is here
+::  because this ship is the customer: it is the bearer.
+::
++$  held-key  [id=@t name=@t secret=@t made=@da]
+++  en-held
+  |=  k=held-key
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['id' s+id.k]
+      ['name' s+name.k]
+      ['secret' s+secret.k]
+      ['made' (en-time made.k)]
+  ==
+++  de-held
+  |=  jon=json
+  ^-  (unit held-key)
+  ?.  ?=([%o *] jon)  ~
+  =/  id=@t  (gs jon 'id')
+  =/  secret=@t  (gs jon 'secret')
+  =/  made=(unit @da)  (gt jon 'made')
+  ?:  |(=('' id) =('' secret) ?=(~ made))  ~
+  `[id (gs jon 'name') secret u.made]
+::  +en-held-public: the same key as a read route answers it, with no
+::  secret, so only the mint ever shows one
+::
+++  en-held-public
+  |=  k=held-key
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['id' s+id.k]
+      ['name' s+name.k]
+      ['made' (en-time made.k)]
+  ==
+::  +inference-json: what a client needs to run, the whole of Talon's
+::  integration
+::
+++  inference-json
+  |=  [mode=@t base=@t key=@t models=(list @t)]
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['mode' s+mode]
+      ['base_url' s+base]
+      ['key' s+key]
+      ['models' a+(turn models |=(t=@t ^-(json s+t)))]
+  ==
+::  ==  the channel's writer ops, on the vendor
+::
+::  +de-op-view: the write-view payload
+::
+++  de-op-view
+  |=  jon=json
+  ^-  (each @p @t)
+  (ship-field jon)
+::  +de-op-pending: a minted key waiting to be fetched. This is the one
+::  writer op that carries a secret, and it goes to pending.json alone.
+::
+++  de-op-pending
+  |=  jon=json
+  ^-  (each [ship=@p id=@t secret=@t nonce=@t name=@t] @t)
+  =/  who  (ship-field jon)
+  ?:  ?=(%| -.who)  [%| p.who]
+  =/  id=@t  (gs jon 'id')
+  ?:  |(=('' id) (gth (met 3 id) max-id))  [%| 'id: 1 to 64 bytes']
+  =/  secret=@t  (gs jon 'secret')
+  ?:  =('' secret)  [%| 'secret: required']
+  =/  nonce=@t  (gs jon 'nonce')
+  ?:  |(=('' nonce) (gth (met 3 nonce) max-id))  [%| 'nonce: 1 to 64 bytes']
+  =/  name=@t  (gs jon 'name')
+  ?:  (gth (met 3 name) max-name)  [%| 'name: 1 to 200 bytes']
+  [%& [p.who id secret nonce name]]
+::  +de-op-drop-pending: the secret leaves the vendor once the customer
+::  says it has it
+::
+++  de-op-drop-pending
+  |=  jon=json
+  ^-  (each [ship=@p id=@t] @t)
+  (ship-and-id jon)
+::  +de-op-checkout: one checkout row on an account, keyed by its nonce
+::
+++  de-op-checkout
+  |=  jon=json
+  ^-  (each [ship=@p nonce=@t rail=@t plan=@t amount=@ud url=@t expires=@da status=@t] @t)
+  =/  who  (ship-field jon)
+  ?:  ?=(%| -.who)  [%| p.who]
+  =/  nonce=@t  (gs jon 'nonce')
+  ?:  |(=('' nonce) (gth (met 3 nonce) max-id))  [%| 'nonce: 1 to 64 bytes']
+  =/  status=@t  (gs jon 'status')
+  ?:  =('' status)  [%| 'status: required']
+  =/  url=@t  (gs jon 'url')
+  ?:  (gth (met 3 url) max-url)  [%| 'url: at most 500 bytes']
+  :-  %&
+  :*  p.who
+      nonce
+      (gs jon 'rail')
+      (gs jon 'plan')
+      (gn jon 'amount')
+      url
+      (fall (gt jon 'expires') *@da)
+      status
+  ==
+::  ==  the channel's writer ops, on the customer
+::
+::  +de-op-vendor: the vendor ship, or ~ to stop being anyone's customer
+::
+++  de-op-vendor
+  |=  jon=json
+  ^-  (each (unit @p) @t)
+  =/  raw=@t  (gs jon 'ship')
+  ?:  =('' raw)  [%& ~]
+  =/  who=(unit @p)  (slaw %p raw)
+  ?~(who [%| 'ship: not an @p'] [%& `u.who])
+::  +de-op-store-key: an inference key fetched from the vendor's view
+::
+++  de-op-store-key
+  |=  jon=json
+  ^-  (each held-key @t)
+  =/  k=(unit held-key)  (de-held (gj jon 'key'))
+  ?~  k  [%| 'key: id, secret and made are required']
+  ?:  (gth (met 3 name.u.k) max-name)  [%| 'name: 1 to 200 bytes']
+  [%& u.k]
+++  de-op-forget-key
+  |=  jon=json
+  ^-  (each @t @t)
+  =/  id=@t  (gs jon 'id')
+  ?:  |(=('' id) (gth (met 3 id) max-id))  [%| 'id: 1 to 64 bytes']
+  [%& id]
+::  +de-op-store-view: the peeked view, stored verbatim. The customer
+::  keeps what the vendor said rather than a shape of its own.
+::
+++  de-op-store-view
+  |=  jon=json
+  ^-  (each json @t)
+  =/  v=json  (gj jon 'view')
+  ?.  ?=([%o *] v)  [%| 'view: a JSON object is required']
+  [%& v]
+::  +de-op-note-op: an op queued for the vendor, by nonce. The op itself
+::  travels under payload, since op names the writer op.
+::
+++  de-op-note-op
+  |=  jon=json
+  ^-  (each [nonce=@t payload=json sent=?] @t)
+  =/  nonce=@t  (gs jon 'nonce')
+  ?:  |(=('' nonce) (gth (met 3 nonce) max-id))  [%| 'nonce: 1 to 64 bytes']
+  =/  pay=json  (gj jon 'payload')
+  ?.  ?=([%o *] pay)  [%| 'payload: a JSON object is required']
+  [%& [nonce pay (gb jon 'sent')]]
+++  de-op-drop-op
+  |=  jon=json
+  ^-  (each @t @t)
+  =/  nonce=@t  (gs jon 'nonce')
+  ?:  |(=('' nonce) (gth (met 3 nonce) max-id))  [%| 'nonce: 1 to 64 bytes']
+  [%& nonce]
 --

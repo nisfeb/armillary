@@ -338,4 +338,177 @@
     (expect-eq !>('~wex') !>((gs:arm e 'ship')))
     (expect-eq !>(`@sd`--100) !>((gsd:arm e 'amount')))
   ==
+::  ==  the account channel
+::
+++  test-group-name
+  ;:  weld
+    (expect-eq !>('armillary-wex') !>((group-name:arm ~wex)))
+    (expect-eq !>('armillary-sampel-palnet') !>((group-name:arm ~sampel-palnet)))
+  ==
+::  a comet is any identity past 64 bits; the literal name is sixteen
+::  syllables, so the test names one by its value instead
+++  test-is-comet
+  ;:  weld
+    (expect-eq !>(|) !>((is-comet:arm ~wex)))
+    (expect-eq !>(|) !>((is-comet:arm ~sampel-palnet-sampel-palnet)))
+    (expect-eq !>(&) !>((is-comet:arm `@p`(bex 100))))
+  ==
+++  test-de-inbox-plain
+  ;:  weld
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%hello ~]]) !>((de-inbox:arm (jo '{"op":"hello"}'))))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%refresh ~]]) !>((de-inbox:arm (jo '{"op":"refresh"}'))))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%lease ~]]) !>((de-inbox:arm (jo '{"op":"lease"}'))))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%drop-lease ~]]) !>((de-inbox:arm (jo '{"op":"drop-lease"}'))))
+    %-  expect-eq
+    :-  !>(`(each inbox-op:arm @t)`[%& [%cancel-subscription ~]])
+    !>((de-inbox:arm (jo '{"op":"cancel-subscription"}')))
+  ==
+++  test-de-inbox-keys
+  ;:  weld
+    %-  expect-eq
+    :-  !>(`(each inbox-op:arm @t)`[%& [%mint-key 'phone' 'n1']])
+    !>((de-inbox:arm (jo '{"op":"mint-key","name":"phone","nonce":"n1"}')))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%got-key 'abc']]) !>((de-inbox:arm (jo '{"op":"got-key","id":"abc"}'))))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%drop-key 'abc']]) !>((de-inbox:arm (jo '{"op":"drop-key","id":"abc"}'))))
+  ==
+++  test-de-inbox-checkout
+  ;:  weld
+    %-  expect-eq
+    :-  !>(`(each inbox-op:arm @t)`[%& [%checkout 'stripe' '' 1.000.000 'n2']])
+    !>((de-inbox:arm (jo '{"op":"checkout","rail":"stripe","amount":1000000,"nonce":"n2"}')))
+    %-  expect-eq
+    :-  !>(`(each inbox-op:arm @t)`[%& [%checkout 'btcpay' 'pro' 0 'n3']])
+    !>((de-inbox:arm (jo '{"op":"checkout","rail":"btcpay","plan":"pro","nonce":"n3"}')))
+  ==
+++  test-de-inbox-refusals
+  ;:  weld
+    (expect-eq !>('op: unknown') !>((why (de-inbox:arm (jo '{"op":"x"}')))))
+    (expect-eq !>('op: unknown') !>((why (de-inbox:arm (jo '{}')))))
+    %-  expect-eq
+    :-  !>('nonce: 1 to 64 bytes')
+    !>((why (de-inbox:arm (jo '{"op":"mint-key","name":"phone"}'))))
+    %-  expect-eq
+    :-  !>('name: 1 to 200 bytes')
+    !>((why (de-inbox:arm (jo '{"op":"mint-key","nonce":"n1"}'))))
+    %-  expect-eq
+    :-  !>('plan or amount required')
+    !>((why (de-inbox:arm (jo '{"op":"checkout","rail":"stripe","nonce":"n2"}'))))
+    %-  expect-eq
+    :-  !>('rail: stripe or btcpay')
+    !>((why (de-inbox:arm (jo '{"op":"checkout","rail":"cash","nonce":"n2","amount":10}'))))
+  ==
+::  +why: a refusal's text, so a test asks for the message by name
+++  why  |=(e=(each * @t) ^-(@t ?:(?=(%| -.e) p.e '')))
+::  +round: an op through en-inbox and back
+++  round  |=(o=inbox-op:arm ^-((each inbox-op:arm @t) (de-inbox:arm (en-inbox:arm o))))
+++  test-en-inbox-roundtrip
+  ;:  weld
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%hello ~]]) !>((round [%hello ~])))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%refresh ~]]) !>((round [%refresh ~])))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%lease ~]]) !>((round [%lease ~])))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%drop-lease ~]]) !>((round [%drop-lease ~])))
+    %-  expect-eq
+    :-  !>(`(each inbox-op:arm @t)`[%& [%cancel-subscription ~]])
+    !>((round [%cancel-subscription ~]))
+    %-  expect-eq
+    :-  !>(`(each inbox-op:arm @t)`[%& [%checkout 'stripe' '' 1.000.000 'n2']])
+    !>((round [%checkout 'stripe' '' 1.000.000 'n2']))
+    %-  expect-eq
+    :-  !>(`(each inbox-op:arm @t)`[%& [%mint-key 'phone' 'n1']])
+    !>((round [%mint-key 'phone' 'n1']))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%got-key 'abc']]) !>((round [%got-key 'abc'])))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%drop-key 'abc']]) !>((round [%drop-key 'abc'])))
+  ==
+::  ==  the account view
+::
+++  a-view
+  ^-  view:arm
+  :*  ~wex
+      --1.000.000
+      'pro'
+      [%o ~]
+      ~[(jo '{"id":"abc","name":"phone"}')]
+      ~[['n1' 'abc' 'phone' 'sss']]
+      ~
+      (jo '{"n2":{"url":"http://x/pay","status":"pending"}}')
+      ~[(jo '{"kind":"credit","amount":1000000}')]
+      'https://vendor.example'
+      7
+      t0
+  ==
+++  test-view-roundtrip
+  =/  back=(unit view:arm)  (de-view:arm (en-view:arm a-view))
+  ;:  weld
+    (expect-eq !>(`(unit view:arm)`[~ a-view]) !>(back))
+    (expect-eq !>(`(unit view:arm)`~) !>((de-view:arm (jo '{"rev":1}'))))
+    (expect-eq !>(`(unit view:arm)`~) !>((de-view:arm (jo '{"ship":"~wex"}'))))
+  ==
+++  test-view-nonces
+  =/  ns=(set @t)  (view-nonces:arm a-view)
+  ;:  weld
+    (expect-eq !>(&) !>((~(has in ns) 'n1')))
+    (expect-eq !>(&) !>((~(has in ns) 'n2')))
+    (expect-eq !>(|) !>((~(has in ns) 'n9')))
+    (expect-eq !>(`@ud`2) !>(~(wyt in ns)))
+  ==
+::  ==  the customer's own keys
+::
+++  test-held-key
+  =/  k=held-key:arm  ['abc' 'phone' 'sss' t0]
+  =/  back=(unit held-key:arm)  (de-held:arm (en-held:arm k))
+  =/  pub=json  (en-held-public:arm k)
+  ;:  weld
+    (expect-eq !>(`(unit held-key:arm)`[~ k]) !>(back))
+    (expect-eq !>('') !>((gs:arm pub 'secret')))
+    (expect-eq !>('abc') !>((gs:arm pub 'id')))
+    (expect-eq !>(`(unit held-key:arm)`~) !>((de-held:arm (jo '{"id":"abc"}'))))
+  ==
+++  test-inference-json
+  =/  j=json  (inference-json:arm 'proxy' 'http://x/v1' 'abc.sss' ~['stub/alpha' 'stub/beta'])
+  ;:  weld
+    (expect-eq !>('proxy') !>((gs:arm j 'mode')))
+    (expect-eq !>('http://x/v1') !>((gs:arm j 'base_url')))
+    (expect-eq !>('abc.sss') !>((gs:arm j 'key')))
+    (expect-eq !>(`@ud`2) !>((lent (ga:arm j 'models'))))
+  ==
+::  ==  the channel's writer ops
+::
+++  test-de-op-pending
+  =/  full=@t  '{"ship":"~wex","id":"abc","secret":"s","nonce":"n1","name":"phone"}'
+  ;:  weld
+    (expect !>((taken (de-op-pending:arm (jo full)))))
+    %-  expect-eq
+    :-  !>('secret: required')
+    !>((why (de-op-pending:arm (jo '{"ship":"~wex","id":"abc","nonce":"n1"}'))))
+    (expect !>((refused (de-op-pending:arm (jo '{"id":"abc"}')))))
+  ==
+++  test-de-op-checkout
+  =/  full=@t
+    '{"ship":"~wex","nonce":"n2","rail":"stripe","amount":10,"url":"u","status":"pending"}'
+  ;:  weld
+    (expect !>((taken (de-op-checkout:arm (jo full)))))
+    %-  expect-eq
+    :-  !>('status: required')
+    !>((why (de-op-checkout:arm (jo '{"ship":"~wex","nonce":"n2"}'))))
+  ==
+++  test-de-op-vendor
+  ;:  weld
+    (expect-eq !>(`(each (unit @p) @t)`[%& `~wex]) !>((de-op-vendor:arm (jo '{"ship":"~wex"}'))))
+    (expect-eq !>(`(each (unit @p) @t)`[%& ~]) !>((de-op-vendor:arm (jo '{"ship":""}'))))
+    (expect !>((refused (de-op-vendor:arm (jo '{"ship":"~not-a-ship"}')))))
+  ==
+++  test-de-op-client
+  =/  kj=@t
+    '{"key":{"id":"abc","name":"phone","secret":"s","made":"2026-09-19T22:05:00Z"}}'
+  ;:  weld
+    (expect !>((taken (de-op-store-key:arm (jo kj)))))
+    (expect !>((refused (de-op-store-key:arm (jo '{"key":{"id":"abc"}}')))))
+    (expect !>((taken (de-op-forget-key:arm (jo '{"id":"abc"}')))))
+    (expect !>((refused (de-op-forget-key:arm (jo '{}')))))
+    (expect !>((taken (de-op-store-view:arm (jo '{"view":{"ship":"~wex","rev":1}}')))))
+    (expect !>((refused (de-op-store-view:arm (jo '{}')))))
+    (expect !>((taken (de-op-note-op:arm (jo '{"nonce":"n1","payload":{"op":"hello"}}')))))
+    (expect !>((refused (de-op-note-op:arm (jo '{"nonce":"n1"}')))))
+    (expect !>((taken (de-op-drop-op:arm (jo '{"nonce":"n1"}')))))
+  ==
 --
