@@ -280,6 +280,23 @@ check('a key on a closed account is 403', code == 403, (code, d))
 code, d = curl('POST', API + '/accounts/' + SHIP + '/keys', {'name': 'after'})
 check('a mint on a closed account is 409', code == 409, (code, d))
 
+print('the stub pay page')
+PAY = HOST + '/apps/armillary/pay/stub'
+code, d = curl('GET', PAY + '?ship=' + SHIP + '&nonce=gate-nonce', jar=None)
+check('the pay page answers 200 without a cookie', code == 200 and 'Pay' in str(d), (code, str(d)[:200]))
+code, d = curl('GET', PAY + '?ship=nope&nonce=gate-nonce', jar=None)
+check('a pay page for a bad ship is 400', code == 400, (code, d))
+code, d = curl('POST', PAY, {'ship': SHIP, 'nonce': 'gate-nonce'}, jar=None)
+check('a nonce that is not a checkout is 404', code == 404 and 'no such checkout' in err_of(d), (code, d))
+curl('PUT', API + '/settings', {'markup_pct': MARKUP, 'min_topup': 5000000, 'public_url': '',
+                                'mode': 'live', 'refuse_comets': False})
+settle()
+code, d = curl('POST', PAY, {'ship': SHIP, 'nonce': 'gate-nonce'}, jar=None)
+check('the stub rail is refused in live mode', code == 403 and 'stub mode only' in err_of(d), (code, d))
+curl('PUT', API + '/settings', {'markup_pct': MARKUP, 'min_topup': 5000000, 'public_url': '',
+                                'mode': 'stub', 'refuse_comets': False})
+settle()
+
 print('the audit ring')
 code, log = curl('GET', API + '/log')
 text = json.dumps(log)

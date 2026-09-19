@@ -193,10 +193,11 @@ Fake ships derive every keypair from the `@p`, so anything key-dependent behaves
 4. Unit tests green on `~wex`: `-test /~wex/grubbery/<rev>/tests/lib/armillary ~`, with `<rev>` the revision the `|commit %grubbery` before it printed.
 5. `python3 scripts/fake-provider.py 3399 stub-key` running in the background. The gate starts nothing.
 6. `python3 scripts/api-matrix.py http://localhost:8080 /tmp/wex.cookies 3399` prints `ALL OK`, twice in a row. It sweeps the account and the provider it made before it starts and after it finishes, so a second run is a real second run.
-7. `python3 scripts/page-smoke.py http://localhost:8080 /tmp/wex.cookies` prints `ALL OK`.
-8. Open `/apps/armillary` on `~wex` in a browser with the owner cookie: add a provider, import, enable a row, mint a key, credit a dollar, and see the debit a completion leaves.
-9. `git push origin main`, then on `~wex`: `POST /grubbery/forge/api/run {"repo":"armillary.git_repo","command":"pull"}`, and within a minute the desk's root `version.json` reads the new number and the instance's `bang` is `null`.
-10. The ricsul steps are sneagan's: the catalog line, the kernel commit, the sync, the consent, the publish.
+7. `python3 scripts/ship-matrix.py http://localhost:8080 /tmp/wex.cookies` prints `ALL OK`, twice in a row: the account channel with the ship as its own customer. With `PEER PJAR` as well it runs the same sequence between two ships, which needs section 9's install recipe first.
+8. `python3 scripts/page-smoke.py http://localhost:8080 /tmp/wex.cookies` prints `ALL OK`.
+9. Open `/apps/armillary` on `~wex` in a browser with the owner cookie: add a provider, import, enable a row, mint a key, credit a dollar, and see the debit a completion leaves. With `vendor.json` naming `~wex` itself, click the Account, Keys and Catalog views too.
+10. `git push origin main`, then on `~wex`: `POST /grubbery/forge/api/run {"repo":"armillary.git_repo","command":"pull"}`, and within a minute the desk's root `version.json` reads the new number and the instance's `bang` is `null`. The ask changes whenever the weir does, so re-approve it on `/apps/grubbery/permits` and reload after a release that added a road.
+11. The ricsul steps are sneagan's: the catalog line, the kernel commit, the sync, the consent, the publish.
 
 ##  9. Ricsul before publishing: not there yet
 
@@ -217,3 +218,17 @@ Opening it to beta testers without publishing it:
 3. Each tester, on a ship running grubbery: `POST /apps/grubbery/desks/add {"name":"armillary","code":"~ricsul-bilwyt/apps/shell.shell/desks/armillary.desk/desk/code"}`, then approve the ask when the desk prompts, then open `/apps/armillary`.
 
 A vendor is not a thing you hand out casually: whoever installs armillary and points it at a real provider key is spending the owner's money on that key. Publishing proper is the stock desk line beside calendar's in `gub/nex/shell.hoon` and opening the desk to `/public`; nothing about a beta group has to be undone first.
+
+### Two ships from one, for the channel gate
+
+`scripts/ship-matrix.py` with four arguments runs the account channel between two ships, which needs armillary installed on both. With `~wex` as the vendor and `~feb` as the customer, over HTTP with each ship's owner cookie:
+
+1. On `~wex`, open the desk's code to every ship: `POST /grubbery/desk/armillary/share {"add":"/public"}`.
+2. On `~feb`, follow it: `POST /apps/grubbery/desks/add {"name":"armillary","code":"~wex/apps/shell.shell/desks/armillary.desk/desk/code"}`.
+3. Poll `~feb`'s instance until the code arrives and the compile settles: `GET /grubbery/ball/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app?info=1` every fifteen seconds, for at most three minutes. A bang string is a compile error, not a slow sync.
+4. Approve the ask on `~feb`: `POST /apps/grubbery/permits {"action":"approve-weir","app":"/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app","granted":{"poke":["/sys/bowl.sig","/sys/eyre/","/sys/iris/","/sys/behn/","/sys/gall/","/sys/ames/registry"],"peek":["/sys/link/","/sys/ames/ships/","/sys/ames/usergroups/"],"make":["/sys/ames/usergroups/"]}}`, then `POST /apps/grubbery/permits/reload {"app":"<the same app path>"}`, then read the weir back.
+5. Run the gate: `python3 scripts/ship-matrix.py http://localhost:8080 <wex jar> http://localhost:8081 <feb jar>`, with the stub provider listening on 3399.
+
+A customer ship needs the four customer roads and nothing else, but the ten-road grant is what the desk asks for and approving it whole is one prompt rather than an argument about which half of the app this ship is.
+
+Two ships on different grubbery generations can print `send to ~feb timed out` on the console for a poke that landed. The code treats a timeout as unknown rather than failure and peeks the view, which is the truth; the gate does the same.

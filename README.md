@@ -10,7 +10,7 @@ You connect the upstream providers you already pay for, import their model lists
 
 Every amount on the ship is an integer number of microdollars, one dollar being 1,000,000, and a charge always rounds up. An account's ledger is append-only and the balance is the fold over it, so the cached number on the account row can always be rebuilt from the rows that are the truth.
 
-This is phase 1: the vendor half, the proxy path, and a stub provider to prove it against. Accounts over ames, Stripe and BTCPay payments, and direct provider leases are phases 2 to 5.
+This is phase 2: the vendor half, the proxy path, and the account channel over ames, with a stub payment rail to prove the whole loop against. Stripe and BTCPay payments and direct provider leases are phases 3 to 5.
 
 ## Try it
 
@@ -114,14 +114,47 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 | `DELETE /api/accounts/<ship>` | delete the account, its keys and its whole ledger. Owner only, and irreversible: this exists so the gate can leave the ship as it found it, and nothing on the page calls it |
 | `GET /api/log` | the audit ring, the last 500 writer outcomes, newest first. No secret ever reaches it |
 
+### On a customer ship, owner cookie
+
+These are what a client on the customer's own ship calls, over the cookie it already has. `docs/channel.md` is how the channel underneath them works.
+
+| route | answers |
+|---|---|
+| `GET /api/account` | the last view this ship read from its vendor, plus `vendor`, `self` and `stale` (seconds since the read). `?fresh=1` peeks the vendor first and waits up to thirty seconds |
+| `PUT /api/vendor` | `{"ship"}`: who this ship buys from, and a `hello` to open the account there. `{"ship": ""}` clears it |
+| `GET /api/keys` | the inference keys this ship holds, never their secrets |
+| `POST /api/keys` | `{"name"}`: ask the vendor for a key and wait for it. Answers `{"id", "name", "secret"}` once, or 202 `{"pending": true, "nonce"}` after thirty seconds, which is not a failure |
+| `DELETE /api/keys/<id>` | tell the vendor to revoke it and forget it here at once |
+| `POST /api/checkout` | `{"rail", "plan" or "amount"}`: open a checkout and answer `{"url"}`, or 202 with the nonce |
+| `GET /api/inference` | everything a client needs: `{"mode": "proxy", "base_url", "key", "models"}`. 404 `no key yet` when this ship holds none |
+| `GET /api/catalog` | the vendor's public catalog with prices, read live; 502 `vendor unreachable` when the vendor does not answer. On a ship that is nobody's customer this is the owner's own catalog instead |
+| `POST /api/lease`, `DELETE /api/lease`, `POST /api/cancel-subscription` | 501 `not yet`. Phases 3 and 5 |
+
+### Being a customer
+
+A customer is a ship, and its account id is its `@p`. Point it at a vendor and it opens the account itself:
+
+```bash
+curl -s -b jar -H 'content-type: application/json' -X PUT "$API/vendor" -d '{"ship": "~wex"}'
+curl -s -b jar "$API/account?fresh=1"
+curl -s -b jar -H 'content-type: application/json' -X POST "$API/keys" -d '{"name": "phone"}'
+curl -s -b jar "$API/inference"
+```
+
+The ops go over ames from this ship's armillary desk into the vendor's inbox, signed by ames, so the source ship is the identity and no password or claim token exists. The answers come back in an account view on the vendor that this ship alone may peek, through a usergroup the vendor makes for it. A minted key's secret crosses that way once and is cleared as soon as this ship says it has it.
+
+Topping up opens a checkout with the vendor and answers a URL to open in a browser. In stub mode that URL is the vendor's own page with one button and no money moves, which is how the whole loop is proved without a rail.
+
+A ship can be its own customer: point `vendor.json` at itself and the page shows both halves with a note saying so. That is what `scripts/ship-matrix.py` runs against with two arguments.
+
 Live updates come from the instance's change beacon, streamed through grubbery's keep-SSE at `/grubbery/api/keep/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/beacon/rev`. It moves once per write that changed something, and a client that sees it move refetches what it shows. A write answers before the writer applies it, so a read right after one may still be a moment behind.
 
 ### The repository
 
 - `code/` is the desk: the nexus at `code/nex/armillary/app.hoon` with the page beside it, the model in `code/lib/armillary.hoon` (pure, import-free, unit-tested), the marcs under `code/mar`. `code/version.json` is what replicates.
 - `tests/lib/armillary.hoon` is the unit suite for the model, run with `-test` on a dev ship.
-- `scripts/` holds the gates, all against a dev ship: `api-matrix.py` (the story above, over HTTP), `page-smoke.py`, `fake-provider.py` (the OpenAI-compatible stub they run against), `code-closure.py` and `weir-check.py`.
-- `docs/`: the design at `docs/superpowers/specs/2026-09-19-armillary-design.md` and the plans under `docs/superpowers/plans`; `docs/releasing.md` for how a release reaches ricsul and its subscribers.
+- `scripts/` holds the gates, all against a dev ship: `api-matrix.py` (the story above, over HTTP), `ship-matrix.py` (the account channel, one ship or two), `page-smoke.py`, `fake-provider.py` (the OpenAI-compatible stub they run against), `code-closure.py` and `weir-check.py`.
+- `docs/`: the design at `docs/superpowers/specs/2026-09-19-armillary-design.md` and the plans under `docs/superpowers/plans`; `docs/channel.md` for the account channel over ames; `docs/releasing.md` for how a release reaches ricsul and its subscribers.
 - Family: [lattice](https://github.com/nisfeb/lattice), [auspex](https://github.com/nisfeb/auspex), [calendar](https://github.com/nisfeb/calendar), [orrery](https://github.com/nisfeb/orrery), [register](https://github.com/nisfeb/register), installed from `~ricsul-bilwyt` the same way.
 
 © nisfeb
