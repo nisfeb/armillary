@@ -16,15 +16,16 @@ Everything a customer ship does that is not inference is a JSON op poked from it
 |---|---|---|
 | `hello` | | opens the account, makes the ship's usergroup, writes the view |
 | `refresh` | | rewrites the view |
-| `checkout` | `rail`, `plan` or `amount`, `nonce` | writes a checkout row into the view. In stub mode the url is the vendor's own `/pay/stub` page; in live mode the row says `unavailable` until phase 3 |
+| `checkout` | `rail`, `plan` or `amount`, `nonce` | writes a checkout row into the view. In stub mode the url is the vendor's own `/pay/stub` page; in live mode it is a Stripe Checkout Session, and a refusal is a row with status `refused` and a `note` saying which field was wrong. `docs/payments.md` |
 | `mint-key` | `name`, `nonce` | mints an inference key, stores the salted hash, and writes `{nonce, id, name, secret}` into the view's `keys_pending` |
 | `got-key` | `id` | clears that secret from `pending.json` and from the view |
 | `drop-key` | `id` | revokes the key on the poking ship's account |
-| `lease`, `drop-lease`, `cancel-subscription` | | noted as `not yet` in `/tr/inbox` and dropped. Phases 3 and 5 |
+| `cancel-subscription` | | asks Stripe to stop the subscription renewing. The row on the account stays until `customer.subscription.deleted` arrives |
+| `lease`, `drop-lease` | | noted as `not yet` in `/tr/inbox` and dropped. Phase 5 |
 
 ## The view
 
-`/accounts/<ship>/view.json` on the vendor holds `ship`, `balance`, `plan`, `subscription`, `keys`, `keys_pending`, `lease`, `checkouts`, `ledger` (the last 50 rows), `public_url`, `rev` and `updated`. The customer stores what it read verbatim in its own `/view.json` with a `fetched` stamp, and `GET /api/account` answers that plus `vendor`, `self` and `stale`.
+`/accounts/<ship>/view.json` on the vendor holds `ship`, `balance`, `plan`, `subscription`, `keys`, `keys_pending`, `lease`, `checkouts`, `ledger` (the last 50 rows), `public_url`, `rev` and `updated`. The view's `subscription` is `{active, renews}` and never the Stripe ids: those are the vendor's, and only the owner's own read of the account carries them. A checkout row is `{nonce, rail, plan, amount, url, sid, expires, status, note}`. The customer stores what it read verbatim in its own `/view.json` with a `fetched` stamp, and `GET /api/account` answers that plus `vendor`, `self` and `stale`.
 
 `keys_pending` is the one place a secret crosses the wire. It is there because the ship it belongs to is the only ship that may peek the file, and it goes as soon as that ship says `got-key`. A key revoked or an account closed before the fetch clears the row too, so nothing is left waiting for nobody.
 

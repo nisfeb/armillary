@@ -97,7 +97,7 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 
 | route | answers |
 |---|---|
-| `GET` and `PUT /api/settings` | markup, minimum top-up, public URL, mode, `refuse_comets`; secrets masked on read |
+| `GET` and `PUT /api/settings` | markup, minimum top-up, public URL, mode, `refuse_comets`, the Stripe key, the webhook signing secret and the Stripe API base; both secrets masked on read, a blank field keeps the stored one and a JSON `null` clears it |
 | `GET /api/providers` | every provider, both secrets masked |
 | `POST /api/providers` | a new row; 409 when the id is taken |
 | `PUT /api/providers/<id>` | an edit; 409 when the id is unknown. A blank secret keeps the stored one, a JSON `null` clears it |
@@ -105,14 +105,28 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 | `POST /api/providers/<id>/test` | one tiny chat completion; answers `{"status", "model", "text"}` |
 | `POST /api/providers/<id>/import` | pull `GET <base_url>/models` and fold the new ids in as disabled rows; answers `{"added": <n>}` |
 | `GET` and `PUT /api/catalog` | the whole catalog, replaced whole. A row on an unknown provider is 400 `row <i> provider: unknown` |
+| `GET /api/plans` | every plan, by id. On a customer ship this is the vendor's list instead, read live |
+| `POST /api/plans` | a new plan; 409 when the id is taken |
+| `PUT /api/plans/<id>` | an edit; 409 when the id is unknown. A blank `stripe_price` keeps the stored one |
+| `DELETE /api/plans/<id>` | drop it; 409 while an open subscription names it |
+| `POST /api/plans/<id>/stripe` | make the Product and the Price on Stripe and store the Price id. 400 `stripe_key: not set`, 400 on a top-up plan, which needs none, 502 with Stripe's own message when it refuses |
 | `GET /api/accounts?q=` | every account with its balance and key count; `q` is a substring of the ship |
 | `GET /api/accounts/<ship>` | the account, its keys with no salt and no hash, and the newest 100 ledger rows |
 | `POST /api/accounts/<ship>/keys` | `{"name"}`: mint. Opens the account when there is none. The secret is answered once |
 | `DELETE /api/accounts/<ship>/keys/<kid>` | revoke |
 | `POST /api/accounts/<ship>/credit` and `/refund` | `{"amount", "note"}`: owner rows in the ledger. A repeated `ref` is 409 `ref: already recorded` |
 | `POST /api/accounts/<ship>/close` | revoke every key, keep the ledger |
+| `POST /api/accounts/<ship>/clear-subscription` | forget a subscription Stripe says is gone; 409 when there is none |
 | `DELETE /api/accounts/<ship>` | delete the account, its keys and its whole ledger. Owner only, and irreversible: this exists so the gate can leave the ship as it found it, and nothing on the page calls it |
 | `GET /api/log` | the audit ring, the last 500 writer outcomes, newest first. No secret ever reaches it |
+
+### Public, no cookie
+
+| route | answers |
+|---|---|
+| `POST /hooks/stripe` | Stripe's webhook. The body is trusted for the event type and the object id and nothing else; the object is read back from Stripe before anything is credited. A bad or missing signature is 400 when the signing secret is set; everything else answers 200, including a failed read |
+| `GET /pay/return?ship&sid` | where Stripe sends the browser. It verifies the session itself, so a payment lands even when the webhook does not. `&cancelled=1` says so instead |
+| `GET` and `POST /pay/stub` | the stub rail's own page, in stub mode only |
 
 ### On a customer ship, owner cookie
 
@@ -125,10 +139,11 @@ These are what a client on the customer's own ship calls, over the cookie it alr
 | `GET /api/keys` | the inference keys this ship holds, never their secrets |
 | `POST /api/keys` | `{"name"}`: ask the vendor for a key and wait for it. Answers `{"id", "name", "secret"}` once, or 202 `{"pending": true, "nonce"}` after thirty seconds, which is not a failure |
 | `DELETE /api/keys/<id>` | tell the vendor to revoke it and forget it here at once |
-| `POST /api/checkout` | `{"rail", "plan" or "amount"}`: open a checkout and answer `{"url"}`, or 202 with the nonce |
+| `POST /api/checkout` | `{"rail", "plan" or "amount"}`: open a checkout and answer `{"url"}`, or 202 with the nonce. 502 with the vendor's reason when the vendor refused it |
+| `POST /api/cancel-subscription` | ask the vendor to stop the subscription renewing; 202, and the view says when Stripe confirms |
 | `GET /api/inference` | everything a client needs: `{"mode": "proxy", "base_url", "key", "models"}`. 404 `no key yet` when this ship holds none |
 | `GET /api/catalog` | the vendor's public catalog with prices, read live; 502 `vendor unreachable` when the vendor does not answer. On a ship that is nobody's customer this is the owner's own catalog instead |
-| `POST /api/lease`, `DELETE /api/lease`, `POST /api/cancel-subscription` | 501 `not yet`. Phases 3 and 5 |
+| `POST /api/lease`, `DELETE /api/lease` | 501 `not yet`. Phase 5 |
 
 ### Being a customer
 
@@ -143,7 +158,7 @@ curl -s -b jar "$API/inference"
 
 The ops go over ames from this ship's armillary desk into the vendor's inbox, signed by ames, so the source ship is the identity and no password or claim token exists. The answers come back in an account view on the vendor that this ship alone may peek, through a usergroup the vendor makes for it. A minted key's secret crosses that way once and is cleared as soon as this ship says it has it.
 
-Topping up opens a checkout with the vendor and answers a URL to open in a browser. In stub mode that URL is the vendor's own page with one button and no money moves, which is how the whole loop is proved without a rail.
+Topping up opens a checkout with the vendor and answers a URL to open in a browser. In stub mode that URL is the vendor's own page with one button and no money moves, which is how the whole loop is proved without a rail. In live mode it is a Stripe Checkout Session, and `docs/payments.md` is how that half works.
 
 A ship can be its own customer: point `vendor.json` at itself and the page shows both halves with a note saying so. That is what `scripts/ship-matrix.py` runs against with two arguments.
 
@@ -152,9 +167,10 @@ Live updates come from the instance's change beacon, streamed through grubbery's
 ### The repository
 
 - `code/` is the desk: the nexus at `code/nex/armillary/app.hoon` with the page beside it, the model in `code/lib/armillary.hoon` (pure, import-free, unit-tested), the marcs under `code/mar`. `code/version.json` is what replicates.
-- `tests/lib/armillary.hoon` is the unit suite for the model, run with `-test` on a dev ship.
-- `scripts/` holds the gates, all against a dev ship: `api-matrix.py` (the story above, over HTTP), `ship-matrix.py` (the account channel, one ship or two), `page-smoke.py`, `fake-provider.py` (the OpenAI-compatible stub they run against), `code-closure.py` and `weir-check.py`.
-- `docs/`: the design at `docs/superpowers/specs/2026-09-19-armillary-design.md` and the plans under `docs/superpowers/plans`; `docs/channel.md` for the account channel over ames; `docs/releasing.md` for how a release reaches ricsul and its subscribers.
+- `code/lib/armillary-http.hoon` and `code/lib/armillary-stripe.hoon` are the card rail's pure half: percent encoding, form bodies, HMAC-SHA256 and the Stripe request builders and readers. Import-free like the model, so each one builds in both places, which is why the small encoders appear in both.
+- `tests/lib/armillary.hoon`, `tests/lib/armillary-http.hoon` and `tests/lib/armillary-stripe.hoon` are the unit suites, run with `-test` on a dev ship.
+- `scripts/` holds the gates, all against a dev ship: `api-matrix.py` (the story above, over HTTP), `ship-matrix.py` (the account channel and the card rail, one ship or two), `page-smoke.py`, `fake-provider.py` (the OpenAI-compatible stub) and `fake-stripe.py` (the Stripe stub), `code-closure.py` and `weir-check.py`. `live-matrix.py` is run by hand against Stripe test mode.
+- `docs/`: the design at `docs/superpowers/specs/2026-09-19-armillary-design.md` and the plans under `docs/superpowers/plans`; `docs/channel.md` for the account channel over ames; `docs/payments.md` for the card rail; `docs/releasing.md` for how a release reaches ricsul and its subscribers.
 - Family: [lattice](https://github.com/nisfeb/lattice), [auspex](https://github.com/nisfeb/auspex), [calendar](https://github.com/nisfeb/calendar), [orrery](https://github.com/nisfeb/orrery), [register](https://github.com/nisfeb/register), installed from `~ricsul-bilwyt` the same way.
 
 © nisfeb

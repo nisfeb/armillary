@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""api-matrix.py HOST JAR PROVIDER_PORT
-The HTTP gate for armillary: spec sections 4, 5 and 8 against a stub
-provider. HOST like http://localhost:8080; JAR a curl cookie jar from
+"""api-matrix.py HOST JAR PROVIDER_PORT [STRIPE_PORT]
+The HTTP gate for armillary: spec sections 4, 5, 7 and 8 against two
+stubs. HOST like http://localhost:8080; JAR a curl cookie jar from
 POST /~/login; PROVIDER_PORT the port fake-provider.py listens on with
-the key "stub-key". It starts nothing: the runner starts the stub first.
-Exits 1 on any failure. Safe to rerun: it deletes the account and the
-provider it made, both before it starts and after it finishes."""
-import json, subprocess, sys, time
+the key "stub-key"; STRIPE_PORT the port fake-stripe.py listens on with
+the secret "whsec_gate" and this HOST as its ship url, 3400 by default.
+It starts nothing: the runner starts both stubs first. Exits 1 on any
+failure. Safe to rerun: it deletes the account, the provider and the
+plans it made, both before it starts and after it finishes."""
+import hashlib, hmac, json, subprocess, sys, time
 
 HOST, JAR, PORT = sys.argv[1], sys.argv[2], sys.argv[3]
+SPORT = sys.argv[4] if len(sys.argv) > 4 else '3400'
+SSTUB = 'http://127.0.0.1:' + SPORT
+WHSEC = 'whsec_gate'
+STRIPE_KEY = 'sk_test_gate'
+HOOK = HOST + '/apps/armillary/hooks/stripe'
+RETURN = HOST + '/apps/armillary/pay/return'
 API = HOST + '/apps/armillary/api'
 V1 = HOST + '/apps/armillary/v1'
 STUB = 'http://127.0.0.1:' + PORT
@@ -50,6 +58,12 @@ def settle(seconds=1.0):
     time.sleep(seconds)
 
 
+def self_of():
+    """which ship this is, from its own account route"""
+    code, d = curl('GET', API + '/account')
+    return dictish(d).get('self', '')
+
+
 def message(text):
     return [{'role': 'user', 'content': text}]
 
@@ -67,14 +81,65 @@ def ledger():
     return dictish(d).get('ledger', []) if code == 200 else []
 
 
+def settings(**over):
+    """the whole settings document, with the fields this call changes"""
+    doc = {'markup_pct': MARKUP, 'min_topup': 5000000, 'public_url': '',
+           'mode': 'stub', 'refuse_comets': False, 'stripe_key': '',
+           'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com'}
+    doc.update(over)
+    return curl('PUT', API + '/settings', doc)
+
+
+def signed(payload, skew=0):
+    """a stripe-signature header over the raw body, as Stripe makes one"""
+    when = int(time.time()) + skew
+    mac = hmac.new(WHSEC.encode(), ('%d.%s' % (when, payload)).encode(), hashlib.sha256)
+    return 't=%d,v1=%s' % (when, mac.hexdigest())
+
+
+def hook(event_type, oid, sig=None):
+    """post a webhook the way the stub does, signed unless told otherwise"""
+    payload = json.dumps({'type': event_type, 'data': {'object': {'id': oid}}})
+    cmd = ['curl', '-s', '-m', '180', '-X', 'POST', '-w', '\n%{http_code}',
+           '-H', 'content-type: application/json',
+           '-H', 'stripe-signature: ' + (signed(payload) if sig is None else sig),
+           '-d', payload, HOOK]
+    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    text, _, code = out.rpartition('\n')
+    try:
+        data = json.loads(text) if text else None
+    except json.JSONDecodeError:
+        data = text
+    return int(code or 0), data
+
+
+def page(url):
+    out = subprocess.run(['curl', '-s', '-m', '60', '-w', '\n%{http_code}', url],
+                         capture_output=True, text=True).stdout
+    text, _, code = out.rpartition('\n')
+    return int(code or 0), text
+
+
 def broom():
+    for pid in ('pro', 'ten'):
+        curl('DELETE', API + '/plans/' + pid)
+    curl('PUT', API + '/vendor', {'ship': ''})
+    curl('DELETE', API + '/accounts/' + SELF)
     curl('DELETE', API + '/accounts/' + SHIP)
     curl('DELETE', API + '/providers/stub')
+    # null clears a secret, blank would keep it: the ship is left with
+    # no Stripe key and back in stub mode
+    settings(stripe_key=None, stripe_webhook_secret=None)
     # the catalog outlives a dropped provider on purpose, so the gate
     # clears it by hand or a rerun imports nothing
     curl('PUT', API + '/catalog', [])
     settle()
 
+
+SELF = self_of()
+if not SELF:
+    print('FAILED: could not read the ship (is the cookie jar current?)')
+    sys.exit(1)
 
 broom()
 print('settings')
@@ -297,16 +362,128 @@ curl('PUT', API + '/settings', {'markup_pct': MARKUP, 'min_topup': 5000000, 'pub
                                 'mode': 'stub', 'refuse_comets': False})
 settle()
 
+print('stripe: the settings')
+code, d = settings(stripe_key=STRIPE_KEY, stripe_webhook_secret=WHSEC,
+                   stripe_url=SSTUB, public_url=HOST, mode='live')
+check('PUT /api/settings takes the two Stripe secrets', code == 200, (code, d))
+settle()
+code, d = curl('GET', API + '/settings')
+check('the key reads masked', dictish(d).get('stripe_key', '').endswith('gate')
+      and 'sk_test' not in dictish(d).get('stripe_key', ''), d)
+check('the signing secret reads masked',
+      dictish(d).get('stripe_webhook_secret', '').endswith('gate')
+      and 'whsec_' not in dictish(d).get('stripe_webhook_secret', ''), d)
+check('the stripe url is not masked', dictish(d).get('stripe_url') == SSTUB, d)
+code, d = settings(stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
+                   public_url=HOST, mode='live')
+settle()
+code, d = curl('GET', API + '/settings')
+check('a blank secret keeps the stored one',
+      dictish(d).get('stripe_key', '').endswith('gate')
+      and dictish(d).get('stripe_webhook_secret', '').endswith('gate'), d)
+
+print('stripe: the plans')
+PLAN = {'id': 'pro', 'name': 'Pro', 'kind': 'subscription',
+        'price': 2500000, 'credit': 3000000, 'interval': 'month'}
+code, d = curl('POST', API + '/plans', PLAN)
+check('POST /api/plans adds a plan', code == 200 and dictish(d).get('id') == 'pro', (code, d))
+settle()
+code, d = curl('POST', API + '/plans', PLAN)
+check('a duplicate plan id is 409', code == 409, (code, d))
+code, d = curl('POST', API + '/plans', {'id': 'bad', 'kind': 'subscription',
+                                        'price': 1, 'credit': 1})
+check('a subscription with no interval is 400 naming it',
+      code == 400 and 'interval' in err_of(d), (code, d))
+code, d = curl('POST', API + '/plans', {'id': 'ten', 'name': 'Ten', 'kind': 'topup',
+                                        'price': 10000000, 'credit': 10000000})
+check('a top-up plan needs no interval', code == 200, (code, d))
+settle()
+code, d = curl('GET', API + '/plans')
+ids = [p.get('id') for p in (d if isinstance(d, list) else [])]
+check('GET /api/plans lists them by id', code == 200 and ids == ['pro', 'ten'], (code, d))
+code, d = curl('PUT', API + '/plans/pro', dict(PLAN, name='Pro two'))
+check('PUT /api/plans/<id> edits it', code == 200 and dictish(d).get('name') == 'Pro two', (code, d))
+code, d = curl('PUT', API + '/plans/nope', PLAN)
+check('an unknown plan on PUT is 409', code == 409, (code, d))
+settle()
+code, d = curl('POST', API + '/plans/pro/stripe', {})
+PRICE = dictish(d).get('stripe_price', '')
+check('POST /api/plans/<id>/stripe fills stripe_price',
+      code == 200 and PRICE.startswith('price_'), (code, d))
+code, d = curl('POST', API + '/plans/ten/stripe', {})
+check('a top-up plan needs no Stripe price', code == 400 and 'kind' in err_of(d), (code, d))
+settle()
+code, d = curl('PUT', API + '/plans/pro', dict(PLAN, name='Pro two'))
+check('an edit keeps the Stripe price', dictish(d).get('stripe_price') == PRICE, d)
+settle()
+
+print('stripe: a subscription holds its plan')
+# the only way onto an account is the channel, so the ship is briefly
+# its own customer, which is what the single-ship shape is for
+code, d = curl('PUT', API + '/vendor', {'ship': SELF})
+check('the ship is its own customer for this check', code == 200, (code, d))
+settle(3)
+code, co = curl('POST', API + '/checkout', {'rail': 'stripe', 'plan': 'pro'}, timeout=120)
+url = dictish(co).get('url', '')
+check('a subscription checkout answers a stub session url',
+      code == 200 and '/stub/pay/' in url, (code, co))
+code, d = curl('POST', url, jar=None)
+check('paying the stub session answers the record', code == 200, (code, str(d)[:200]))
+sub = {}
+for _ in range(15):
+    settle(2)
+    code, acct = curl('GET', API + '/accounts/' + SELF)
+    sub = dictish(dictish(acct).get('subscription'))
+    if sub.get('active'):
+        break
+check('the account shows an active subscription with its Stripe id',
+      sub.get('active') is True and str(sub.get('id', '')).startswith('sub_'), sub)
+check('the owner detail names the plan', dictish(acct).get('plan') == 'pro', dictish(acct).get('plan'))
+code, d = curl('DELETE', API + '/plans/pro')
+check('a plan an open subscription names cannot be deleted',
+      code == 409 and 'subscription' in err_of(d), (code, d))
+code, d = curl('POST', API + '/accounts/' + SELF + '/clear-subscription')
+check('the owner can clear a subscription', code == 200, (code, d))
+settle(2)
+code, d = curl('DELETE', API + '/plans/pro')
+check('with the subscription cleared the plan goes', code == 200, (code, d))
+curl('PUT', API + '/vendor', {'ship': ''})
+curl('DELETE', API + '/accounts/' + SELF)
+settle()
+
+print('stripe: the webhook')
+code, d = hook('checkout.session.completed', 'cs_nope', sig='t=1,v1=deadbeef')
+check('a bad signature is 400', code == 400 and err_of(d) == 'signature', (code, d))
+code, d = hook('checkout.session.completed', 'cs_nope', sig='')
+check('a missing signature is 400 when the secret is set', code == 400, (code, d))
+code, d = hook('payment_intent.succeeded', 'pi_1')
+check('an unrelated event is 200 and does nothing', code == 200 and dictish(d).get('ok') is True, (code, d))
+before = ledger()
+code, d = hook('checkout.session.completed', 'cs_does_not_exist')
+check('a completed event naming an unknown session is 200', code == 200, (code, d))
+settle(2)
+check('and credits nothing', len(ledger()) == len(before), (len(before), len(ledger())))
+
+print('stripe: the return page')
+code, text = page(RETURN + '?ship=' + SHIP + '&cancelled=1')
+check('the return page with cancelled=1 is 200 and says cancelled',
+      code == 200 and 'cancelled' in text.lower(), (code, text[:200]))
+code, text = page(RETURN + '?ship=' + SHIP)
+check('the return page without a sid says pending',
+      code == 200 and 'pending' in text.lower(), (code, text[:200]))
+settings()
+settle()
+
 print('the audit ring')
 code, log = curl('GET', API + '/log')
 text = json.dumps(log)
 ops = set(r.get('op') for r in (log if isinstance(log, list) else []))
 check('GET /api/log answers the ring', code == 200 and isinstance(log, list) and len(log) > 0, (code, str(log)[:200]))
 for op in ('set-provider', 'set-catalog', 'open-account', 'add-key', 'credit', 'debit', 'refund',
-           'drop-key', 'close-account'):
+           'drop-key', 'close-account', 'set-plan', 'drop-plan', 'note'):
     check('the ring holds an entry for ' + op, op in ops, sorted(ops))
 check('the ring never carries a secret', 'stub-key' not in text and 'prov-key' not in text and
-      (SEC1 or 'x') not in text, text[:300])
+      STRIPE_KEY not in text and WHSEC not in text and (SEC1 or 'x') not in text, text[:300])
 out = subprocess.run(['curl', '-s', '-m', '30', '-b', JAR, INSTANCE + '/tr/last?raw=1'],
                      capture_output=True, text=True).stdout
 check('tr/last reads ok after the last op', '"ok"' in out and 'stub-key' not in out, out[:200])

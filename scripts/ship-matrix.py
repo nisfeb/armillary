@@ -8,9 +8,10 @@ cookie jar; with PEER and PJAR the customer is that other ship, with two
 arguments it is HOST itself, which the vendor allows.
 
 The stub provider must already be listening on 127.0.0.1:3399 with the
-key "stub-key": this script starts nothing. Exits 1 on any failure. Safe
-to rerun: it sweeps the account and the provider it made, both before it
-starts and after it finishes."""
+key "stub-key", and fake-stripe.py on 127.0.0.1:3400 with the secret
+"whsec_gate" and HOST as its ship url: this script starts neither. Exits
+1 on any failure. Safe to rerun: it sweeps the account, the provider and
+the plans it made, both before it starts and after it finishes."""
 import json, subprocess, sys, time
 
 HOST, JAR = sys.argv[1], sys.argv[2]
@@ -19,6 +20,14 @@ PEER = sys.argv[3] if TWO else HOST
 PJAR = sys.argv[4] if TWO else JAR
 PORT = '3399'
 STUB = 'http://127.0.0.1:' + PORT
+SPORT = '3400'
+SSTUB = 'http://127.0.0.1:' + SPORT
+WHSEC = 'whsec_gate'
+STRIPE_KEY = 'sk_test_gate'
+PLAN = {'id': 'gate-pro', 'name': 'Gate Pro', 'kind': 'subscription',
+        'price': 2500000, 'credit': 3000000, 'interval': 'month'}
+PLAN_CREDIT = PLAN['credit']
+SESSION_CREDIT = 2500000                       # the plan's price, paid once
 MARKUP = 130
 COST_IN, COST_OUT = 3000000, 15000000
 IN, OUT = 3900000, 19500000
@@ -138,6 +147,31 @@ if TWO and VENDOR == CUST:
     sys.exit(1)
 
 
+def settings(host, jar, **over):
+    """the whole settings document, with the fields this call changes"""
+    doc = {'markup_pct': MARKUP, 'min_topup': 5000000, 'public_url': '',
+           'mode': 'stub', 'refuse_comets': False, 'stripe_key': '',
+           'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com'}
+    doc.update(over)
+    return curl('PUT', api(host) + '/settings', doc, jar=jar)
+
+
+def stub_post(url):
+    """a plain POST to the Stripe stub, no cookie and no body"""
+    return curl('POST', url)
+
+
+def page(url):
+    out = subprocess.run(['curl', '-s', '-m', '120', '-w', '\n%{http_code}', url],
+                         capture_output=True, text=True).stdout
+    text, _, code = out.rpartition('\n')
+    return int(code or 0), text
+
+
+def refs_of(host, jar, ship):
+    return [r.get('ref') for r in ledger_of(host, jar, ship)]
+
+
 def broom():
     # the customer's own keys go first, while it still has a vendor to
     # tell; a key this ship holds outlives the account otherwise
@@ -149,6 +183,9 @@ def broom():
     curl('DELETE', api(HOST) + '/accounts/' + CUST, jar=JAR)
     curl('PUT', api(HOST) + '/catalog', [], jar=JAR)
     curl('DELETE', api(HOST) + '/providers/stub', jar=JAR)
+    curl('DELETE', api(HOST) + '/plans/' + PLAN['id'], jar=JAR)
+    # null clears a secret, blank would keep it
+    settings(HOST, JAR, stripe_key=None, stripe_webhook_secret=None)
     settle()
 
 
@@ -285,6 +322,116 @@ check('the ship traffic ring never carries a secret', bare not in inbox, inbox[:
 log = raw(HOST, JAR, '/tr/log')
 check('the audit ring never carries a secret',
       bare not in log and 'stub-key' not in log, log[:200])
+
+print('the card rail')
+# whatever the stub rail and the completion left behind is the floor the
+# card rail adds to
+BASE = dictish(fresh(PEER, PJAR)).get('balance', 0)
+CARD = 10000000
+code, d = settings(HOST, JAR, stripe_key=STRIPE_KEY, stripe_webhook_secret=WHSEC,
+                   stripe_url=SSTUB, public_url=HOST, mode='live')
+check('the vendor goes live against the Stripe stub', code == 200, (code, d))
+settle(2)
+
+code, d = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': 1000000},
+               jar=PJAR, timeout=180)
+check('a top-up below the minimum is 502 with the reason',
+      code == 502 and 'minimum' in err_of(d), (code, d))
+view = wait_view(PEER, PJAR, lambda v: any(
+    r.get('status') == 'refused' for r in dictish(v.get('checkouts')).values()))
+refused = [r for r in dictish(view.get('checkouts')).values() if r.get('status') == 'refused']
+check('the refusal shows in the view with its note',
+      len(refused) >= 1 and 'minimum' in str(refused[0].get('note')), refused[:1])
+
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': CARD},
+                jar=PJAR, timeout=180)
+url = dictish(co).get('url', '')
+nonce = dictish(co).get('nonce', '')
+check('a top-up checkout answers a Stripe session url',
+      code == 200 and url.startswith(SSTUB + '/stub/pay/'), (code, co))
+SID = url.rsplit('/', 1)[-1]
+code, d = stub_post(url)
+check('paying the session answers the record',
+      code == 200 and dictish(d).get('payment_status') == 'paid', (code, str(d)[:200]))
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BASE + CARD, tries=15)
+check('the credit lands within thirty seconds', view.get('balance') == BASE + CARD,
+      (BASE + CARD, view.get('balance')))
+row = dictish(view.get('checkouts')).get(nonce, {})
+check('the checkout row is paid and holds the session id',
+      row.get('status') == 'paid' and row.get('sid') == SID, row)
+
+code, d = stub_post(url)
+check('paying twice answers paid again', code == 200, (code, str(d)[:120]))
+settle(6)
+credits = [r for r in ledger_of(HOST, JAR, CUST) if r.get('ref') == SID]
+check('a replayed event credits once', len(credits) == 1, credits)
+
+code, text = page(HOST + '/apps/armillary/pay/return?ship=' + CUST + '&sid=' + SID)
+check('the return page for a paid session says it was received',
+      code == 200 and 'received' in text.lower(), (code, text[:200]))
+
+print('a subscription')
+code, d = curl('POST', api(HOST) + '/plans', PLAN, jar=JAR)
+check('the vendor writes a subscription plan', code in (200, 409), (code, d))
+settle()
+code, d = curl('POST', api(HOST) + '/plans/' + PLAN['id'] + '/stripe', {}, jar=JAR)
+check('the plan gets a Stripe price',
+      code == 200 and str(dictish(d).get('stripe_price', '')).startswith('price_'), (code, d))
+settle(2)
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'plan': PLAN['id']},
+                jar=PJAR, timeout=180)
+suburl = dictish(co).get('url', '')
+check('a subscription checkout answers a session url',
+      code == 200 and suburl.startswith(SSTUB + '/stub/pay/'), (code, co))
+code, d = stub_post(suburl)
+check('paying the subscription answers the record', code == 200, (code, str(d)[:120]))
+want = BASE + CARD + SESSION_CREDIT + PLAN_CREDIT
+view = wait_view(PEER, PJAR, lambda v: dictish(v.get('subscription')).get('active'), tries=15)
+check('the view shows the subscription active',
+      dictish(view.get('subscription')).get('active') is True, view.get('subscription'))
+check('the view never carries the Stripe ids',
+      'id' not in dictish(view.get('subscription')), view.get('subscription'))
+check('the view names the plan', view.get('plan') == PLAN['id'], view.get('plan'))
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == want, tries=15)
+check('the session and the first invoice both credited',
+      view.get('balance') == want, (want, view.get('balance')))
+code, acct = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR)
+SUB = dictish(dictish(acct).get('subscription')).get('id', '')
+check('the owner sees the Stripe subscription id', SUB.startswith('sub_'), dictish(acct).get('subscription'))
+
+before = set(refs_of(HOST, JAR, CUST))
+code, d = stub_post(SSTUB + '/stub/renew/' + SUB)
+check('the stub renews the subscription', code == 200, (code, d))
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == want + PLAN_CREDIT, tries=15)
+check('a renewal credits the plan again', view.get('balance') == want + PLAN_CREDIT,
+      (want + PLAN_CREDIT, view.get('balance')))
+fresh_refs = set(refs_of(HOST, JAR, CUST)) - before
+check('the renewal carries a new ref', len(fresh_refs) == 1, sorted(fresh_refs))
+
+code, d = curl('POST', api(PEER) + '/cancel-subscription', {}, jar=PJAR, timeout=120)
+check('the customer asks to cancel', code == 202, (code, d))
+cancelled = False
+for _ in range(15):
+    settle(2)
+    code, st = curl('GET', SSTUB + '/stub/state')
+    cancelled = dictish(dictish(st).get('subscriptions', {}).get(SUB, {})).get('cancel_at_period_end')
+    if cancelled:
+        break
+check('Stripe was told to cancel at period end', cancelled is True, cancelled)
+code, d = stub_post(SSTUB + '/stub/delete/' + SUB)
+check('the stub reports the subscription deleted', code == 200, (code, d))
+view = wait_view(PEER, PJAR, lambda v: not dictish(v.get('subscription')).get('active'), tries=15)
+check('the subscription clears on the account',
+      dictish(view.get('subscription')).get('active') is False and view.get('plan') == '',
+      (view.get('subscription'), view.get('plan')))
+
+settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB)
+settle()
+code, d = curl('GET', api(HOST) + '/settings', jar=JAR)
+check('the vendor is back in stub mode', dictish(d).get('mode') == 'stub', d)
+log = raw(HOST, JAR, '/tr/log')
+check('the audit ring holds the stripe outcomes and no secret',
+      'stripe.' in log and STRIPE_KEY not in log and WHSEC not in log, log[:200])
 
 broom()
 print()

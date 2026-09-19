@@ -37,7 +37,8 @@ code, h, b = get('/apps/armillary')
 check('the page answers 200 as html', code == 200 and h.get('content-type', '').startswith('text/html'), (code, h))
 check('the page is not cached', 'no-cache' in h.get('cache-control', ''), h)
 check('the page loads its script and style', 'armillary.js' in b and 'armillary.css' in b and 'id="view"' in b, b[:200])
-check('the page names its three vendor views', '#providers' in b and '#catalog' in b and '#accounts' in b, b[:400])
+check('the page names its four vendor views',
+      '#providers' in b and '#catalog' in b and '#accounts' in b and '#payments' in b, b[:400])
 check('the page names its three customer views',
       '#account"' in b and '#keys"' in b and '#catalog"' in b, b[:600])
 check('the page carries the note for a ship that is its own customer', 'id="both"' in b, b[:600])
