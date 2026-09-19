@@ -1,0 +1,1428 @@
+::  armillary: sell model inference from your ship.
+::  docs/superpowers/specs/2026-09-19-armillary-design.md
+::
+::  The tree this nexus owns (every persistent path has a row in +on-load):
+::    /main.sig                          the writer: every mutation goes through it
+::    /web.sig                           binds /apps/armillary; one fiber per request
+::    /requests/<id>                     the ephemeral request fibers
+::    /settings.json                     markup, minimum top-up, public url, mode
+::    /providers.json                    the upstream connections, secrets inside
+::    /catalog.json                      the models offered
+::    /catalog-public.json               the enabled rows with prices
+::    /plans.json                        the plans, phase 3 fills them
+::    /vendor.json                       the vendor ship; ours on the vendor
+::    /key-index.json                    a key id to the ship that holds it
+::    /accounts/<ship>/account.json      ship, cached balance, made, seen, closed
+::    /accounts/<ship>/keys.json         one salted hash per key, by id
+::    /accounts/<ship>/ledger/<name>     [/armillary %row], one per money move
+::    /beacon/rev                        the change beacon the page streams
+::    /tr/last                           the last writer outcome, as json
+::    /tr/log                            the audit ring, the last 500 ops
+::    the page and the manifests         laid fresh on every load, not %fall
+::
+::  ROADS ARE NEXUS-RELATIVE. A desk-installed app cannot learn its own
+::  absolute path, so every road is [%| up lane], where up is the number
+::  of steps from the calling fiber to the nexus root: 0 for the writer
+::  and the binder, 1 for a request fiber at /requests/<id>.
+::
+::  THE WRITER MUST NOT CRASH. +rise-wait restarts a failed process by
+::  consuming the next poke without processing it, so every refusal is a
+::  branch that returns cleanly and writes /tr/last.
+::
+::  SECRETS NEVER LEAVE. A provider key and a key's secret are stored
+::  and sent upstream and nowhere else: no read route answers one, and
+::  no audit row carries one.
+::
+/<  arm   /lib/armillary.hoon
+/&  icon  icon.svg
+/&  page-html  armillary.html
+/&  page-css   armillary.css
+/&  page-js    armillary.js
+=<  ^-  nexus:nexus
+    |%
+    ++  on-load
+      |=  =ball:tarball
+      ^-  bole:tarball
+      =/  tile=json
+        %-  pairs:enjs:format
+        :~  title+s+'Armillary'
+            info+s+'Sell model inference from your ship'
+            color+s+'#1b2a4a'
+            image+s+'/grubbery/tiles/icon/armillary'
+            href+s+'/apps/armillary'
+        ==
+      =/  link=json
+        %-  pairs:enjs:format
+        :~  ['name' s+'armillary']
+            ['description' s+'Sell model inference from your ship']
+        ==
+      %+  spin:loader  ball
+      :~  (manifest:loader 0)
+          [%over %& [/ %'tile.json'] [[/ %json] tile]]
+          [%over %& [/ %'link.json'] [[/ %json] link]]
+          [%over %& [/ %'weir.json'] [[/ %json] weir-json]]
+          [%over %& [/ %'icon.svg'] [[/ %mime] icon]]
+          [%over %& [/ %'armillary.html'] [[/ %mime] page-html]]
+          [%over %& [/ %'armillary.css'] [[/ %mime] page-css]]
+          [%over %& [/ %'armillary.js'] [[/ %mime] page-js]]
+          [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
+          [%fall %& [/ %'web.sig'] [[/ %sig] ~]]
+          [%fall %| /requests empty-dir:loader]
+          [%fall %| /accounts empty-dir:loader]
+          [%fall %| /tr empty-dir:loader]
+          [%fall %| /beacon empty-dir:loader]
+          [%fall %& [/ %'settings.json'] [[/ %json] starter-settings:arm]]
+          [%fall %& [/ %'providers.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/ %'catalog.json'] [[/ %json] [%a ~]]]
+          [%fall %& [/ %'catalog-public.json'] [[/ %json] [%a ~]]]
+          [%fall %& [/ %'plans.json'] [[/ %json] [%a ~]]]
+          [%fall %& [/ %'vendor.json'] [[/ %json] vendor-starter]]
+          [%fall %& [/ %'key-index.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/beacon %rev] [[/ %json] (numb:enjs:format 0)]]
+          [%fall %& [/tr %last] [[/ %json] [%o ~]]]
+          [%fall %& [/tr %log] [[/ %json] [%a ~]]]
+      ==
+    ::
+    ++  on-file
+      |=  [=rail:tarball =blot:tarball]
+      ^-  spool:fiber:nexus
+      |=  =prod:fiber:nexus
+      =/  m  (fiber:fiber:nexus ,~)
+      ^-  process:fiber:nexus
+      ?+    rail  stay:m
+          ::  the writer. It reaches nothing at rise: a jailed install
+          ::  (weir not yet approved) would have every bowl poke vetoed,
+          ::  and a crashed writer waits for the next poke before it
+          ::  runs again.
+          [~ %'main.sig']
+        ;<  ~  bind:m  (rise-wait:io prod "%armillary writer: failed")
+        |-
+        ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
+        ;<  changed=?  bind:m  (apply from sage)
+        ;<  ~  bind:m  ?.(changed (pure:m ~) bump-beacon)
+        $
+          ::  the HTTP binder. bind-http-self is veto-tolerant: jailed,
+          ::  it logs and waits; the approval reload binds for real.
+          [~ %'web.sig']
+        ;<  ~  bind:m  (rise-wait:io prod "%armillary web: failed")
+        ;<  ~  bind:m  (bind-http-self:io [~ /apps/armillary])
+        (http-dispatch:io %armillary)
+          ::  one ephemeral fiber per in-flight request
+          [[%requests ~] @]
+        ;<  ~  bind:m  (rise-wait:io prod "%armillary request: failed")
+        (handle-request name.rail)
+      ==
+    --
+|%
+::  ==  roads
+::
+++  rf  |=([up=@ud p=path n=@ta] ^-(road:tarball [%| up [%& p n]]))
+++  rv  |=([up=@ud p=path] ^-(road:tarball [%| up [%| p]]))
+++  acct-dir  |=(who=@p ^-(path /accounts/[(scot %p who)]))
+++  ledger-dir  |=(who=@p ^-(path /accounts/[(scot %p who)]/ledger))
+++  srv  ~(. http-res:io [%| 1 %& ~ %'web.sig'])
+::  +vendor-starter: the vendor ship, empty until phase 2 names it
+::
+++  vendor-starter  ^-(json (pairs:enjs:format ~[['ship' s+'']]))
+::  ==  the ask
+::
+::  every why says what refusing it costs, so consent is informed
+::
+++  weir-json
+  ^-  json
+  =/  line  |=([r=@t w=@t] `json`(pairs:enjs:format ~[['road' s+r] ['why' s+w]]))
+  %-  pairs:enjs:format
+  :~  :-  'poke'
+      :-  %a
+      :~  (line '/sys/bowl.sig' 'read the current time and our ship')
+          (line '/sys/eyre/' 'bind /apps/armillary and answer requests, including the inference API')
+          (line '/sys/iris/' 'talk to your model providers over HTTPS. Refuse this and no request can be answered')
+          (line '/sys/behn/' 'give up on a provider that does not answer within two minutes')
+      ==
+      :-  'peek'
+      :-  %a
+      :~  (line '/sys/link/' 'find where this app is installed, so the page can address its own writer')
+      ==
+      :-  'make'
+      :-  %a
+      ~
+  ==
+::  ==  the writer
+::
+::  +apply: one op from a poke. Answers whether the tree changed.
+::
+++  apply
+  |=  [=from:fiber:nexus =sage:tarball]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ?.  =([/ %json] p.sage)  (pure:m |)
+  ;<  our=@p  bind:m  get-our:io
+  ::  +get-poke-src reads the ship off the transport. ~ is a fiber
+  ::  inside this nexus; our own ship arrives named through the
+  ::  agent-facing surface. Anything else is refused.
+  =/  src=(unit @p)  (get-poke-src:io from)
+  ?.  ?|(?=(~ src) =(our u.src))
+    (refuse 'poke' 'a foreign ship may not write here' '')
+  =/  jon=json  (fall (mole |.(!<(json q.sage))) ~)
+  =/  op=@t  (de-op:arm jon)
+  ?:  =('set-settings' op)   (do-set-settings jon)
+  ?:  =('set-provider' op)   (do-set-provider jon)
+  ?:  =('drop-provider' op)  (do-drop-provider jon)
+  ?:  =('set-catalog' op)    (do-set-catalog jon)
+  ?:  =('open-account' op)   (do-open-account jon)
+  ?:  =('credit' op)         (do-credit jon)
+  ?:  =('debit' op)          (do-debit jon)
+  ?:  =('refund' op)         (do-refund jon)
+  ?:  =('add-key' op)        (do-add-key jon)
+  ?:  =('drop-key' op)       (do-drop-key jon)
+  ?:  =('touch-key' op)      (do-touch-key jon)
+  ?:  =('close-account' op)  (do-close-account jon)
+  ?:  =('drop-account' op)   (do-drop-account jon)
+  ?:  =('rebuild' op)        do-rebuild
+  (refuse op 'unknown op' '')
+::  +refuse: a refusal that leaves the writer standing
+::
+++  refuse
+  |=  [op=@t why=@t who=@t]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  ~  bind:m  (note op | why who --0)
+  (pure:m |)
+::  +note-then-no: a no-op that still leaves its reason in /tr/last
+::
+++  note-then-no
+  |=  [op=@t why=@t who=@t]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  ~  bind:m  (note op & why who --0)
+  (pure:m |)
+::  +note: the last writer outcome at /tr/last, and the audit ring at
+::  /tr/log (the last 500, newest first). The caller passes the op, the
+::  ship and the amount: never a key, never a secret.
+::
+++  note
+  |=  [op=@t ok=? why=@t who=@t amount=@sd]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  now=@da  bind:m  get-time:io
+  =/  entry=json  (trail-entry:arm op ok why who amount now)
+  ;<  ~  bind:m  (over:io (rf 0 /tr %last) [[/ %json] entry])
+  ;<  log=json  bind:m  (read-json (rf 0 /tr %log))
+  (over:io (rf 0 /tr %log) [[/ %json] (ring-push:arm log entry ring-cap:arm)])
+::  +bump-beacon: the change beacon moves once per op that changed the
+::  tree, never on a refusal or a no-op. Milliseconds since 1970, so a
+::  browser keeps it exact.
+::
+++  bump-beacon
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  now=@da  bind:m  get-time:io
+  =/  ms=@ud  ?:((lth now ~1970.1.1) 0 (div (sub now ~1970.1.1) (div ~s1 1.000)))
+  (over:io (rf 0 /beacon %rev) [[/ %json] (numb:enjs:format ms)])
+::  +ensure-dirs: make each directory along base/segs, in order
+::
+++  ensure-dirs
+  |=  [up=@ud base=path segs=(list @ta)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  segs  (pure:m ~)
+  =/  dir=path  (weld base /[i.segs])
+  ;<  ex=?  bind:m  (peek-exists:io (rv up dir))
+  ;<  ~  bind:m
+    ?:  ex  (pure:(fiber:fiber:nexus ,~) ~)
+    ;<  *  bind:(fiber:fiber:nexus ,~)  (make-soft:io (rv up dir) &+empty-dir:loader)
+    (pure:(fiber:fiber:nexus ,~) ~)
+  (ensure-dirs up dir t.segs)
+::  ==  the writer's ops
+::
+::  +do-set-settings: replace the document whole
+::
+++  do-set-settings
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-settings:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-settings' p.got '')
+  =/  doc=json  (en-settings:arm p.got)
+  ;<  cur=json  bind:m  (read-json (rf 0 / %'settings.json'))
+  ?:  =(cur doc)  (note-then-no 'set-settings' 'unchanged' '')
+  ;<  ~  bind:m  (over:io (rf 0 / %'settings.json') [[/ %json] doc])
+  ;<  ~  bind:m  (note 'set-settings' & '' '' --0)
+  (pure:m &)
+::  +keep-secret: a blank incoming secret keeps the stored one, an
+::  explicit null clears it, anything else replaces it
+::
+++  keep-secret
+  |=  [incoming=json old=(unit json) k=@t fresh=@t]
+  ^-  @t
+  =/  present=?  (has-key:arm incoming k)
+  =/  v=json  (gj:arm incoming k)
+  ?:  &(present ?=(~ v))  ''
+  ?.  =('' fresh)  fresh
+  ?~  old  ''
+  (gs:arm u.old k)
+::  +do-set-provider: one upstream connection, laid or replaced
+::
+++  do-set-provider
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-provider:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-provider' p.got '')
+  =/  p=provider:arm  p.got
+  ;<  provs=json  bind:m  (read-json (rf 0 / %'providers.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] provs) p.provs ~)
+  =/  old=(unit json)  (~(get by pm) id.p)
+  ?:  &(?=(~ old) (gte ~(wyt by pm) max-providers:arm))
+    (refuse 'set-provider' 'providers: over 200' '')
+  =/  incoming=json  (gj:arm jon 'provider')
+  =/  api=@t   (keep-secret incoming old 'api_key' api-key.p)
+  =/  prov=@t  (keep-secret incoming old 'provisioning_key' provisioning-key.p)
+  =/  row=provider:arm  p(api-key api, provisioning-key prov)
+  =/  next=json  [%o (~(put by pm) id.p (en-provider-full:arm row))]
+  ;<  ~  bind:m  (over:io (rf 0 / %'providers.json') [[/ %json] next])
+  ;<  ~  bind:m  (note 'set-provider' & id.p '' --0)
+  (pure:m &)
+::  +do-drop-provider: the connection goes. Catalog rows on it stay
+::  where they are and stop answering, since a request checks that the
+::  row's provider still exists.
+::
+++  do-drop-provider
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-drop:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'drop-provider' p.got '')
+  ;<  provs=json  bind:m  (read-json (rf 0 / %'providers.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] provs) p.provs ~)
+  ?.  (~(has by pm) p.got)  (refuse 'drop-provider' 'no such provider' '')
+  =/  next=json  [%o (~(del by pm) p.got)]
+  ;<  ~  bind:m  (over:io (rf 0 / %'providers.json') [[/ %json] next])
+  ;<  ~  bind:m  (note 'drop-provider' & p.got '' --0)
+  (pure:m &)
+::  +do-set-catalog: the catalog replaced whole, and the public copy
+::  rewritten from it in the same op, so the two never disagree
+::
+++  do-set-catalog
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-catalog:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-catalog' p.got '')
+  =/  cat=(list model-row:arm)  p.got
+  ;<  ~  bind:m  (over:io (rf 0 / %'catalog.json') [[/ %json] (en-catalog:arm cat)])
+  ;<  ~  bind:m
+    (over:io (rf 0 / %'catalog-public.json') [[/ %json] (public-catalog:arm cat)])
+  ;<  ~  bind:m  (note 'set-catalog' & '' '' --0)
+  (pure:m &)
+::  +do-open-account: a fresh account at zero, or a no-op when it is
+::  already open
+::
+++  do-open-account
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-account:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'open-account' p.got '')
+  =/  who=@p  p.got
+  ;<  made=?  bind:m  (ensure-account who)
+  ?.  made  (note-then-no 'open-account' 'already open' (scot %p who))
+  ;<  ~  bind:m  (note 'open-account' & '' (scot %p who) --0)
+  (pure:m &)
+::  +ensure-account: the account directory, its row and its key table.
+::  Answers whether it had to make them.
+::
+++  ensure-account
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  ex=?  bind:m  (peek-exists:io (rf 0 (acct-dir who) %'account.json'))
+  ?:  ex  (pure:m |)
+  ;<  ~  bind:m  (ensure-dirs 0 / ~[%accounts (scot %p who) %ledger])
+  ;<  now=@da  bind:m  get-time:io
+  =/  row=account:arm  [who --0 now ~ |]
+  ;<  ~  bind:m
+    (over:io (rf 0 (acct-dir who) %'account.json') [[/ %json] (en-account:arm row)])
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] [%o ~]])
+  (pure:m &)
+::  +live-account: the account row when it is open and not closed
+::
+++  live-account
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,(unit account:arm))
+  ^-  form:m
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (pure:m ~)
+  ?:  closed.u.a  (pure:m ~)
+  (pure:m a)
+::  +rows-in: the ledger grubs in a ball, each with its grub name
+::
+++  rows-in
+  |=  b=ball:tarball
+  ^-  (list [name=@ta =row:arm])
+  ?~  fil.b  ~
+  %+  murn  ~(tap by contents.u.fil.b)
+  |=  [nam=@ta c=[=sang:tarball gain=? bang=(unit tang)]]
+  ^-  (unit [@ta row:arm])
+  =/  r=(unit row:arm)  (read-row:arm (sang-noun:tarball sang.c))
+  ?~(r ~ `[nam u.r])
+::  +ledger-of: every row on an account, in no order
+::
+++  ledger-of
+  |=  [up=@ud who=@p]
+  =/  m  (fiber:fiber:nexus ,(list [name=@ta =row:arm]))
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io (rv up (ledger-dir who)) ~)
+  ?.  ?=([%ball *] vw)  (pure:m ~)
+  (pure:m (rows-in ball.vw))
+::  +has-ref: a credit or a refund with this ref is already recorded,
+::  so a webhook delivered twice credits once
+::
+++  has-ref
+  |=  [rows=(list [name=@ta =row:arm]) ref=@t]
+  ^-  ?
+  |-  ^-  ?
+  ?~  rows  |
+  ?:  =(ref ref.row.i.rows)  &
+  $(rows t.rows)
+::  +free-name: the grub name for a new row, n bumped while the name is
+::  taken, so two rows in the same second never collide
+::
+++  free-name
+  |=  [rows=(list [name=@ta =row:arm]) at=@da n=@ud]
+  ^-  @ta
+  =/  taken=(set @ta)  (sy (turn rows |=([nam=@ta =row:arm] nam)))
+  |-  ^-  @ta
+  =/  nam=@ta  (row-name:arm at n)
+  ?.  (~(has in taken) nam)  nam
+  $(n +(n))
+::  +write-row: one ledger grub and the account's cached balance, which
+::  is always the fold over every row
+::
+++  write-row
+  |=  [who=@p rows=(list [name=@ta =row:arm]) a=account:arm new=row:arm]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  nam=@ta  (free-name rows at.new 0)
+  ;<  ~  bind:m
+    (over:io (rf 0 (ledger-dir who) nam) [[/armillary %row] `stored-row:arm`[%1 new]])
+  =/  all=(list row:arm)  (snoc (turn rows |=([nam=@ta r=row:arm] r)) new)
+  =/  bal=@sd  (fold-balance:arm all)
+  ;<  ~  bind:m
+    (over:io (rf 0 (acct-dir who) %'account.json') [[/ %json] (en-account:arm a(balance bal))])
+  (pure:m ~)
+::  +do-credit: money in. A repeated ref is refused, not written twice.
+::
+++  do-credit
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-credit:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'credit' p.got '')
+  =/  c  p.got
+  =/  who=@t  (scot %p ship.c)
+  ;<  a=(unit account:arm)  bind:m  (live-account ship.c)
+  ?~  a  (refuse 'credit' 'ship: no open account' who)
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 0 ship.c)
+  ?:  (has-ref rows ref.c)  (refuse 'credit' 'ref: already recorded' who)
+  ;<  now=@da  bind:m  get-time:io
+  =/  new=row:arm  [%credit amount.c 0 '' 0 0 '' rail.c ref.c note.c now]
+  ;<  ~  bind:m  (write-row ship.c rows u.a new)
+  ;<  ~  bind:m  (note 'credit' & '' who (sun:si amount.c))
+  (pure:m &)
+::  +do-refund: money back out. A repeated ref is refused the same way.
+::
+++  do-refund
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-refund:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'refund' p.got '')
+  =/  c  p.got
+  =/  who=@t  (scot %p ship.c)
+  ;<  a=(unit account:arm)  bind:m  (live-account ship.c)
+  ?~  a  (refuse 'refund' 'ship: no open account' who)
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 0 ship.c)
+  ?:  (has-ref rows ref.c)  (refuse 'refund' 'ref: already recorded' who)
+  ;<  now=@da  bind:m  get-time:io
+  =/  new=row:arm  [%refund amount.c 0 '' 0 0 '' '' ref.c note.c now]
+  ;<  ~  bind:m  (write-row ship.c rows u.a new)
+  ;<  ~  bind:m  (note 'refund' & '' who (new:si | amount.c))
+  (pure:m &)
+::  +do-debit: what a request cost. Never deduplicated: two identical
+::  requests are two charges.
+::
+++  do-debit
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-debit:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'debit' p.got '')
+  =/  c  p.got
+  =/  who=@t  (scot %p ship.c)
+  ;<  a=(unit account:arm)  bind:m  (live-account ship.c)
+  ?~  a  (refuse 'debit' 'ship: no open account' who)
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 0 ship.c)
+  ;<  now=@da  bind:m  get-time:io
+  =/  new=row:arm
+    [%debit amount.c cost.c model.c in.c out.c mode.c '' ref.c '' now]
+  ;<  ~  bind:m  (write-row ship.c rows u.a new)
+  ;<  ~  bind:m  (note 'debit' & model.c who (new:si | amount.c))
+  (pure:m &)
+::  +do-add-key: one minted key. The row arrives hashed; the writer
+::  never sees a secret. The index keeps the id to ship map a bearer
+::  lookup needs.
+::
+++  do-add-key
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-key:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'add-key' p.got '')
+  =/  who=@p  ship.p.got
+  =/  k=key:arm  key.p.got
+  ;<  a=(unit account:arm)  bind:m  (live-account who)
+  ?~  a  (refuse 'add-key' 'ship: no open account' (scot %p who))
+  ;<  keys=json  bind:m  (read-json (rf 0 (acct-dir who) %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  ?:  (~(has by km) id.k)  (refuse 'add-key' 'id: taken' (scot %p who))
+  ?:  (gte ~(wyt by km) max-keys:arm)
+    (refuse 'add-key' 'keys: over 20' (scot %p who))
+  =/  next=json  [%o (~(put by km) id.k (en-key-row:arm k))]
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] next])
+  ;<  ~  bind:m  (index-put id.k who)
+  ;<  ~  bind:m  (note 'add-key' & '' (scot %p who) --0)
+  (pure:m &)
+::  +index-put, +index-del: /key-index.json, a key id to the ship that
+::  holds it, so a bearer token finds its account in one read instead
+::  of a walk over every account
+::
+++  index-put
+  |=  [id=@t who=@p]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ix=json  bind:m  (read-json (rf 0 / %'key-index.json'))
+  =/  im=(map @t json)  ?:(?=([%o *] ix) p.ix ~)
+  (over:io (rf 0 / %'key-index.json') [[/ %json] [%o (~(put by im) id s+(scot %p who))]])
+++  index-del
+  |=  id=@t
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ix=json  bind:m  (read-json (rf 0 / %'key-index.json'))
+  =/  im=(map @t json)  ?:(?=([%o *] ix) p.ix ~)
+  (over:io (rf 0 / %'key-index.json') [[/ %json] [%o (~(del by im) id)]])
+::  +do-drop-key: a revoked key is gone from the table and the index
+::
+++  do-drop-key
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-drop-key:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'drop-key' p.got '')
+  =/  who=@p  ship.p.got
+  =/  id=@t  id.p.got
+  ;<  keys=json  bind:m  (read-json (rf 0 (acct-dir who) %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  ?.  (~(has by km) id)  (refuse 'drop-key' 'no such key' (scot %p who))
+  =/  next=json  [%o (~(del by km) id)]
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] next])
+  ;<  ~  bind:m  (index-del id)
+  ;<  ~  bind:m  (note 'drop-key' & '' (scot %p who) --0)
+  (pure:m &)
+::  +do-touch-key: last use, stamped by the writer's clock. No note:
+::  one an hour per key would only fill the ring.
+::
+++  do-touch-key
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-touch-key:arm jon)
+  ?:  ?=(%| -.got)  (pure:m |)
+  =/  who=@p  ship.p.got
+  ;<  keys=json  bind:m  (read-json (rf 0 (acct-dir who) %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  =/  row=json  (fall (~(get by km) id.p.got) ~)
+  ?.  ?=([%o *] row)  (pure:m |)
+  ;<  now=@da  bind:m  get-time:io
+  =/  next=json  [%o (~(put by p.row) 'used' (en-time:arm now))]
+  ;<  ~  bind:m
+    (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] [%o (~(put by km) id.p.got next)]])
+  (pure:m |)
+::  +do-close-account: every key revoked, the ledger kept. The account
+::  stays readable; nothing more can be spent on it.
+::
+++  do-close-account
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-account:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'close-account' p.got '')
+  =/  who=@p  p.got
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (refuse 'close-account' 'ship: no such account' (scot %p who))
+  ;<  keys=json  bind:m  (read-json (rf 0 (acct-dir who) %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  ;<  ~  bind:m  (index-drop-each ~(tap in ~(key by km)))
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] [%o ~]])
+  ;<  ~  bind:m
+    (over:io (rf 0 (acct-dir who) %'account.json') [[/ %json] (en-account:arm u.a(closed &))])
+  ;<  ~  bind:m  (note 'close-account' & '' (scot %p who) --0)
+  (pure:m &)
+++  index-drop-each
+  |=  ids=(list @t)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  ids  (pure:m ~)
+  ;<  ~  bind:m  (index-del i.ids)
+  (index-drop-each t.ids)
+::  +do-drop-account: the whole account directory, ledger and all. The
+::  gate uses it to leave the ship as it found it; nothing else does.
+::
+++  do-drop-account
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-account:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'drop-account' p.got '')
+  =/  who=@p  p.got
+  ;<  ex=?  bind:m  (peek-exists:io (rv 0 (acct-dir who)))
+  ?.  ex  (refuse 'drop-account' 'ship: no such account' (scot %p who))
+  ;<  keys=json  bind:m  (read-json (rf 0 (acct-dir who) %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  ;<  ~  bind:m  (index-drop-each ~(tap in ~(key by km)))
+  ;<  *  bind:m  (cull-soft:io (rv 0 (acct-dir who)))
+  ;<  ~  bind:m  (note 'drop-account' & '' (scot %p who) --0)
+  (pure:m &)
+::  +do-rebuild: refold every account's cached balance from its ledger,
+::  so a balance that drifted is repaired from the rows that are the
+::  truth
+::
+++  do-rebuild
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io (rv 0 /accounts) ~)
+  ?.  ?=([%ball *] vw)  (note-then-no 'rebuild' 'no accounts' '')
+  =/  ships=(list @ta)  ~(tap in ~(key by dir.ball.vw))
+  ;<  ~  bind:m  (rebuild-each ships)
+  ;<  ~  bind:m  (note 'rebuild' & '' '' --0)
+  (pure:m &)
+++  rebuild-each
+  |=  ships=(list @ta)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  ships  (pure:m ~)
+  =/  who=(unit @p)  (slaw %p i.ships)
+  ?~  who  (rebuild-each t.ships)
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir u.who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (rebuild-each t.ships)
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 0 u.who)
+  =/  bal=@sd  (fold-balance:arm (turn rows |=([nam=@ta r=row:arm] r)))
+  ;<  ~  bind:m
+    (over:io (rf 0 (acct-dir u.who) %'account.json') [[/ %json] (en-account:arm u.a(balance bal))])
+  (rebuild-each t.ships)
+::  ==  reads: walking the tree
+::
+::  +read-json: a JSON grub in the instance, [%o ~] when absent
+::
+++  read-json
+  |=  road=road:tarball
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io road ~)
+  ?.  ?=([%file *] vw)  (pure:m [%o ~])
+  (pure:m (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) [%o ~]))
+::  +catalog-of: the catalog as rows. A document that will not decode
+::  reads as empty rather than crashing a request.
+::
+++  catalog-of
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(list model-row:arm))
+  ^-  form:m
+  ;<  jon=json  bind:m  (read-json (rf up / %'catalog.json'))
+  =/  got  (de-catalog:arm jon)
+  ?:(?=(%| -.got) (pure:m ~) (pure:m p.got))
+::  +providers-of: every provider row, by id
+::
+++  providers-of
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(map @t provider:arm))
+  ^-  form:m
+  ;<  jon=json  bind:m  (read-json (rf up / %'providers.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] jon) p.jon ~)
+  %-  pure:m
+  %-  ~(gas by *(map @t provider:arm))
+  %+  murn  ~(tap by pm)
+  |=  [k=@t j=json]
+  ^-  (unit [@t provider:arm])
+  =/  p=(unit provider:arm)  (de-provider-stored:arm j)
+  ?~(p ~ `[k u.p])
+::  +accounts-in: every account under a ball, with its key count
+::
+++  accounts-in
+  |=  b=ball:tarball
+  ^-  (list [=account:arm keys=@ud])
+  %+  murn  ~(tap by dir.b)
+  |=  [nam=@ta ab=ball:tarball]
+  ^-  (unit [account:arm @ud])
+  ?~  fil.ab  ~
+  =/  ga=(unit [=sang:tarball gain=? bang=(unit tang)])
+    (~(get by contents.u.fil.ab) %'account.json')
+  ?~  ga  ~
+  =/  aj=json  (fall (mole |.(!<(json (need-vase:tarball sang.u.ga)))) [%o ~])
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  ~
+  =/  gk=(unit [=sang:tarball gain=? bang=(unit tang)])
+    (~(get by contents.u.fil.ab) %'keys.json')
+  =/  kj=json
+    ?~  gk  [%o ~]
+    (fall (mole |.(!<(json (need-vase:tarball sang.u.gk)))) [%o ~])
+  =/  n=@ud  ?:(?=([%o *] kj) ~(wyt by p.kj) 0)
+  `[u.a n]
+::  +all-accounts: every account on the vendor
+::
+++  all-accounts
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(list [=account:arm keys=@ud]))
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io (rv up /accounts) ~)
+  ?.  ?=([%ball *] vw)  (pure:m ~)
+  (pure:m (accounts-in ball.vw))
+::  ==  HTTP
+::
+::  +send-json, +send-err: every error is OpenAI's shape, so one client
+::  error path covers the whole API
+::
+++  send-json
+  |=  [eyre-id=@ta code=@ud jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  bod=octs  (as-octs:mimes:html (en:json:html jon))
+  (send-simple:srv eyre-id [[code ['content-type' 'application/json'] ~] `bod])
+++  send-err
+  |=  [eyre-id=@ta code=@ud msg=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %^  send-json  eyre-id  code
+  (pairs:enjs:format ~[['error' (pairs:enjs:format ~[['message' s+msg]])]])
+::  +send-raw: an upstream body answered exactly as it came, with its
+::  own status. The customer sees what the provider said.
+::
+++  send-raw
+  |=  [eyre-id=@ta code=@ud body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  bod=octs  (as-octs:mimes:html body)
+  (send-simple:srv eyre-id [[code ['content-type' 'application/json'] ~] `bod])
+::  +poke-writer: one op to our writer, soft (a refusal is noted there)
+::
+++  poke-writer
+  |=  [up=@ud op=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  *  bind:m  (poke-soft:io (rf up / %'main.sig') [[/ %json] op])
+  (pure:m ~)
+::  +fetch-in: what ends a wait on a provider
+::
++$  fetch-in
+  $%  [%veto ~]
+      [%none ~]
+      [%resp resp=client-response:iris]
+  ==
+::  +take-fetch: the provider's answer, the deadline, or a vetoed road
+::
+++  take-fetch
+  |=  wir=wire
+  =/  m  (fiber:fiber:nexus ,fetch-in)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto *]  [%done [%veto ~]]
+      [~ %poke * *]
+    ?:  =([/ %timer-wake] p.sage.u.in)
+      ?.(=(wir !<(path q.sage.u.in)) [%skip ~] [%done [%none ~]])
+    ?.  =([/ %http-response] p.sage.u.in)  [%skip ~]
+    =/  resp=client-response:iris  !<(client-response:iris q.sage.u.in)
+    ?:(?=(%cancel -.resp) [%done [%none ~]] [%done [%resp resp]])
+  ==
+::  +fetch: one HTTP request with a two minute deadline. A request that
+::  never answers, a cancelled one and a vetoed iris road are all
+::  status 0, so the caller has one branch for "no answer".
+::
+::    The timer wire carries a nonce, so two request fibers in flight
+::    never take each other's wake.
+::
+++  fetch
+  |=  =request:http
+  =/  m  (fiber:fiber:nexus ,[status=@ud body=@t])
+  ^-  form:m
+  ;<  wir=wire  bind:m  (nonce:io /fetch)
+  ;<  ~  bind:m  (send-request:io request)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m  (set-timer:io wir (add now ~m2))
+  ;<  got=fetch-in  bind:m  (take-fetch wir)
+  ;<  ~  bind:m  (cancel-timer:io wir)
+  ?:  ?=(%veto -.got)  (pure:m [0 'the iris road is refused'])
+  ?:  ?=(%none -.got)  (pure:m [0 ''])
+  =/  r=client-response:iris  resp.got
+  ?.  ?=(%finished -.r)  (pure:m [0 ''])
+  =/  body=@t  ?~(full-file.r '' q.data.u.full-file.r)
+  (pure:m [status-code.response-header.r body])
+::  +post-json: a JSON POST to a provider with its bearer key
+::
+++  post-json
+  |=  [url=@t api-key=@t body=json]
+  =/  m  (fiber:fiber:nexus ,[status=@ud body=@t])
+  ^-  form:m
+  =/  heads=(list [@t @t])
+    :~  ['content-type' 'application/json']
+        ['authorization' (rap 3 'Bearer ' api-key ~)]
+    ==
+  (fetch [%'POST' url heads `(as-octs:mimes:html (en:json:html body))])
+::  +get-json: a JSON GET from a provider with its bearer key
+::
+++  get-json
+  |=  [url=@t api-key=@t]
+  =/  m  (fiber:fiber:nexus ,[status=@ud body=@t])
+  ^-  form:m
+  =/  heads=(list [@t @t])  ~[['authorization' (rap 3 'Bearer ' api-key ~)]]
+  (fetch [%'GET' url heads ~])
+::  +join-url: a provider base url and a route, with exactly one slash
+::
+++  join-url
+  |=  [base=@t leaf=@t]
+  ^-  @t
+  =/  b=tape  (trip base)
+  =/  trimmed=tape  ?:(&(?=(^ b) =('/' (rear `tape`b))) (snip `tape`b) b)
+  =/  out=tape  (weld trimmed (trip leaf))
+  (crip out)
+::  ==  who is asking
+::
+::  an actor: the owner through the cookie, or a customer's key with
+::  the ship that holds it
+::
++$  actor  [owner=? ship=@p key=(unit @t)]
+::  +identify: the owner cookie, else a valid bearer token, else ~. A
+::  key's last use is stamped through the writer at most hourly.
+::
+++  identify
+  |=  [req=inbound-request:eyre src=@p our=@p]
+  =/  m  (fiber:fiber:nexus ,(unit actor))
+  ^-  form:m
+  ?:  &(authenticated.req =(src our))  (pure:m `[& our ~])
+  =/  au=(unit @t)  (get-header:http 'authorization' header-list.request.req)
+  ?~  au  (pure:m ~)
+  =/  tok=(unit [id=@t secret=@t])  (parse-bearer:arm u.au)
+  ?~  tok  (pure:m ~)
+  ;<  ix=json  bind:m  (read-json (rf 1 / %'key-index.json'))
+  =/  who=(unit @p)  (slaw %p (gs:arm ix id.u.tok))
+  ?~  who  (pure:m ~)
+  ;<  keys=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'keys.json'))
+  =/  k=(unit key:arm)  (de-key:arm (gj:arm keys id.u.tok))
+  ?~  k  (pure:m ~)
+  ?.  (key-ok:arm u.k secret.u.tok)  (pure:m ~)
+  ;<  aj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (pure:m ~)
+  ?:  closed.u.a  (pure:m ~)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m
+    ?:  &(?=(^ used.u.k) (lth now (add u.used.u.k ~h1)))
+      (pure:(fiber:fiber:nexus ,~) ~)
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'touch-key']
+        ['ship' s+(scot %p u.who)]
+        ['id' s+id.u.k]
+    ==
+  (pure:m `[| u.who `id.u.k])
+::  ==  the request fiber
+::
+++  handle-request
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  [src=@p req=inbound-request:eyre]  bind:m
+    (get-state-as:io ,[src=@p inbound-request:eyre])
+  ;<  our=@p  bind:m  get-our:io
+  =/  parsed  (parse-url:http-utils url.request.req)
+  ::  drop /apps/armillary; a trailing slash parses as a trailing empty knot
+  =/  suffix0=path  (slag 2 site.parsed)
+  =/  suffix=path
+    ?:  &(?=(^ suffix0) =('' (rear `path`suffix0)))  (snip `path`suffix0)
+    suffix0
+  =/  meth=@t  method.request.req
+  =/  size=@ud  ?~(body.request.req 0 p.u.body.request.req)
+  ?:  (gth size max-body:arm)
+    (send-err eyre-id 413 'body: over 4 MB')
+  ;<  who=(unit actor)  bind:m  (identify req src our)
+  ?~  who  (send-err eyre-id 403 'forbidden')
+  =/  act=actor  u.who
+  ::  +own: a route the owner alone may take
+  =/  own  |=(f=form:m ^-(form:m ?:(owner.act f (send-err eyre-id 403 'owner only'))))
+  ::  a body is read as JSON, so a request carrying one says it is JSON
+  =/  ctype=@t
+    =/  raw=tape
+      (cass (trip (fall (get-header:http 'content-type' header-list.request.req) '')))
+    (crip raw)
+  ?:  ?&  |(=('POST' meth) =('PUT' meth))
+          ?=(^ body.request.req)
+          !=(0 p.u.body.request.req)
+          !=('application/json' (end [3 16] ctype))
+      ==
+    (send-err eyre-id 415 'content-type: application/json required')
+  =/  jon=json
+    (fall (de:json:html ?~(body.request.req '' q.u.body.request.req)) ~)
+  =/  s2=@ta  ?:(?=([@ @ @ *] suffix) i.t.t.suffix %$)
+  =/  s4=@ta  ?:(?=([@ @ @ @ @ *] suffix) i.t.t.t.t.suffix %$)
+  =/  args=quay:eyre  args.parsed
+  ?:  &(=('GET' meth) ?=(~ suffix))                      (own (serve-file eyre-id %'armillary.html'))
+  ?:  &(=('GET' meth) ?=([%'armillary.css' ~] suffix))   (own (serve-file eyre-id %'armillary.css'))
+  ?:  &(=('GET' meth) ?=([%'armillary.js' ~] suffix))    (own (serve-file eyre-id %'armillary.js'))
+  ::  the inference API
+  ?:  &(=('GET' meth) ?=([%v1 %models ~] suffix))        (serve-models eyre-id)
+  ?:  &(=('POST' meth) ?=([%v1 %chat %completions ~] suffix))
+    (serve-proxy eyre-id act jon %chat)
+  ?:  &(=('POST' meth) ?=([%v1 %embeddings ~] suffix))
+    (serve-proxy eyre-id act jon %embeddings)
+  ::  the owner's routes
+  ?:  &(=('GET' meth) ?=([%api %settings ~] suffix))     (own (serve-settings eyre-id))
+  ?:  &(=('PUT' meth) ?=([%api %settings ~] suffix))     (own (serve-set-settings eyre-id jon))
+  ?:  &(=('GET' meth) ?=([%api %providers ~] suffix))    (own (serve-providers eyre-id))
+  ?:  &(=('POST' meth) ?=([%api %providers ~] suffix))   (own (serve-add-provider eyre-id jon))
+  ?:  &(=('PUT' meth) ?=([%api %providers @ ~] suffix))  (own (serve-put-provider eyre-id s2 jon))
+  ?:  &(=('DELETE' meth) ?=([%api %providers @ ~] suffix))
+    (own (serve-drop-provider eyre-id s2))
+  ?:  &(=('POST' meth) ?=([%api %providers @ %test ~] suffix))
+    (own (serve-test-provider eyre-id s2 jon))
+  ?:  &(=('POST' meth) ?=([%api %providers @ %import ~] suffix))
+    (own (serve-import eyre-id s2))
+  ?:  &(=('GET' meth) ?=([%api %catalog ~] suffix))      (own (serve-catalog eyre-id))
+  ?:  &(=('PUT' meth) ?=([%api %catalog ~] suffix))      (own (serve-set-catalog eyre-id jon))
+  ?:  &(=('GET' meth) ?=([%api %accounts ~] suffix))     (own (serve-accounts eyre-id args))
+  ?:  &(=('GET' meth) ?=([%api %accounts @ ~] suffix))   (own (serve-account eyre-id s2))
+  ?:  &(=('DELETE' meth) ?=([%api %accounts @ ~] suffix))
+    (own (serve-drop-account eyre-id s2))
+  ?:  &(=('POST' meth) ?=([%api %accounts @ %keys ~] suffix))
+    (own (serve-mint eyre-id s2 jon))
+  ?:  &(=('DELETE' meth) ?=([%api %accounts @ %keys @ ~] suffix))
+    (own (serve-revoke eyre-id s2 s4))
+  ?:  &(=('POST' meth) ?=([%api %accounts @ %credit ~] suffix))
+    (own (serve-credit eyre-id s2 jon))
+  ?:  &(=('POST' meth) ?=([%api %accounts @ %refund ~] suffix))
+    (own (serve-refund eyre-id s2 jon))
+  ?:  &(=('POST' meth) ?=([%api %accounts @ %close ~] suffix))
+    (own (serve-close eyre-id s2))
+  ?:  &(=('GET' meth) ?=([%api %log ~] suffix))          (own (serve-log eyre-id))
+  (send-err eyre-id 404 'no such route')
+::  +ship-of: a ship named in a route. The segment carries its ~.
+::
+++  ship-of
+  |=  seg=@ta
+  ^-  (unit @p)
+  =/  t=tape  (trip seg)
+  ?~  t  ~
+  =/  full=@t  ?:(=('~' i.t) seg (cat 3 '~' seg))
+  (slaw %p full)
+::  ==  settings
+::
+++  serve-settings
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  doc=json  bind:m  (read-json (rf 1 / %'settings.json'))
+  (send-json eyre-id 200 (mask-doc:arm doc))
+++  serve-set-settings
+  |=  [eyre-id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  got  (de-settings:arm jon)
+  ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
+  =/  op=json
+    (pairs:enjs:format ~[['op' s+'set-settings'] ['settings' (en-settings:arm p.got)]])
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (mask-doc:arm (en-settings:arm p.got)))
+::  ==  providers
+::
+++  serve-providers
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  =/  rows=(list json)
+    (turn (sort ~(tap by pm) |=([a=[k=@t *] b=[k=@t *]] (aor k.a k.b))) tail-masked)
+  (send-json eyre-id 200 a+rows)
+++  tail-masked
+  |=  [k=@t p=provider:arm]
+  ^-  json
+  (en-provider-masked:arm p)
+::  +serve-add-provider: a new row. An id already held is 409, so the
+::  page never silently overwrites a connection.
+::
+++  serve-add-provider
+  |=  [eyre-id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  got  (de-provider:arm jon)
+  ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  ?:  (~(has by pm) id.p.got)  (send-err eyre-id 409 'id: already a provider')
+  ?:  (gte ~(wyt by pm) max-providers:arm)
+    (send-err eyre-id 409 'providers: over 200')
+  ;<  ~  bind:m  (poke-provider jon)
+  (send-json eyre-id 200 (en-provider-masked:arm p.got))
+::  +serve-put-provider: an edit. A blank secret keeps the stored one,
+::  which the writer resolves; an unknown id is 409.
+::
+++  serve-put-provider
+  |=  [eyre-id=@ta id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  ?=([%o *] jon)  (send-err eyre-id 400 'a JSON object is required')
+  =/  with-id=json  [%o (~(put by p.jon) 'id' s+`@t`id)]
+  =/  got  (de-provider:arm with-id)
+  ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  ?.  (~(has by pm) `@t`id)  (send-err eyre-id 409 'id: no such provider')
+  ;<  ~  bind:m  (poke-provider with-id)
+  (send-json eyre-id 200 (en-provider-masked:arm p.got))
+++  poke-provider
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke-writer 1 (pairs:enjs:format ~[['op' s+'set-provider'] ['provider' jon]]))
+++  serve-drop-provider
+  |=  [eyre-id=@ta id=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  ?.  (~(has by pm) `@t`id)  (send-err eyre-id 404 'no such provider')
+  =/  op=json  (pairs:enjs:format ~[['op' s+'drop-provider'] ['id' s+`@t`id]])
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (pairs:enjs:format ~[['id' s+`@t`id] ['ok' b+&]]))
+::  +serve-test-provider: one tiny chat completion, so the owner sees
+::  whether the key and the base url work before a customer does
+::
+++  serve-test-provider
+  |=  [eyre-id=@ta id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  =/  p=(unit provider:arm)  (~(get by pm) `@t`id)
+  ?~  p  (send-err eyre-id 404 'no such provider')
+  ;<  cat=(list model-row:arm)  bind:m  (catalog-of 1)
+  =/  mine=(list model-row:arm)
+    (skim cat |=(r=model-row:arm &(enabled.r =(provider.r `@t`id))))
+  =/  model=@t  ?~(mine (gs:arm jon 'model') upstream.i.mine)
+  ?:  =('' model)  (send-err eyre-id 400 'model: no enabled row on this provider')
+  =/  body=json
+    %-  pairs:enjs:format
+    :~  ['model' s+model]
+        :-  'messages'
+        :-  %a
+        :~  (pairs:enjs:format ~[['role' s+'user'] ['content' s+'Say ok.']])
+        ==
+        ['max_tokens' (numb:enjs:format 5)]
+    ==
+  ;<  res=[status=@ud body=@t]  bind:m
+    (post-json (join-url base-url.u.p '/chat/completions') api-key.u.p body)
+  =/  answer=json  (fall (de:json:html body.res) ~)
+  =/  choices=(list json)  (ga:arm answer 'choices')
+  =/  text=@t
+    ?^  choices  (gs:arm (gj:arm i.choices 'message') 'content')
+    ?:  =(0 status.res)  'no answer within two minutes'
+    (read-error:arm body.res)
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['status' (numb:enjs:format status.res)]
+      ['model' s+(gs:arm answer 'model')]
+      ['text' s+text]
+  ==
+::  +serve-import: the provider's models listing folded into the
+::  catalog. Every fresh row lands disabled, so nothing is sold until
+::  the owner says so.
+::
+++  serve-import
+  |=  [eyre-id=@ta id=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  =/  p=(unit provider:arm)  (~(get by pm) `@t`id)
+  ?~  p  (send-err eyre-id 404 'no such provider')
+  ;<  sj=json  bind:m  (read-json (rf 1 / %'settings.json'))
+  =/  pct=@ud  ?:(=(0 (gn:arm sj 'markup_pct')) 130 (gn:arm sj 'markup_pct'))
+  ;<  res=[status=@ud body=@t]  bind:m
+    (get-json (join-url base-url.u.p '/models') api-key.u.p)
+  ?:  =(0 status.res)  (send-err eyre-id 504 'no answer from the provider within two minutes')
+  ?.  &((gte status.res 200) (lth status.res 300))
+    (send-err eyre-id 502 (cat 3 'the provider answered ' (crip (a-co:co status.res))))
+  =/  listing=json  (fall (de:json:html body.res) ~)
+  =/  fresh=(list model-row:arm)  (import-rows:arm `@t`id pct listing)
+  ;<  cat=(list model-row:arm)  bind:m  (catalog-of 1)
+  =/  merged=(list model-row:arm)  (merge-import:arm cat fresh)
+  =/  added=@ud  (sub (lent merged) (lent cat))
+  =/  op=json
+    (pairs:enjs:format ~[['op' s+'set-catalog'] ['catalog' (en-catalog:arm merged)]])
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (pairs:enjs:format ~[['added' (numb:enjs:format added)]]))
+::  ==  the catalog
+::
+++  serve-catalog
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  jon=json  bind:m  (read-json (rf 1 / %'catalog.json'))
+  (send-json eyre-id 200 jon)
+::  +serve-set-catalog: the whole catalog, replaced. A row naming a
+::  provider that is not there is refused by index, the way the lib
+::  names any other bad field.
+::
+++  serve-set-catalog
+  |=  [eyre-id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  got  (de-catalog:arm jon)
+  ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  =/  bad=(unit @t)  (unknown-provider p.got pm 0)
+  ?^  bad  (send-err eyre-id 400 u.bad)
+  =/  op=json
+    (pairs:enjs:format ~[['op' s+'set-catalog'] ['catalog' (en-catalog:arm p.got)]])
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (en-catalog:arm p.got))
+++  unknown-provider
+  |=  [rows=(list model-row:arm) pm=(map @t provider:arm) i=@ud]
+  ^-  (unit @t)
+  ?~  rows  ~
+  ?.  (~(has by pm) provider.i.rows)
+    =/  at=tape  (a-co:co i)
+    `(crip (weld "row " (weld at " provider: unknown")))
+  $(rows t.rows, i +(i))
+::  ==  accounts
+::
+++  serve-accounts
+  |=  [eyre-id=@ta args=quay:eyre]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  q=@t  (fall (get-key:kv:html-utils 'q' args) '')
+  ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 1)
+  =/  kept=(list [=account:arm keys=@ud])
+    ?:  =('' q)  all
+    %+  skim  all
+    |=  [a=account:arm keys=@ud]
+    ^-  ?
+    =/  hay=tape  (trip (scot %p ship.a))
+    =/  needle=tape  (trip q)
+    !=(~ (find needle hay))
+  =/  rows=(list json)
+    %+  turn  kept
+    |=  [a=account:arm keys=@ud]
+    ^-  json
+    (en-account-summary:arm a keys)
+  (send-json eyre-id 200 a+rows)
+::  +serve-account: one account with its public keys and the newest
+::  hundred ledger rows
+::
+++  serve-account
+  |=  [eyre-id=@ta seg=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ;<  aj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (send-err eyre-id 404 'no such account')
+  ;<  keys=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  =/  key-rows=(list json)
+    %+  murn  ~(tap by km)
+    |=  [id=@t j=json]
+    ^-  (unit json)
+    =/  k=(unit key:arm)  (de-key:arm j)
+    ?~(k ~ `(en-key-public:arm u.k))
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 1 u.who)
+  =/  sorted=(list row:arm)
+    %+  turn
+      %+  sort  rows
+      |=  [x=[name=@ta =row:arm] y=[name=@ta =row:arm]]
+      ^-  ?
+      ?:  =(at.row.x at.row.y)  (aor name.y name.x)
+      (gth at.row.x at.row.y)
+    |=([nam=@ta r=row:arm] r)
+  =/  newest=(list row:arm)  (scag 100 sorted)
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['account' (en-account:arm u.a)]
+      ['keys' a+key-rows]
+      ['ledger' a+(turn newest en-row:arm)]
+  ==
+::  +serve-mint: a new inference key. The account is opened when it is
+::  not there yet. The secret is answered once and stored only as a
+::  salted hash.
+::
+++  serve-mint
+  |=  [eyre-id=@ta seg=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  =/  name=@t  (gs:arm jon 'name')
+  ?:  |(=('' name) (gth (met 3 name) max-name:arm))
+    (send-err eyre-id 400 'name: 1 to 200 bytes')
+  ;<  aj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?:  ?&(?=(^ a) closed.u.a)  (send-err eyre-id 409 'account: closed')
+  ;<  ~  bind:m
+    ?^  a  (pure:(fiber:fiber:nexus ,~) ~)
+    %+  poke-writer  1
+    (pairs:enjs:format ~[['op' s+'open-account'] ['ship' s+(scot %p u.who)]])
+  ;<  keys=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  ?:  (gte ~(wyt by km) max-keys:arm)  (send-err eyre-id 409 'keys: over 20')
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  ;<  now=@da  bind:m  get-time:io
+  =/  id=@t  (id-of:arm eny)
+  ?:  (~(has by km) id)  (send-err eyre-id 409 'id: taken, try again')
+  =/  salt=@t  (scot %uv (end [3 10] (rsh [3 5] eny)))
+  =/  secret=@t  (secret-of:arm (rsh [3 15] eny))
+  =/  k=key:arm  [id name salt (hash-token:arm salt secret) now ~]
+  =/  op=json
+    %-  pairs:enjs:format
+    :~  ['op' s+'add-key']
+        ['ship' s+(scot %p u.who)]
+        ['key' (en-key-row:arm k)]
+    ==
+  ;<  err=(unit tang)  bind:m  (poke-soft:io (rf 1 / %'main.sig') [[/ %json] op])
+  ?^  err  (send-err eyre-id 500 'the writer refused the poke')
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['id' s+id]
+      ['name' s+name]
+      ['made' (en-time:arm now)]
+      ['secret' s+(rap 3 id '.' secret ~)]
+  ==
+++  serve-revoke
+  |=  [eyre-id=@ta seg=@ta kid=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ;<  keys=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  ?.  (~(has by km) `@t`kid)  (send-err eyre-id 404 'no such key')
+  =/  op=json
+    %-  pairs:enjs:format
+    :~  ['op' s+'drop-key']
+        ['ship' s+(scot %p u.who)]
+        ['id' s+`@t`kid]
+    ==
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (pairs:enjs:format ~[['id' s+`@t`kid] ['ok' b+&]]))
+::  +serve-credit, +serve-refund: the owner's own money rows. The ref
+::  stamps the second, so two clicks in one second are one row and the
+::  second answers 409.
+::
+++  serve-credit
+  |=  [eyre-id=@ta seg=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (serve-money eyre-id seg jon 'credit')
+++  serve-refund
+  |=  [eyre-id=@ta seg=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (serve-money eyre-id seg jon 'refund')
+++  serve-money
+  |=  [eyre-id=@ta seg=@ta jon=json kind=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  =/  amount=@ud  (gn:arm jon 'amount')
+  ?:  =(0 amount)  (send-err eyre-id 400 'amount: a whole number above zero')
+  ;<  a=(unit account:arm)  bind:m  (live-account-at 1 u.who)
+  ?~  a  (send-err eyre-id 404 'no open account')
+  =/  given=@t  (gs:arm jon 'ref')
+  ;<  now=@da  bind:m  get-time:io
+  =/  stamp=tape  (a-co:co (unix-secs:arm now))
+  =/  ref=@t  ?:(=('' given) (crip (weld "owner-" stamp)) given)
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 1 u.who)
+  ?:  (has-ref rows ref)  (send-err eyre-id 409 'ref: already recorded')
+  =/  op=json
+    %-  pairs:enjs:format
+    :~  ['op' s+kind]
+        ['ship' s+(scot %p u.who)]
+        ['amount' (numb:enjs:format amount)]
+        ['rail' s+'owner']
+        ['ref' s+ref]
+        ['note' s+(gs:arm jon 'note')]
+    ==
+  ;<  err=(unit tang)  bind:m  (poke-soft:io (rf 1 / %'main.sig') [[/ %json] op])
+  ?^  err  (send-err eyre-id 500 'the writer refused the poke')
+  =/  move=@sd  ?:(=('credit' kind) (sun:si amount) (new:si | amount))
+  =/  bal=@sd  (sum:si balance.u.a move)
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['ship' s+(scot %p u.who)]
+      ['ref' s+ref]
+      ['amount' (numb:enjs:format amount)]
+      ['balance' (en-sd:arm bal)]
+  ==
+++  live-account-at
+  |=  [up=@ud who=@p]
+  =/  m  (fiber:fiber:nexus ,(unit account:arm))
+  ^-  form:m
+  ;<  aj=json  bind:m  (read-json (rf up (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (pure:m ~)
+  ?:  closed.u.a  (pure:m ~)
+  (pure:m a)
+++  serve-close
+  |=  [eyre-id=@ta seg=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ;<  aj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (send-err eyre-id 404 'no such account')
+  =/  op=json
+    (pairs:enjs:format ~[['op' s+'close-account'] ['ship' s+(scot %p u.who)]])
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+(scot %p u.who)] ['closed' b+&]]))
+::  +serve-drop-account: a hard delete, the gate's broom. The owner
+::  alone may take it and nothing on the page calls it.
+::
+++  serve-drop-account
+  |=  [eyre-id=@ta seg=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ;<  ex=?  bind:m  (peek-exists:io (rv 1 (acct-dir u.who)))
+  ?.  ex  (send-err eyre-id 404 'no such account')
+  =/  op=json
+    (pairs:enjs:format ~[['op' s+'drop-account'] ['ship' s+(scot %p u.who)]])
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+(scot %p u.who)] ['ok' b+&]]))
+++  serve-log
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  log=json  bind:m  (read-json (rf 1 /tr %log))
+  (send-json eyre-id 200 log)
+::  ==  the inference API
+::
+::  +serve-models: the enabled catalog, rows whose provider still
+::  exists, in OpenAI's list shape
+::
+++  serve-models
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  cat=(list model-row:arm)  bind:m  (catalog-of 1)
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  =/  live=(list model-row:arm)
+    (skim cat |=(r=model-row:arm (~(has by pm) provider.r)))
+  (send-json eyre-id 200 (en-models-list:arm live))
+::  +serve-proxy: spec section 5, steps 1 to 7. The owner's cookie is
+::  refused here on purpose: the page must not double as a free client.
+::
+++  serve-proxy
+  |=  [eyre-id=@ta act=actor jon=json kind=?(%chat %embeddings)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  owner.act  (send-err eyre-id 403 'an inference key is required')
+  ?.  ?=([%o *] jon)  (send-err eyre-id 400 'a JSON object is required')
+  =/  want=@t  (gs:arm jon 'model')
+  ;<  cat=(list model-row:arm)  bind:m  (catalog-of 1)
+  =/  row=(unit model-row:arm)  (find-model:arm cat want)
+  ?~  row  (send-err eyre-id 404 'model: not offered')
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  =/  p=(unit provider:arm)  (~(get by pm) provider.u.row)
+  ?~  p  (send-err eyre-id 404 'model: not offered')
+  ;<  a=(unit account:arm)  bind:m  (live-account-at 1 ship.act)
+  ?~  a  (send-err eyre-id 403 'forbidden')
+  ?.  (syn:si balance.u.a)  (send-err eyre-id 402 'balance: empty')
+  ?:  =(--0 balance.u.a)  (send-err eyre-id 402 'balance: empty')
+  ?:  (is-stream:arm jon)
+    (send-err eyre-id 400 'stream: not supported on the proxy; take a lease')
+  =/  body=json  (swap-model:arm jon upstream.u.row)
+  =/  leaf=@t  ?:(?=(%chat kind) '/chat/completions' '/embeddings')
+  ;<  res=[status=@ud body=@t]  bind:m
+    (post-json (join-url base-url.u.p leaf) api-key.u.p body)
+  ?:  =(0 status.res)
+    %^  send-json  eyre-id  504
+    %-  pairs:enjs:format
+    :~  :-  'error'
+        %-  pairs:enjs:format
+        :~  :-  'message'
+            :-  %s
+            (rap 3 'no answer from ' name.u.p ' within two minutes' ~)
+        ==
+    ==
+  ?.  &((gte status.res 200) (lth status.res 300))
+    ::  the upstream's own body when it is JSON, else a line naming it
+    =/  parsed=(unit json)  (de:json:html body.res)
+    ?^  parsed  (send-raw eyre-id status.res body.res)
+    =/  code=tape  (a-co:co status.res)
+    =/  why=@t  (rap 3 name.u.p ' answered ' (crip code) ~)
+    (send-err eyre-id status.res why)
+  =/  usage=(unit [in=@ud out=@ud])  (read-usage:arm body.res)
+  =/  toks=[in=@ud out=@ud]  ?~(usage [0 0] u.usage)
+  =/  in-charge=@ud   (charge:arm in.toks in.u.row)
+  =/  out-charge=@ud  ?:(?=(%chat kind) (charge:arm out.toks out.u.row) 0)
+  =/  in-cost=@ud   (charge:arm in.toks cost-in.u.row)
+  =/  out-cost=@ud  ?:(?=(%chat kind) (charge:arm out.toks cost-out.u.row) 0)
+  =/  answer=json  (fall (de:json:html body.res) ~)
+  =/  mode=@t  'proxy'
+  =/  op=json
+    %-  pairs:enjs:format
+    :~  ['op' s+'debit']
+        ['ship' s+(scot %p ship.act)]
+        ['amount' (numb:enjs:format (add in-charge out-charge))]
+        ['cost' (numb:enjs:format (add in-cost out-cost))]
+        ['model' s+id.u.row]
+        ['in' (numb:enjs:format in.toks)]
+        ['out' (numb:enjs:format ?:(?=(%chat kind) out.toks 0))]
+        ['mode' s+mode]
+        ['ref' s+(gs:arm answer 'id')]
+    ==
+  ::  the debit is written before the answer goes out, so a crash
+  ::  between the two costs the customer nothing and the owner one
+  ::  request
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-raw eyre-id status.res body.res)
+::  ==  the page
+::
+::  +serve-file: one of the page's grubs, no-cache so an updated desk
+::  shows at the next load
+::
+++  serve-file
+  |=  [eyre-id=@ta name=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  ct=(unit @t)
+    ?+  name  ~
+      %'armillary.html'  `'text/html; charset=utf-8'
+      %'armillary.css'   `'text/css; charset=utf-8'
+      %'armillary.js'    `'text/javascript; charset=utf-8'
+    ==
+  ?~  ct  (send-err eyre-id 404 'no such file')
+  ;<  vw=view:nexus  bind:m  (peek:io (rf 1 / name) `[/ %mime])
+  ?.  ?=([%file *] vw)  (send-err eyre-id 404 'no such file')
+  =/  got=(unit mime)  (mole |.(!<(mime (need-vase:tarball sang.vw))))
+  ?~  got  (send-err eyre-id 500 'unreadable file')
+  ::  nosniff: each of the three files is served with its own type, and
+  ::  a browser must not guess a different one out of the bytes
+  =/  heads
+    :~  ['content-type' u.ct]
+        ['cache-control' 'no-cache']
+        ['x-content-type-options' 'nosniff']
+    ==
+  (send-simple:srv eyre-id [[200 heads] `q.u.got])
+--
