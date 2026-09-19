@@ -714,7 +714,22 @@
   `@ta`(crip (weld secs (weld "-" nth)))
 ::  ==  accounts
 ::
-+$  account  [ship=@p balance=@sd made=@da seen=(unit @da) closed=?]
+::    The three Stripe fields are the account's half of a subscription:
+::    the customer and the subscription ids Stripe gave us, and when the
+::    period it is paid for runs out. A customer-facing view never shows
+::    the ids; +en-subscription with with-id false is what it carries.
+::
++$  account
+  $:  ship=@p
+      balance=@sd
+      made=@da
+      seen=(unit @da)
+      closed=?
+      plan=@t
+      stripe-customer=@t
+      stripe-subscription=@t
+      renews=(unit @da)
+  ==
 ++  en-account
   |=  a=account
   ^-  json
@@ -724,6 +739,10 @@
       ['made' (en-time made.a)]
       ['seen' (en-maybe-time seen.a)]
       ['closed' b+closed.a]
+      ['plan' s+plan.a]
+      ['stripe_customer' s+stripe-customer.a]
+      ['stripe_subscription' s+stripe-subscription.a]
+      ['renews' (en-maybe-time renews.a)]
   ==
 ++  de-account
   |=  jon=json
@@ -733,7 +752,29 @@
   ?~  who  ~
   =/  made=(unit @da)  (gt jon 'made')
   ?~  made  ~
-  `[u.who (gsd jon 'balance') u.made (gt jon 'seen') (gb jon 'closed')]
+  :-  ~
+  :*  u.who
+      (gsd jon 'balance')
+      u.made
+      (gt jon 'seen')
+      (gb jon 'closed')
+      (gs jon 'plan')
+      (gs jon 'stripe_customer')
+      (gs jon 'stripe_subscription')
+      (gt jon 'renews')
+  ==
+::  +en-subscription: an account's subscription as a read route answers
+::  it. with-id is the owner's view; the customer's own view leaves the
+::  Stripe ids out, since they are ours and not its business.
+::
+++  en-subscription
+  |=  [sub=@t renews=(unit @da) with-id=?]
+  ^-  json
+  =/  rows=(list [@t json])
+    :~  ['active' b+!=('' sub)]
+        ['renews' (en-maybe-time renews)]
+    ==
+  (pairs:enjs:format ?.(with-id rows (snoc rows ['id' s+sub])))
 ::  +en-account-summary: one line of the accounts list
 ::
 ++  en-account-summary
@@ -746,6 +787,8 @@
       ['made' (en-time made.a)]
       ['seen' (en-maybe-time seen.a)]
       ['closed' b+closed.a]
+      ['plan' s+plan.a]
+      ['subscription' (en-subscription stripe-subscription.a renews.a &)]
   ==
 ::  ==  settings
 ::
@@ -755,9 +798,16 @@
       public-url=@t
       mode=?(%stub %live)
       refuse-comets=?
+      stripe-key=@t
+      stripe-webhook-secret=@t
+      stripe-url=@t
   ==
-::  +starter-settings: what a fresh install holds. Phase 3 adds the
-::  Stripe and BTCPay fields.
+::  +stripe-base: where Stripe's API lives. A blank stripe_url is the
+::  real one; the gate points it at the stub instead.
+::
+++  stripe-base  'https://api.stripe.com'
+::  +starter-settings: what a fresh install holds. Phase 4 adds the
+::  BTCPay fields.
 ::
 ++  starter-settings
   ^-  json
@@ -767,6 +817,9 @@
       ['public_url' s+'']
       ['mode' s+'stub']
       ['refuse_comets' b+|]
+      ['stripe_key' s+'']
+      ['stripe_webhook_secret' s+'']
+      ['stripe_url' s+stripe-base]
   ==
 ++  de-settings
   |=  jon=json
@@ -778,8 +831,19 @@
   ?.  |(=('stub' mode) =('live' mode))  [%| 'mode: stub or live']
   =/  url=@t  (gs jon 'public_url')
   ?:  (gth (met 3 url) max-url)  [%| 'public_url: at most 500 bytes']
+  =/  sur=@t  (gs jon 'stripe_url')
+  ?:  (gth (met 3 sur) max-url)  [%| 'stripe_url: at most 500 bytes']
   =/  amode=?(%stub %live)  ?:(=('live' mode) %live %stub)
-  [%& [pct (gn jon 'min_topup') url amode (gb jon 'refuse_comets')]]
+  :-  %&
+  :*  pct
+      (gn jon 'min_topup')
+      url
+      amode
+      (gb jon 'refuse_comets')
+      (gs jon 'stripe_key')
+      (gs jon 'stripe_webhook_secret')
+      ?:(=('' sur) stripe-base sur)
+  ==
 ++  en-settings
   |=  s=settings
   ^-  json
@@ -789,7 +853,105 @@
       ['public_url' s+public-url.s]
       ['mode' s+`@t`mode.s]
       ['refuse_comets' b+refuse-comets.s]
+      ['stripe_key' s+stripe-key.s]
+      ['stripe_webhook_secret' s+stripe-webhook-secret.s]
+      ['stripe_url' s+stripe-url.s]
   ==
+::  ==  plans
+::
+::  +$  plan: one thing a customer may buy. A topup plan credits its
+::  credit once; a subscription credits it every time Stripe reports its
+::  invoice paid. stripe-price is the Price id on Stripe, filled in by
+::  the owner's Create on Stripe button or pasted; it is an identifier,
+::  not a secret.
+::
++$  plan
+  $:  id=@t
+      name=@t
+      kind=?(%topup %subscription)
+      price=@ud
+      credit=@ud
+      interval=@t
+      stripe-price=@t
+  ==
+++  de-plan
+  |=  jon=json
+  ^-  (each plan @t)
+  ?.  ?=([%o *] jon)  [%| 'a JSON object is required']
+  =/  id=@t  (gs jon 'id')
+  ?:  |(=('' id) (gth (met 3 id) max-id))  [%| 'id: 1 to 64 bytes']
+  =/  kind=@t  (gs jon 'kind')
+  ?.  |(=('topup' kind) =('subscription' kind))
+    [%| 'kind: topup or subscription']
+  =/  price=@ud  (gn jon 'price')
+  ?:  =(0 price)  [%| 'price: above zero']
+  =/  credit=@ud  (gn jon 'credit')
+  ?:  =(0 credit)  [%| 'credit: above zero']
+  =/  interval=@t  (gs jon 'interval')
+  =/  subs=?  =('subscription' kind)
+  ?:  &(subs !|(=('month' interval) =('year' interval)))
+    [%| 'interval: month or year']
+  =/  name=@t  ?:(=('' (gs jon 'name')) id (gs jon 'name'))
+  ?:  (gth (met 3 name) max-name)  [%| 'name: 1 to 200 bytes']
+  =/  akind=?(%topup %subscription)  ?:(subs %subscription %topup)
+  [%& [id name akind price credit ?:(subs interval '') (gs jon 'stripe_price')]]
+++  en-plan
+  |=  p=plan
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['id' s+id.p]
+      ['name' s+name.p]
+      ['kind' s+`@t`kind.p]
+      ['price' (en-num price.p)]
+      ['credit' (en-num credit.p)]
+      ['interval' s+interval.p]
+      ['stripe_price' s+stripe-price.p]
+  ==
+::  +de-plan-stored: a stored plan row back to its shape
+::
+++  de-plan-stored
+  |=  jon=json
+  ^-  (unit plan)
+  =/  got  (de-plan jon)
+  ?:(?=(%| -.got) ~ `p.got)
+::  +en-plans-public: what a customer ship reads. Every field is here:
+::  nothing on a plan is a secret, and the Price id is what a checkout
+::  names out loud.
+::
+++  en-plans-public
+  |=  plans=(list plan)
+  ^-  json
+  [%a (turn plans en-plan)]
+::  +plans-sorted: the rows of plans.json by id, so a page and a gate
+::  see the same order every time
+::
+++  plans-sorted
+  |=  jon=json
+  ^-  (list plan)
+  =/  pm=(map @t json)  ?:(?=([%o *] jon) p.jon ~)
+  %+  murn  (sort ~(tap by pm) |=([a=[k=@t *] b=[k=@t *]] (aor k.a k.b)))
+  |=  [k=@t j=json]
+  ^-  (unit plan)
+  (de-plan-stored j)
+::  +find-plan: the plan a customer named, or ~
+::
+++  find-plan
+  |=  [plans=(list plan) id=@t]
+  ^-  (unit plan)
+  |-  ^-  (unit plan)
+  ?~  plans  ~
+  ?:  =(id id.i.plans)  `i.plans
+  $(plans t.plans)
+::  +plan-by-price: the plan a Stripe Price id names, or ~
+::
+++  plan-by-price
+  |=  [plans=(list plan) price=@t]
+  ^-  (unit plan)
+  ?:  =('' price)  ~
+  |-  ^-  (unit plan)
+  ?~  plans  ~
+  ?:  =(price stripe-price.i.plans)  `i.plans
+  $(plans t.plans)
 ::  ==  the audit ring
 ::
 ::  +ring-push: newest first, trimmed to a cap
@@ -940,6 +1102,39 @@
   |=  jon=json
   ^-  (each settings @t)
   (de-settings (gj jon 'settings'))
+::  +de-op-plan, +de-op-drop-plan: one plan row, and a plan by id
+::
+++  de-op-plan
+  |=  jon=json
+  ^-  (each plan @t)
+  (de-plan (gj jon 'plan'))
+++  de-op-drop-plan
+  |=  jon=json
+  ^-  (each @t @t)
+  (de-op-drop jon)
+::  +de-op-subscription: what Stripe told us about a customer's
+::  subscription. renews is absent until the first invoice says when the
+::  period ends.
+::
+++  de-op-subscription
+  |=  jon=json
+  ^-  (each [ship=@p customer=@t subscription=@t plan=@t renews=(unit @da)] @t)
+  =/  who  (ship-field jon)
+  ?:  ?=(%| -.who)  [%| p.who]
+  =/  sub=@t  (gs jon 'subscription')
+  ?:  |(=('' sub) (gth (met 3 sub) max-name))  [%| 'subscription: 1 to 200 bytes']
+  =/  cus=@t  (gs jon 'customer')
+  ?:  (gth (met 3 cus) max-name)  [%| 'customer: at most 200 bytes']
+  =/  plan=@t  (gs jon 'plan')
+  ?:  (gth (met 3 plan) max-id)  [%| 'plan: at most 64 bytes']
+  [%& [p.who cus sub plan (gt jon 'renews')]]
+::  +de-op-clear-subscription: the account keeps its ledger and loses
+::  its subscription
+::
+++  de-op-clear-subscription
+  |=  jon=json
+  ^-  (each @p @t)
+  (ship-field jon)
 ::  ==  the account channel over ames
 ::
 ::  +armillary-instance: where a desk install of this app sits on any

@@ -11,6 +11,8 @@
 ::  call rather than of a face
 ++  refused  |=(e=(each * @t) ^-(? ?=(%| -.e)))
 ++  taken    |=(e=(each * @t) ^-(? ?=(%& -.e)))
+::  +why: the field a decoder named, or '' when it took the row
+++  why      |=(e=(each * @t) ^-(@t ?:(?=(%| -.e) p.e '')))
 ++  t0  ~2026.9.19..22.05.00
 ::  ==  time
 ::
@@ -272,14 +274,114 @@
 ::  ==  accounts and settings
 ::
 ++  test-account-roundtrip
-  =/  a=account:arm  [~wex -20 t0 ~ |]
-  (expect-eq !>(`(unit account:arm)`[~ a]) !>((de-account:arm (en-account:arm a))))
+  =/  bare=account:arm  [~wex -20 t0 ~ | '' '' '' ~]
+  =/  subbed=account:arm  [~wex -20 t0 `t0 | 'pro' 'cus_9' 'sub_9' `t0]
+  ;:  weld
+    (expect-eq !>(`(unit account:arm)`[~ bare]) !>((de-account:arm (en-account:arm bare))))
+    (expect-eq !>(`(unit account:arm)`[~ subbed]) !>((de-account:arm (en-account:arm subbed))))
+  ==
+::  the customer's own view never carries the Stripe ids; the owner's
+::  read of the same account does
+::
+++  test-en-subscription
+  =/  mine=json  (en-subscription:arm 'sub_9' `t0 |)
+  =/  theirs=json  (en-subscription:arm 'sub_9' `t0 &)
+  =/  none=json  (en-subscription:arm '' ~ |)
+  ;:  weld
+    (expect !>((gb:arm mine 'active')))
+    (expect-eq !>('') !>((gs:arm mine 'id')))
+    (expect-eq !>('sub_9') !>((gs:arm theirs 'id')))
+    (expect !>(!(gb:arm none 'active')))
+    (expect-eq !>(`json`~) !>((gj:arm none 'renews')))
+  ==
 ++  test-de-settings
   =/  got  (de-settings:arm starter-settings:arm)
   ;:  weld
     (expect !>(?=(%& -.got)))
     (expect-eq !>(`@ud`130) !>(?:(?=(%& -.got) markup.p.got 0)))
     (expect-eq !>(`@ud`5.000.000) !>(?:(?=(%& -.got) min-topup.p.got 0)))
+    (expect-eq !>('https://api.stripe.com') !>(?:(?=(%& -.got) stripe-url.p.got '')))
+    (expect-eq !>('') !>(?:(?=(%& -.got) stripe-key.p.got 'x')))
+  ==
+::  a blank stripe_url is the real Stripe, so a settings document written
+::  before phase 3 still points somewhere
+::
+++  test-de-settings-stripe-url
+  =/  got  (de-settings:arm (jo '{"markup_pct":130,"mode":"live","stripe_url":""}'))
+  (expect-eq !>('https://api.stripe.com') !>(?:(?=(%& -.got) stripe-url.p.got '')))
+::  the two Stripe secrets are masked by the same arm the provider keys
+::  use, so nothing had to be added for them
+::
+++  test-mask-doc-stripe
+  =/  doc=json  (jo '{"stripe_key":"sk_test_abcd","stripe_webhook_secret":"whsec_wxyz","stripe_url":"https://api.stripe.com"}')
+  =/  masked=json  (mask-doc:arm doc)
+  ;:  weld
+    (expect-eq !>('••••abcd') !>((gs:arm masked 'stripe_key')))
+    (expect-eq !>('••••wxyz') !>((gs:arm masked 'stripe_webhook_secret')))
+    (expect-eq !>('https://api.stripe.com') !>((gs:arm masked 'stripe_url')))
+  ==
+::  ==  plans
+::
+++  test-de-plan
+  =/  good=@t
+    '{"id":"pro","name":"Pro","kind":"subscription","price":2500000,"credit":3000000,"interval":"month"}'
+  =/  got  (de-plan:arm (jo good))
+  ;:  weld
+    (expect !>((taken (de-plan:arm (jo good)))))
+    (expect-eq !>('pro') !>(?:(?=(%& -.got) id.p.got '')))
+    (expect-eq !>('month') !>(?:(?=(%& -.got) interval.p.got '')))
+    (expect-eq !>('') !>(?:(?=(%& -.got) stripe-price.p.got 'x')))
+    %+  expect-eq  !>('id: 1 to 64 bytes')
+    !>((why (de-plan:arm (jo '{"kind":"topup","price":1,"credit":1}'))))
+    %+  expect-eq  !>('kind: topup or subscription')
+    !>((why (de-plan:arm (jo '{"id":"a","kind":"x","price":1,"credit":1}'))))
+    %+  expect-eq  !>('price: above zero')
+    !>((why (de-plan:arm (jo '{"id":"a","kind":"topup","price":0,"credit":1}'))))
+    %+  expect-eq  !>('credit: above zero')
+    !>((why (de-plan:arm (jo '{"id":"a","kind":"topup","price":1,"credit":0}'))))
+    %+  expect-eq  !>('interval: month or year')
+    !>((why (de-plan:arm (jo '{"id":"a","kind":"subscription","price":1,"credit":1}'))))
+    ::  a top-up plan needs no interval
+    (expect !>((taken (de-plan:arm (jo '{"id":"a","kind":"topup","price":1,"credit":1}')))))
+  ==
+++  test-en-plans-public
+  =/  doc=@t
+    '{"pro":{"id":"pro","name":"Pro","kind":"subscription","price":2500000,"credit":3000000,"interval":"month","stripe_price":"price_1"},"ten":{"id":"ten","name":"Ten","kind":"topup","price":10000000,"credit":10000000,"interval":"","stripe_price":""}}'
+  =/  plans=(list plan:arm)  (plans-sorted:arm (jo doc))
+  =/  out=json  (en-plans-public:arm plans)
+  =/  rows=(list json)  ?:(?=([%a *] out) p.out ~)
+  =/  first=json  ?~(rows ~ i.rows)
+  =/  ten=(unit plan:arm)  (find-plan:arm plans 'ten')
+  =/  pro=(unit plan:arm)  (plan-by-price:arm plans 'price_1')
+  ;:  weld
+    (expect-eq !>(`@ud`2) !>((lent plans)))
+    ::  by id, so a page and a gate see one order
+    (expect-eq !>('pro') !>((gs:arm first 'id')))
+    (expect-eq !>('price_1') !>((gs:arm first 'stripe_price')))
+    (expect-eq !>(`(unit plan:arm)`~) !>((find-plan:arm plans 'nope')))
+    (expect-eq !>('ten') !>(?~(ten '' id.u.ten)))
+    (expect-eq !>('pro') !>(?~(pro '' id.u.pro)))
+    (expect-eq !>(`(unit plan:arm)`~) !>((plan-by-price:arm plans '')))
+  ==
+++  test-de-op-plan
+  =/  good=@t  '{"plan":{"id":"a","kind":"topup","price":1,"credit":1}}'
+  ;:  weld
+    (expect !>((taken (de-op-plan:arm (jo good)))))
+    (expect !>((refused (de-op-plan:arm (jo '{"plan":{}}')))))
+    (expect !>((taken (de-op-drop-plan:arm (jo '{"id":"a"}')))))
+    (expect !>((refused (de-op-drop-plan:arm (jo '{}')))))
+  ==
+++  test-de-op-subscription
+  =/  good=@t
+    '{"ship":"~feb","customer":"cus_9","subscription":"sub_9","plan":"pro","renews":"2026-09-19T22:05:00Z"}'
+  =/  got  (de-op-subscription:arm (jo good))
+  ;:  weld
+    (expect !>((taken (de-op-subscription:arm (jo good)))))
+    (expect-eq !>('sub_9') !>(?:(?=(%& -.got) subscription.p.got '')))
+    (expect-eq !>(`(unit @da)`[~ t0]) !>(?:(?=(%& -.got) renews.p.got ~)))
+    (expect !>((refused (de-op-subscription:arm (jo '{"ship":"~feb"}')))))
+    (expect !>((refused (de-op-subscription:arm (jo '{"subscription":"sub_9"}')))))
+    (expect !>((taken (de-op-clear-subscription:arm (jo '{"ship":"~feb"}')))))
   ==
 ++  test-de-settings-bad-mode
   =/  got  (de-settings:arm (jo '{"markup_pct":130,"mode":"nope"}'))

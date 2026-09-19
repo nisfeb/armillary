@@ -56,7 +56,10 @@
 ++  hmac-sha256
   |=  [key=@t msg=@t]
   ^-  @ux
-  (hmac-sha256l:hmac:crypto [(met 3 key) key] [(met 3 msg) msg])
+  ::  sha-256l reads a byts with its first byte most significant, and a
+  ::  cord holds its first byte least significant, so both sides are
+  ::  swapped on the way in. The digest comes back in standard order.
+  (hmac-sha256l:hmac:crypto [(met 3 key) (swp 3 key)] [(met 3 msg) (swp 3 msg)])
 ++  hex-of
   |=  h=@ux
   ^-  @t
@@ -65,7 +68,7 @@
   |-  ^-  @t
   ?:  =(64 i)  (crip out)
   =/  nib=@  (cut 2 [i 1] h)
-  =/  c=@t  ?:((lth nib 10) (add '0' nib) (add 87 (sub nib 10)))
+  =/  c=@t  ?:((lth nib 10) (add '0' nib) (add 87 nib))
   $(i +(i), out [c out])
 ++  same-hex
   |=  [a=@t b=@t]

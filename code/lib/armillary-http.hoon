@@ -78,7 +78,10 @@
 ++  hmac-sha256
   |=  [key=@t msg=@t]
   ^-  @ux
-  (hmac-sha256l:hmac:crypto [(met 3 key) key] [(met 3 msg) msg])
+  ::  sha-256l reads a byts with its first byte most significant, and a
+  ::  cord holds its first byte least significant, so both sides are
+  ::  swapped on the way in. The digest comes back in standard order.
+  (hmac-sha256l:hmac:crypto [(met 3 key) (swp 3 key)] [(met 3 msg) (swp 3 msg)])
 ::  +hex-of: a digest as 64 lowercase hex digits. An atom drops its
 ::  leading zero bytes, so the padding is done here rather than by scot.
 ::
@@ -90,7 +93,7 @@
   |-  ^-  @t
   ?:  =(64 i)  (crip out)
   =/  nib=@  (cut 2 [i 1] h)
-  =/  c=@t  ?:((lth nib 10) (add '0' nib) (add 87 (sub nib 10)))
+  =/  c=@t  ?:((lth nib 10) (add '0' nib) (add 87 nib))
   $(i +(i), out [c out])
 ::  +same-hex: two hex strings, compared without an early exit. Every
 ::  byte is folded in, so the time the answer takes says nothing about

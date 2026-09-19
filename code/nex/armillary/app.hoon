@@ -9,7 +9,7 @@
 ::    /providers.json                    the upstream connections, secrets inside
 ::    /catalog.json                      the models offered
 ::    /catalog-public.json               the enabled rows with prices
-::    /plans.json                        the plans, phase 3 fills them
+::    /plans.json                        the plans a customer may buy, by id
 ::    /vendor.json                       the vendor ship; ours on the vendor
 ::    /key-index.json                    a key id to the ship that holds it
 ::    /accounts/<ship>/account.json      ship, cached balance, made, seen, closed
@@ -33,7 +33,9 @@
 ::  and sent upstream and nowhere else: no read route answers one, and
 ::  no audit row carries one.
 ::
-/<  arm   /lib/armillary.hoon
+/<  arm     /lib/armillary.hoon
+/<  ahttp   /lib/armillary-http.hoon
+/<  astripe  /lib/armillary-stripe.hoon
 /&  icon  icon.svg
 /&  page-html  armillary.html
 /&  page-css   armillary.css
@@ -77,7 +79,7 @@
           [%fall %& [/ %'providers.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'catalog.json'] [[/ %json] [%a ~]]]
           [%fall %& [/ %'catalog-public.json'] [[/ %json] [%a ~]]]
-          [%fall %& [/ %'plans.json'] [[/ %json] [%a ~]]]
+          [%fall %& [/ %'plans.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'vendor.json'] [[/ %json] vendor-starter]]
           [%fall %& [/ %'key-index.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'keys.json'] [[/ %json] [%o ~]]]
@@ -218,6 +220,10 @@
   ?:  =('set-provider' op)   (do-set-provider jon)
   ?:  =('drop-provider' op)  (do-drop-provider jon)
   ?:  =('set-catalog' op)    (do-set-catalog jon)
+  ?:  =('set-plan' op)       (do-set-plan jon)
+  ?:  =('drop-plan' op)      (do-drop-plan jon)
+  ?:  =('set-subscription' op)    (do-set-subscription jon)
+  ?:  =('clear-subscription' op)  (do-clear-subscription jon)
   ?:  =('open-account' op)   (do-open-account jon)
   ?:  =('credit' op)         (do-credit jon)
   ?:  =('debit' op)          (do-debit jon)
@@ -487,12 +493,27 @@
   ^-  form:m
   =/  got  (de-op-settings:arm jon)
   ?:  ?=(%| -.got)  (refuse 'set-settings' p.got '')
-  =/  doc=json  (en-settings:arm p.got)
   ;<  cur=json  bind:m  (read-json (rf 0 / %'settings.json'))
+  ::  the two Stripe secrets follow the provider rule: a blank field
+  ::  keeps what is stored, an explicit null clears it. The page reads
+  ::  them masked, so a save that sent the mask back would otherwise
+  ::  store the mask.
+  =/  doc=json  (en-settings:arm (kept-secrets p.got (gj:arm jon 'settings') cur))
   ?:  =(cur doc)  (note-then-no 'set-settings' 'unchanged' '')
   ;<  ~  bind:m  (over:io (rf 0 / %'settings.json') [[/ %json] doc])
   ;<  ~  bind:m  (note 'set-settings' & '' '' --0)
   (pure:m &)
+::  +kept-secrets: a settings row with its two Stripe secrets resolved
+::  against what is stored. Both the writer and the route that answers
+::  the save use it, so the answer says what was kept.
+::
+++  kept-secrets
+  |=  [s=settings:arm incoming=json stored=json]
+  ^-  settings:arm
+  =/  key=@t  (keep-secret incoming `stored 'stripe_key' stripe-key.s)
+  =/  hook=@t
+    (keep-secret incoming `stored 'stripe_webhook_secret' stripe-webhook-secret.s)
+  s(stripe-key key, stripe-webhook-secret hook)
 ::  +keep-secret: a blank incoming secret keeps the stored one, an
 ::  explicit null clears it, anything else replaces it
 ::
@@ -559,6 +580,97 @@
     (over:io (rf 0 / %'catalog-public.json') [[/ %json] (public-catalog:arm cat)])
   ;<  ~  bind:m  (note 'set-catalog' & '' '' --0)
   (pure:m &)
+::  ==  plans
+::
+::  +plans-of: the rows of plans.json, by id. A document laid before
+::  plans existed reads as no plans rather than crashing a request.
+::
+++  plans-of
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(list plan:arm))
+  ^-  form:m
+  ;<  jon=json  bind:m  (read-json (rf up / %'plans.json'))
+  (pure:m (plans-sorted:arm jon))
+::  +do-set-plan: one plan laid or replaced. The map is keyed by id, so
+::  a repeat is an edit rather than a second row.
+::
+++  do-set-plan
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-plan:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-plan' p.got '')
+  =/  p=plan:arm  p.got
+  ;<  cur=json  bind:m  (read-json (rf 0 / %'plans.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] cur) p.cur ~)
+  =/  next=json  [%o (~(put by pm) id.p (en-plan:arm p))]
+  ?:  =(cur next)  (note-then-no 'set-plan' 'unchanged' '')
+  ;<  ~  bind:m  (over:io (rf 0 / %'plans.json') [[/ %json] next])
+  ;<  ~  bind:m  (note 'set-plan' & id.p '' --0)
+  (pure:m &)
+++  do-drop-plan
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-drop-plan:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'drop-plan' p.got '')
+  ;<  cur=json  bind:m  (read-json (rf 0 / %'plans.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] cur) p.cur ~)
+  ?.  (~(has by pm) p.got)  (refuse 'drop-plan' 'no such plan' '')
+  ;<  ~  bind:m  (over:io (rf 0 / %'plans.json') [[/ %json] [%o (~(del by pm) p.got)]])
+  ;<  ~  bind:m  (note 'drop-plan' & p.got '' --0)
+  (pure:m &)
+::  ==  a customer's subscription
+::
+::  +do-set-subscription: the Stripe ids and the plan a paid session or
+::  a paid invoice reported. The ids live on the account row and are
+::  never written into the customer's own view.
+::
+++  do-set-subscription
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-subscription:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-subscription' p.got '')
+  =/  c  p.got
+  =/  who=@t  (scot %p ship.c)
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir ship.c) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (refuse 'set-subscription' 'ship: no such account' who)
+  ::  a blank customer or plan keeps what is there: an invoice says the
+  ::  customer and the period, a session says the plan
+  =/  cus=@t  ?:(=('' customer.c) stripe-customer.u.a customer.c)
+  =/  plan=@t  ?:(=('' plan.c) plan.u.a plan.c)
+  =/  renews=(unit @da)  ?~(renews.c renews.u.a renews.c)
+  =/  row=account:arm
+    u.a(plan plan, stripe-customer cus, stripe-subscription subscription.c, renews renews)
+  ;<  ~  bind:m
+    (over:io (rf 0 (acct-dir ship.c) %'account.json') [[/ %json] (en-account:arm row)])
+  ;<  ~  bind:m  (do-write-view ship.c)
+  ;<  ~  bind:m  (note 'set-subscription' & plan who --0)
+  (pure:m &)
+::  +do-clear-subscription: Stripe says the subscription is gone, or the
+::  owner says so. The ledger and the balance are untouched.
+::
+++  do-clear-subscription
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-clear-subscription:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'clear-subscription' p.got '')
+  =/  who=@p  p.got
+  =/  txt=@t  (scot %p who)
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (refuse 'clear-subscription' 'ship: no such account' txt)
+  ?:  =('' stripe-subscription.u.a)
+    (note-then-no 'clear-subscription' 'no subscription' txt)
+  =/  row=account:arm  u.a(plan '', stripe-subscription '', renews ~)
+  ;<  ~  bind:m
+    (over:io (rf 0 (acct-dir who) %'account.json') [[/ %json] (en-account:arm row)])
+  ;<  ~  bind:m  (do-write-view who)
+  ;<  ~  bind:m  (note 'clear-subscription' & '' txt --0)
+  (pure:m &)
 ::  +do-open-account: a fresh account at zero, or a no-op when it is
 ::  already open
 ::
@@ -592,7 +704,7 @@
   ?:  ex  (pure:m |)
   ;<  ~  bind:m  (ensure-dirs 0 / ~[%accounts (scot %p who) %ledger])
   ;<  now=@da  bind:m  get-time:io
-  =/  row=account:arm  [who --0 now ~ |]
+  =/  row=account:arm  [who --0 now ~ | '' '' '' ~]
   ;<  ~  bind:m
     (over:io (rf 0 (acct-dir who) %'account.json') [[/ %json] (en-account:arm row)])
   ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] [%o ~]])
@@ -971,11 +1083,15 @@
   ;<  sj=json  bind:m  (read-json (rf 0 / %'settings.json'))
   ;<  now=@da  bind:m  get-time:io
   =/  lease=json  ?:(=([%o ~] lj) ~ lj)
+  ::  the customer's own view says whether it has a subscription and
+  ::  when it renews, and never the Stripe ids: those are the vendor's
+  =/  subs=json
+    (en-subscription:arm stripe-subscription.u.a renews.u.a |)
   =/  v=view:arm
     :*  who
         balance.u.a
-        ''
-        ~
+        plan.u.a
+        subs
         key-rows
         pend-rows
         lease
@@ -1769,6 +1885,14 @@
     (own (serve-import eyre-id s2))
   ?:  &(=('GET' meth) ?=([%api %catalog ~] suffix))      (own (serve-catalog eyre-id))
   ?:  &(=('PUT' meth) ?=([%api %catalog ~] suffix))      (own (serve-set-catalog eyre-id jon))
+  ::  the plans. GET serves both halves: our own list on a vendor, the
+  ::  vendor's list on a customer ship, since nothing on a plan is secret
+  ?:  &(=('GET' meth) ?=([%api %plans ~] suffix))        (own (serve-plans eyre-id))
+  ?:  &(=('POST' meth) ?=([%api %plans ~] suffix))       (own (serve-add-plan eyre-id jon))
+  ?:  &(=('PUT' meth) ?=([%api %plans @ ~] suffix))      (own (serve-put-plan eyre-id s2 jon))
+  ?:  &(=('DELETE' meth) ?=([%api %plans @ ~] suffix))   (own (serve-drop-plan eyre-id s2))
+  ?:  &(=('POST' meth) ?=([%api %plans @ %stripe ~] suffix))
+    (own (serve-plan-stripe eyre-id s2))
   ?:  &(=('GET' meth) ?=([%api %accounts ~] suffix))     (own (serve-accounts eyre-id args))
   ?:  &(=('GET' meth) ?=([%api %accounts @ ~] suffix))   (own (serve-account eyre-id s2))
   ?:  &(=('DELETE' meth) ?=([%api %accounts @ ~] suffix))
@@ -1815,16 +1939,48 @@
   ^-  form:m
   ;<  doc=json  bind:m  (read-json (rf 1 / %'settings.json'))
   (send-json eyre-id 200 (mask-doc:arm doc))
+::  +serve-set-settings: the whole document, replaced. The raw body goes
+::  to the writer rather than the decoded row, so the difference between
+::  a blank secret (keep) and a null one (clear) survives the trip.
+::
 ++  serve-set-settings
   |=  [eyre-id=@ta jon=json]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  got  (de-settings:arm jon)
   ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
+  ;<  cur=json  bind:m  (read-json (rf 1 / %'settings.json'))
   =/  op=json
-    (pairs:enjs:format ~[['op' s+'set-settings'] ['settings' (en-settings:arm p.got)]])
+    (pairs:enjs:format ~[['op' s+'set-settings'] ['settings' jon]])
   ;<  ~  bind:m  (poke-writer 1 op)
-  (send-json eyre-id 200 (mask-doc:arm (en-settings:arm p.got)))
+  =/  kept=settings:arm  (kept-secrets p.got jon cur)
+  (send-json eyre-id 200 (mask-doc:arm (en-settings:arm kept)))
+::  +settings-of: the settings as a row. A document that will not decode
+::  reads as the starter, so a request never crashes on it.
+::
+++  settings-of
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,settings:arm)
+  ^-  form:m
+  ;<  jon=json  bind:m  (read-json (rf up / %'settings.json'))
+  =/  got  (de-settings:arm jon)
+  ?:  ?=(%| -.got)
+    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm])
+  (pure:m p.got)
+::  +two-xx: did the upstream say yes
+::
+++  two-xx  |=(s=@ud ^-(? &((gte s 200) (lth s 300))))
+::  +stripe-why: what Stripe said went wrong, as a line a customer may
+::  read. Stripe never echoes a key back, and nothing here adds one.
+::
+++  stripe-why
+  |=  [status=@ud body=@t]
+  ^-  @t
+  ?:  =(0 status)  'stripe did not answer within two minutes'
+  =/  code=tape  (a-co:co status)
+  =/  msg=@t  (read-error:arm body)
+  =/  said=@t  ?:(=('' msg) 'no message' msg)
+  (rap 3 'stripe answered ' (crip code) ': ' said ~)
 ::  ==  providers
 ::
 ++  serve-providers
@@ -1991,6 +2147,115 @@
     =/  at=tape  (a-co:co i)
     `(crip (weld "row " (weld at " provider: unknown")))
   $(rows t.rows, i +(i))
+::  ==  plans
+::
+::  +serve-plans: our own plans when this ship is nobody's customer or
+::  its own, which is the owner's editable list; the vendor's plans,
+::  read live, when the vendor is elsewhere. Nothing on a plan is a
+::  secret, so the two answers are the same shape.
+::
+++  serve-plans
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  our=@p  bind:m  get-our:io
+  ;<  vendor=(unit @p)  bind:m  (vendor-of 1)
+  ?:  ?|(?=(~ vendor) =(u.vendor our))
+    ;<  plans=(list plan:arm)  bind:m  (plans-of 1)
+    (send-json eyre-id 200 (en-plans-public:arm plans))
+  =/  road=road:tarball  [%& %& armillary-instance:arm %'plans.json']
+  ;<  vw=(unit view:nexus)  bind:m  (peek-remote-wait u.vendor road)
+  ?.  ?=([~ %file *] vw)  (send-err eyre-id 502 'vendor unreachable')
+  =/  got=(unit json)  (sang-json sang.u.vw)
+  ?~  got  (send-err eyre-id 502 'vendor unreachable')
+  (send-json eyre-id 200 (en-plans-public:arm (plans-sorted:arm u.got)))
+::  +serve-add-plan: a new plan. An id already held is 409, so the page
+::  never silently overwrites one.
+::
+++  serve-add-plan
+  |=  [eyre-id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  got  (de-plan:arm jon)
+  ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
+  ;<  plans=(list plan:arm)  bind:m  (plans-of 1)
+  ?^  (find-plan:arm plans id.p.got)  (send-err eyre-id 409 'id: already a plan')
+  ;<  ~  bind:m  (poke-plan (en-plan:arm p.got))
+  (send-json eyre-id 200 (en-plan:arm p.got))
+::  +serve-put-plan: an edit. A blank stripe_price keeps the stored one,
+::  so editing a name does not throw away the Price the owner made.
+::
+++  serve-put-plan
+  |=  [eyre-id=@ta id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  ?=([%o *] jon)  (send-err eyre-id 400 'a JSON object is required')
+  =/  with-id=json  [%o (~(put by p.jon) 'id' s+`@t`id)]
+  =/  got  (de-plan:arm with-id)
+  ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
+  ;<  plans=(list plan:arm)  bind:m  (plans-of 1)
+  =/  old=(unit plan:arm)  (find-plan:arm plans `@t`id)
+  ?~  old  (send-err eyre-id 409 'id: no such plan')
+  =/  price=@t
+    ?:(=('' stripe-price.p.got) stripe-price.u.old stripe-price.p.got)
+  =/  row=plan:arm  p.got(stripe-price price)
+  ;<  ~  bind:m  (poke-plan (en-plan:arm row))
+  (send-json eyre-id 200 (en-plan:arm row))
+++  poke-plan
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke-writer 1 (pairs:enjs:format ~[['op' s+'set-plan'] ['plan' jon]]))
+::  +serve-drop-plan: a plan an open subscription names cannot go, or
+::  the next invoice would credit nothing
+::
+++  serve-drop-plan
+  |=  [eyre-id=@ta id=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  plans=(list plan:arm)  bind:m  (plans-of 1)
+  ?~  (find-plan:arm plans `@t`id)  (send-err eyre-id 404 'no such plan')
+  ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 1)
+  =/  used=?
+    %+  lien  all
+    |=  [a=account:arm keys=@ud]
+    ^-  ?
+    &(=(plan.a `@t`id) !=('' stripe-subscription.a))
+  ?:  used  (send-err eyre-id 409 'plan: a subscription names it')
+  =/  op=json  (pairs:enjs:format ~[['op' s+'drop-plan'] ['id' s+`@t`id]])
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (pairs:enjs:format ~[['id' s+`@t`id] ['ok' b+&]]))
+::  +serve-plan-stripe: the Product and the Price a subscription needs,
+::  made on Stripe from the plan the owner already wrote. A top-up plan
+::  needs neither: its checkout carries the amount inline.
+::
+++  serve-plan-stripe
+  |=  [eyre-id=@ta id=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  plans=(list plan:arm)  bind:m  (plans-of 1)
+  =/  p=(unit plan:arm)  (find-plan:arm plans `@t`id)
+  ?~  p  (send-err eyre-id 404 'no such plan')
+  ?.  ?=(%subscription kind.u.p)
+    (send-err eyre-id 400 'kind: only a subscription needs a Stripe price')
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ?:  =('' stripe-key.s)  (send-err eyre-id 400 'stripe_key: not set')
+  ;<  pr=[status=@ud body=@t]  bind:m
+    (fetch (product-request:astripe stripe-url.s stripe-key.s name.u.p))
+  ?.  (two-xx status.pr)  (send-err eyre-id 502 (stripe-why status.pr body.pr))
+  =/  prod=(unit @t)  (read-id:astripe body.pr)
+  ?~  prod  (send-err eyre-id 502 'stripe answered no product id')
+  ::  a price on Stripe is in cents; a plan is in microdollars
+  =/  cents=@ud  (div price.u.p 10.000)
+  ;<  pz=[status=@ud body=@t]  bind:m
+    %-  fetch
+    (price-request:astripe stripe-url.s stripe-key.s u.prod cents interval.u.p)
+  ?.  (two-xx status.pz)  (send-err eyre-id 502 (stripe-why status.pz body.pz))
+  =/  made=(unit @t)  (read-id:astripe body.pz)
+  ?~  made  (send-err eyre-id 502 'stripe answered no price id')
+  =/  row=plan:arm  u.p(stripe-price u.made)
+  ;<  ~  bind:m  (poke-plan (en-plan:arm row))
+  (send-json eyre-id 200 (en-plan:arm row))
 ::  ==  accounts
 ::
 ++  serve-accounts
@@ -2061,6 +2326,9 @@
   %^  send-json  eyre-id  200
   %-  pairs:enjs:format
   :~  ['account' (en-account:arm u.a)]
+      ['plan' s+plan.u.a]
+      ::  the owner's own read, so the Stripe ids are in it
+      ['subscription' (en-subscription:arm stripe-subscription.u.a renews.u.a &)]
       ['keys' a+key-rows]
       ['pending' a+pend-rows]
       ['checkouts' cj]
