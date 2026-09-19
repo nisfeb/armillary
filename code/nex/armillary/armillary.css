@@ -1,1 +1,61 @@
-body { font: 15px/1.45 system-ui, sans-serif; }
+:root { --ink: #1b2a4a; --gold: #f0a500; --muted: #6b6f80; --line: #e2e4ec; --bg: #fbfbfd; --card: #ffffff; --bad: #b3261e; --good: #1d7a3e; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
+header { display: flex; align-items: center; gap: 1.5rem; padding: .6rem 1rem; border-bottom: 2px solid var(--gold); background: var(--card); position: sticky; top: 0; z-index: 2; }
+header .brand { font-weight: 700; color: var(--ink); text-decoration: none; letter-spacing: .02em; }
+header nav a { margin-right: 1rem; color: var(--ink); text-decoration: none; }
+header nav a:hover { text-decoration: underline; }
+.status { margin-left: auto; color: var(--muted); font-size: .85em; }
+.status.bad { color: var(--bad); }
+main { max-width: 1150px; margin: 0 auto; padding: 1rem; }
+h1 { font-size: 1.4rem; margin: .2rem 0 .6rem; }
+h2 { font-size: 1.05rem; margin: 1.2rem 0 .4rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.muted { color: var(--muted); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .8rem 1rem; margin-bottom: 1rem; }
+table { width: 100%; border-collapse: collapse; font-size: .92em; }
+th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+td, h1 { overflow-wrap: anywhere; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.closed td { color: var(--muted); }
+.badge { display: inline-block; padding: 0 .45em; border-radius: 4px; background: var(--line); font-size: .8em; }
+.badge.zdr { background: #e2f3e6; }
+.neg { color: var(--bad); }
+.pos { color: var(--good); }
+button { font: inherit; padding: .25rem .6rem; border: 1px solid var(--line); border-radius: 5px; background: var(--card); color: var(--ink); cursor: pointer; margin-right: .3rem; }
+button:hover { border-color: var(--gold); }
+button.danger:hover { border-color: var(--bad); color: var(--bad); }
+input:not([type]), input[type="text"], input[type="password"], input[type="number"], input[type="search"] { font: inherit; padding: .25rem .4rem; border: 1px solid var(--line); border-radius: 5px; }
+input.price { width: 7.5em; text-align: right; }
+input.tags { width: 10em; }
+.field { display: inline-block; margin: 0 .8rem .5rem 0; }
+.field label { display: block; color: var(--muted); font-size: .85em; }
+.field input { display: block; }
+.field.wide input { width: 22em; max-width: 100%; }
+.inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .2rem 0; }
+.result { color: var(--muted); font-size: .85em; }
+.result.bad { color: var(--bad); }
+.secret { background: #fff8e6; border: 1px solid var(--gold); border-radius: 6px; padding: .5rem .7rem; margin: .5rem 0; }
+.secret code { user-select: all; word-break: break-all; font-size: 1.02em; }
+code { font-size: .9em; background: var(--line); padding: 0 .25em; border-radius: 3px; }
+a { color: var(--ink); }
+/* a phone: the header wraps, every table stacks one row per card with the
+   column name in front of each cell, buttons grow to a finger's width and
+   inputs stay at 16px so iOS does not zoom into them */
+@media (max-width: 700px) {
+  header { gap: .8rem; flex-wrap: wrap; }
+  header nav a { margin-right: .7rem; }
+  .status { margin-left: 0; width: 100%; }
+  table, tbody, tr, td { display: block; width: 100%; }
+  thead { display: none; }
+  tr { padding: .45rem 0; border-bottom: 1px solid var(--line); }
+  td { display: flex; gap: .6rem; padding: .1rem 0; border: 0; text-align: left; }
+  td::before { content: attr(data-label); flex: 0 0 6em; color: var(--muted); font-size: .85em; padding-top: .15em; }
+  td:empty, td[data-label=""]::before { display: none; }
+  td > * { min-width: 0; }
+  button { padding: .5rem .9rem; margin: 0 .3rem .3rem 0; }
+  input, textarea { font-size: 16px; }
+  .field { display: block; margin: 0 0 .5rem; }
+  .field input { width: 100%; }
+}

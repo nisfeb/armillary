@@ -1,1 +1,472 @@
-// the vendor page, written in task 3
+// armillary's vendor page: providers, the catalog and accounts over
+// /apps/armillary/api. Pure render functions first, then the app that
+// wires them to the API and the beacon stream.
+(function () {
+  'use strict';
+  var API = '/apps/armillary/api';
+  var V1 = '/apps/armillary/v1';
+  var KEEP = '/grubbery/api/keep/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/beacon/rev';
+
+  // ---- render, pure ----
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s).replace(/[<>&"']/g, function (c) {
+      return { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  // every amount on the ship is an integer of microdollars: one dollar
+  // is a million. The page is the only place dollars exist.
+  function dollars(micro, places) {
+    var n = Number(micro || 0) / 1000000;
+    return n.toFixed(places === undefined ? 2 : places);
+  }
+  function micro(text) {
+    var n = parseFloat(String(text === null || text === undefined ? '' : text).replace(/[$,\s]/g, ''));
+    if (!isFinite(n)) return null;
+    return Math.round(n * 1000000);
+  }
+  function fmtTime(t) { return t ? esc(String(t).replace('T', ' ').replace('Z', '')) : ''; }
+  function signed(micro) {
+    var n = Number(micro || 0);
+    return '<span class="' + (n < 0 ? 'neg' : '') + '">' + esc(dollars(n)) + '</span>';
+  }
+  // the margin a row earns, when the upstream cost is known
+  function margin(row) {
+    var cost = Number(row.cost_in || 0) + Number(row.cost_out || 0);
+    var price = Number(row.in || 0) + Number(row.out || 0);
+    if (!cost) return '';
+    return Math.round(((price - cost) / cost) * 100) + '%';
+  }
+  function thead(cols) {
+    return '<table><thead><tr>' + cols.map(function (c) {
+      return '<th scope="col"' + (c.num ? ' class="num"' : '') + '>' + esc(c.name || c) + '</th>';
+    }).join('') + '</tr></thead><tbody>';
+  }
+  function cell(label, html, cls) {
+    return '<td data-label="' + esc(label) + '"' + (cls ? ' class="' + cls + '"' : '') + '>' + html + '</td>';
+  }
+
+  function providers(rows, tests, edit) {
+    var out = '<h1>Providers</h1>';
+    if (!rows.length) out += '<p class="muted">No providers yet. Add one below.</p>';
+    else {
+      out += '<div class="card">' + thead(['Id', 'Name', 'Kind', 'Base URL', 'Key', '']);
+      rows.forEach(function (p) {
+        var t = tests[p.id];
+        out += '<tr>' +
+          cell('Id', '<code>' + esc(p.id) + '</code>') +
+          cell('Name', esc(p.name)) +
+          cell('Kind', esc(p.kind)) +
+          cell('URL', esc(p.base_url)) +
+          cell('Key', '<code>' + esc(p.api_key || 'not set') + '</code>') +
+          cell('', '<button data-test="' + esc(p.id) + '">Test</button>' +
+            '<button data-import="' + esc(p.id) + '">Import</button>' +
+            '<button data-edit="' + esc(p.id) + '">Edit</button>' +
+            '<button class="danger" data-drop="' + esc(p.id) + '">Delete</button>' +
+            (t ? '<div class="result' + (t.bad ? ' bad' : '') + '">' + esc(t.text) + '</div>' : '')) +
+          '</tr>';
+      });
+      out += '</tbody></table></div>';
+    }
+    var cur = edit ? (rows.filter(function (p) { return p.id === edit; })[0] || null) : null;
+    out += form(cur);
+    return out;
+  }
+  // the add form, or the same form filled for an edit. On an edit the id
+  // is fixed and the two secrets read as their masks: blank keeps them.
+  function form(p) {
+    var open = p || { id: '', name: '', kind: 'openai-compatible', base_url: '' };
+    var or = open.kind === 'openrouter';
+    var hold = p ? ' placeholder="leave blank to keep"' : '';
+    return '<div class="card" id="provider-form">' +
+      '<h2>' + (p ? 'Edit ' + esc(p.id) : 'Add a provider') + '</h2>' +
+      '<div class="inline">' +
+      '<div class="field"><label for="p-id">Id</label><input id="p-id" name="id" value="' + esc(open.id) + '"' + (p ? ' readonly' : '') + '></div>' +
+      '<div class="field"><label for="p-name">Name</label><input id="p-name" name="name" value="' + esc(open.name) + '"></div>' +
+      '<div class="field"><label>Kind</label>' +
+      '<label><input type="radio" name="kind" value="openai-compatible"' + (or ? '' : ' checked') + '> openai-compatible</label> ' +
+      '<label><input type="radio" name="kind" value="openrouter"' + (or ? ' checked' : '') + '> openrouter</label></div>' +
+      '<div class="field wide"><label for="p-url">Base URL</label><input id="p-url" name="base_url" value="' + esc(open.base_url) + '"></div>' +
+      '<div class="field"><label for="p-key">API key</label><input id="p-key" name="api_key" type="password"' + hold + '></div>' +
+      '<div class="field" id="p-prov"' + (or ? '' : ' hidden') + '><label for="p-pkey">Provisioning key</label><input id="p-pkey" name="provisioning_key" type="password"' + hold + '></div>' +
+      '</div>' +
+      '<button data-save-provider="' + esc(open.id) + '">' + (p ? 'Save' : 'Add') + '</button>' +
+      (p ? '<button data-cancel-edit="1">Cancel</button>' : '') +
+      '</div>';
+  }
+
+  function catalog(rows, filter) {
+    var f = String(filter || '').toLowerCase();
+    var kept = rows.filter(function (r) {
+      return !f || String(r.id).toLowerCase().indexOf(f) >= 0 || String(r.provider).toLowerCase().indexOf(f) >= 0;
+    });
+    var out = '<h1>Catalog</h1><div class="card">' +
+      '<div class="field"><label for="cat-filter">Filter</label>' +
+      '<input id="cat-filter" type="search" value="' + esc(filter || '') + '" placeholder="id or provider"></div>' +
+      '<button data-save-catalog="1">Save catalog</button>' +
+      '<span class="muted"> ' + kept.length + ' of ' + rows.length + ' rows</span></div>';
+    if (!rows.length) return out + '<p class="muted">Nothing in the catalog. Import from a provider first.</p>';
+    out += '<div class="card">' + thead(['Id', 'Provider',
+      { name: 'In $/M', num: true }, { name: 'Out $/M', num: true },
+      { name: 'Cost in', num: true }, { name: 'Cost out', num: true },
+      { name: 'Margin', num: true }, 'On', 'Tags']);
+    kept.forEach(function (r) {
+      out += '<tr>' +
+        cell('Id', '<code>' + esc(r.id) + '</code>') +
+        cell('Provider', esc(r.provider)) +
+        cell('In', '<input class="price" data-row="' + esc(r.id) + '" data-field="in" value="' + esc(dollars(r.in, 4)) + '">', 'num') +
+        cell('Out', '<input class="price" data-row="' + esc(r.id) + '" data-field="out" value="' + esc(dollars(r.out, 4)) + '">', 'num') +
+        cell('Cost in', esc(dollars(r.cost_in, 4)), 'num') +
+        cell('Cost out', esc(dollars(r.cost_out, 4)), 'num') +
+        cell('Margin', esc(margin(r)), 'num') +
+        cell('On', '<input type="checkbox" data-row="' + esc(r.id) + '" data-field="enabled"' + (r.enabled ? ' checked' : '') + '>') +
+        cell('Tags', '<input class="tags" data-row="' + esc(r.id) + '" data-field="tags" value="' + esc((r.tags || []).join(', ')) + '">') +
+        '</tr>';
+    });
+    return out + '</tbody></table></div>';
+  }
+
+  function accounts(rows, search) {
+    var f = String(search || '').toLowerCase();
+    var kept = rows.filter(function (a) { return !f || String(a.ship).toLowerCase().indexOf(f) >= 0; });
+    // an account opens when its first key is minted, so the way in to a
+    // ship with no account yet is its own detail page
+    var open_form = '<div class="card"><h2>Open an account</h2>' +
+      '<div class="inline"><div class="field"><label for="acct-open">Ship</label>' +
+      '<input id="acct-open" value="" placeholder="~feb"></div>' +
+      '<div class="field"><label>&nbsp;</label><button data-open="1">Open</button></div></div></div>';
+    var out = '<h1>Accounts</h1><div class="card">' +
+      '<div class="field"><label for="acct-search">Search</label>' +
+      '<input id="acct-search" type="search" value="' + esc(search || '') + '" placeholder="a ship"></div></div>';
+    if (!kept.length) return out + open_form + '<p class="muted">No accounts yet. One opens when you mint a key.</p>';
+    out += '<div class="card">' + thead(['Ship', { name: 'Balance', num: true }, { name: 'Keys', num: true }, 'Last seen', 'State']);
+    kept.forEach(function (a) {
+      out += '<tr' + (a.closed ? ' class="closed"' : '') + '>' +
+        cell('Ship', '<a href="#accounts/' + esc(a.ship) + '">' + esc(a.ship) + '</a>') +
+        cell('Balance', signed(a.balance), 'num') +
+        cell('Keys', esc(a.keys), 'num') +
+        cell('Seen', fmtTime(a.seen)) +
+        cell('State', a.closed ? 'closed' : 'open') +
+        '</tr>';
+    });
+    return out + '</tbody></table></div>' + open_form;
+  }
+
+  // d is null when the ship has no account yet: the view still draws, so
+  // the owner can mint the first key, which is what opens one
+  function account(ship, d, minted) {
+    var fresh = !d;
+    var a = (d && d.account) || { ship: ship, balance: 0, closed: false };
+    var keys = (d && d.keys) || [];
+    var rows = (d && d.ledger) || [];
+    var out = '<h1>' + esc(ship) + '</h1>' +
+      '<p><a href="#accounts">All accounts</a></p>' +
+      '<div class="card"><h2>Balance</h2><p style="font-size:1.6rem;margin:.2rem 0">' + signed(a.balance) + '</p>' +
+      '<p class="muted">' + (fresh ? 'No account yet. Minting a key opens one.'
+        : 'Opened ' + fmtTime(a.made) + (a.closed ? ' &middot; closed' : '')) + '</p>' +
+      '<div class="inline">' +
+      '<div class="field"><label for="c-amount">Credit, dollars</label><input id="c-amount" value=""></div>' +
+      '<div class="field"><label for="c-note">Note</label><input id="c-note" value=""></div>' +
+      '<div class="field"><label>&nbsp;</label><button data-credit="1">Credit</button></div>' +
+      '<div class="field"><label for="r-amount">Refund, dollars</label><input id="r-amount" value=""></div>' +
+      '<div class="field"><label for="r-note">Note</label><input id="r-note" value=""></div>' +
+      '<div class="field"><label>&nbsp;</label><button data-refund="1">Refund</button></div>' +
+      '</div>' +
+      (a.closed ? '' : '<button class="danger" data-close="1">Close account</button>') +
+      '</div>';
+    out += '<div class="card"><h2>Keys</h2>';
+    if (minted) {
+      out += '<div class="secret"><p>Copy this now. The ship keeps only a salted hash of it.</p>' +
+        '<code>' + esc(minted.secret) + '</code>' +
+        '<p><button data-dismiss="1">Done</button></p></div>';
+    }
+    if (!keys.length) out += '<p class="muted">No keys.</p>';
+    else {
+      out += thead(['Id', 'Name', 'Made', 'Last used', '']);
+      keys.forEach(function (k) {
+        out += '<tr>' +
+          cell('Id', '<code>' + esc(k.id) + '</code>') +
+          cell('Name', esc(k.name)) +
+          cell('Made', fmtTime(k.made)) +
+          cell('Used', fmtTime(k.used)) +
+          cell('', '<button class="danger" data-revoke="' + esc(k.id) + '" data-name="' + esc(k.name) + '">Revoke</button>') +
+          '</tr>';
+      });
+      out += '</tbody></table>';
+    }
+    if (!a.closed) {
+      out += '<div class="inline"><div class="field"><label for="k-name">New key name</label>' +
+        '<input id="k-name" value=""></div>' +
+        '<div class="field"><label>&nbsp;</label><button data-mint="1">Mint a key</button></div></div>';
+    }
+    out += '</div>';
+    out += '<div class="card"><h2>Ledger</h2>';
+    if (!rows.length) out += '<p class="muted">Nothing yet.</p>';
+    else {
+      out += thead(['At', 'Kind', { name: 'Amount', num: true }, 'Model', { name: 'Tokens', num: true }, 'Ref']);
+      rows.forEach(function (r) {
+        out += '<tr>' +
+          cell('At', fmtTime(r.at)) +
+          cell('Kind', esc(r.kind)) +
+          cell('Amount', esc(dollars(r.amount)), 'num') +
+          cell('Model', esc(r.model)) +
+          cell('Tokens', r.kind === 'debit' ? esc(r.in + ' in, ' + r.out + ' out') : '', 'num') +
+          cell('Ref', '<code>' + esc(r.ref) + '</code>') +
+          '</tr>';
+      });
+      out += '</tbody></table>';
+    }
+    return out + '</div>';
+  }
+
+  function route(hash) {
+    var h = String(hash || '').replace(/^#/, '') || 'providers';
+    if (h.indexOf('accounts/') === 0) return { name: 'account', ship: h.slice(9) };
+    return { name: h };
+  }
+  // one block of the raw beacon stream: only its "event:" and "data:"
+  // lines carry anything
+  function sseEvent(block) {
+    var name = '', data = '';
+    String(block).split('\n').forEach(function (ln) {
+      if (ln.indexOf('event: ') === 0) name = ln.slice(7).trim();
+      else if (ln.indexOf('data: ') === 0) data = ln.slice(6).trim();
+    });
+    return { name: name, data: data };
+  }
+
+  var render = {
+    esc: esc, dollars: dollars, micro: micro, margin: margin,
+    providers: providers, catalog: catalog, accounts: accounts, account: account,
+    route: route, sseEvent: sseEvent,
+  };
+  if (typeof module !== 'undefined' && module.exports) { module.exports = render; }
+  if (typeof document === 'undefined') { return; }
+
+  // ---- the app ----
+  var view = document.getElementById('view');
+  var statusEl = document.getElementById('status');
+  var lastRev = null;
+  var tests = Object.create(null);     // a provider id to its last Test or Import line
+  var editing = null;                  // the provider id whose form is open
+  var minted = null;                   // a secret shown once, until dismissed
+  var catRows = [];                    // the catalog as the page holds it, edited in place
+  var catFilter = '';
+  var acctSearch = '';
+
+  function say(msg, bad) { statusEl.textContent = msg; statusEl.className = 'status' + (bad ? ' bad' : ''); }
+  function api(path, opts) {
+    return fetch(API + path, opts).then(function (r) {
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          throw new Error((d.error && d.error.message) || ('http ' + r.status));
+        });
+      }
+      return r.json();
+    });
+  }
+  function post(path, bodyObj, method) {
+    return api(path, {
+      method: method || 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(bodyObj === undefined ? {} : bodyObj),
+    });
+  }
+  function seg(s) { return encodeURIComponent(s); }
+
+  var refreshing = false, again = false;
+  function refresh() {
+    if (refreshing) { again = true; return; }
+    refreshing = true;
+    var r = route(location.hash);
+    if (r.name !== 'account') minted = null;
+    var p;
+    if (r.name === 'catalog') {
+      p = api('/catalog').then(function (rows) { catRows = rows || []; view.innerHTML = catalog(catRows, catFilter); });
+    } else if (r.name === 'accounts') {
+      p = api('/accounts').then(function (rows) { view.innerHTML = accounts(rows || [], acctSearch); });
+    } else if (r.name === 'account') {
+      // a ship with no account is a 404, and the view draws anyway
+      p = api('/accounts/' + seg(r.ship)).catch(function () { return null; })
+        .then(function (d) { view.innerHTML = account(r.ship, d, minted); });
+    } else {
+      p = api('/providers').then(function (rows) { view.innerHTML = providers(rows || [], tests, editing); });
+    }
+    p = p.then(function () { say(''); }).catch(function (e) { say(String(e.message || e), true); });
+    p.then(function () { refreshing = false; if (again) { again = false; refresh(); } });
+  }
+  // a write answers before the writer applies, so the refetch waits
+  function later() { setTimeout(refresh, 400); }
+
+  function providerForm() {
+    function val(id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; }
+    var kindEl = view.querySelector('#provider-form input[name="kind"]:checked');
+    var body = {
+      id: val('p-id'), name: val('p-name'),
+      kind: kindEl ? kindEl.value : 'openai-compatible',
+      base_url: val('p-url'),
+    };
+    // a blank secret means keep, which is exactly what an untouched
+    // field sends; on a fresh row it means there is none yet
+    body.api_key = val('p-key');
+    body.provisioning_key = val('p-pkey');
+    return body;
+  }
+  // the catalog rows as edited: the two price inputs are dollars, the
+  // ship stores microdollars
+  function readCatalog() {
+    var bad = null;
+    view.querySelectorAll('[data-row]').forEach(function (el) {
+      var row = catRows.filter(function (r) { return r.id === el.dataset.row; })[0];
+      if (!row) return;
+      var f = el.dataset.field;
+      if (f === 'enabled') row.enabled = el.checked;
+      else if (f === 'tags') row.tags = el.value.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+      else {
+        var n = micro(el.value);
+        if (n === null || n < 0) { bad = row.id + ' ' + f + ': not a price'; return; }
+        row[f] = n;
+      }
+    });
+    return bad;
+  }
+
+  view.addEventListener('input', function (ev) {
+    var el = ev.target;
+    if (el.id === 'cat-filter') { catFilter = el.value; view.innerHTML = catalog(catRows, catFilter); var f = document.getElementById('cat-filter'); if (f) { f.focus(); f.setSelectionRange(f.value.length, f.value.length); } }
+    else if (el.id === 'acct-search') { acctSearch = el.value; }
+  });
+  view.addEventListener('change', function (ev) {
+    if (ev.target.name === 'kind') {
+      var box = document.getElementById('p-prov');
+      if (box) box.hidden = ev.target.value !== 'openrouter';
+    } else if (ev.target.id === 'acct-search') {
+      refresh();
+    }
+  });
+
+  view.addEventListener('click', function (ev) {
+    var b = ev.target.closest('button');
+    if (!b) return;
+    var d = b.dataset;
+    if (d.test) {
+      say('testing ' + d.test);
+      post('/providers/' + seg(d.test) + '/test', {}).then(function (r) {
+        tests[d.test] = { text: r.status + ' · ' + (r.model || '') + ' · ' + (r.text || '') , bad: r.status !== 200 };
+        refresh();
+      }).catch(function (e) { tests[d.test] = { text: e.message, bad: true }; refresh(); });
+    } else if (d['import']) {
+      say('importing from ' + d['import']);
+      post('/providers/' + seg(d['import']) + '/import').then(function (r) {
+        tests[d['import']] = { text: 'added ' + r.added, bad: false };
+        refresh();
+      }).catch(function (e) { tests[d['import']] = { text: e.message, bad: true }; refresh(); });
+    } else if (d.edit) {
+      editing = d.edit; refresh();
+    } else if (d.cancelEdit) {
+      editing = null; refresh();
+    } else if (d.drop) {
+      if (!confirm('Delete the provider "' + d.drop + '"? Its catalog rows stop answering.')) return;
+      api('/providers/' + seg(d.drop), { method: 'DELETE' }).then(later).catch(function (e) { say(e.message, true); });
+    } else if (d.saveProvider !== undefined) {
+      var body = providerForm();
+      if (!body.id) { say('id: 1 to 64 bytes', true); return; }
+      var was = editing;
+      var call = was ? post('/providers/' + seg(was), body, 'PUT') : post('/providers', body);
+      editing = null;
+      call.then(function () { say('saved'); later(); })
+        .catch(function (e) { editing = was; say(e.message, true); refresh(); });
+    } else if (d.saveCatalog) {
+      var bad = readCatalog();
+      if (bad) { say(bad, true); return; }
+      post('/catalog', catRows, 'PUT').then(function () { say('catalog saved'); })
+        .catch(function (e) { say(e.message, true); refresh(); });
+    } else if (d.credit || d.refund) {
+      var ship = route(location.hash).ship;
+      var which = d.credit ? 'credit' : 'refund';
+      var amount = micro(document.getElementById(d.credit ? 'c-amount' : 'r-amount').value);
+      var note = document.getElementById(d.credit ? 'c-note' : 'r-note').value;
+      if (!amount || amount <= 0) { say('amount: dollars above zero', true); return; }
+      post('/accounts/' + seg(ship) + '/' + which, { amount: amount, note: note })
+        .then(function () { say(which + ' of $' + dollars(amount)); later(); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.mint) {
+      var who = route(location.hash).ship;
+      var name = document.getElementById('k-name').value.trim();
+      if (!name) { say('name: 1 to 200 bytes', true); return; }
+      post('/accounts/' + seg(who) + '/keys', { name: name })
+        .then(function (k) { minted = k; refresh(); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.dismiss) {
+      minted = null; refresh();
+    } else if (d.revoke) {
+      if (!confirm('Revoke "' + d.name + '"? Its next request is refused.')) return;
+      var s = route(location.hash).ship;
+      api('/accounts/' + seg(s) + '/keys/' + seg(d.revoke), { method: 'DELETE' })
+        .then(later).catch(function (e) { say(e.message, true); });
+    } else if (d.open) {
+      var want = document.getElementById('acct-open').value.trim();
+      if (!want) { say('ship: not an @p', true); return; }
+      location.hash = '#accounts/' + (want.charAt(0) === '~' ? want : '~' + want);
+    } else if (d.close) {
+      var c = route(location.hash).ship;
+      if (!confirm('Close ' + c + '? Every key is revoked and the ledger is kept.')) return;
+      post('/accounts/' + seg(c) + '/close').then(later).catch(function (e) { say(e.message, true); });
+    }
+  });
+
+  window.addEventListener('hashchange', refresh);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
+
+  // ---- the beacon stream, read raw (the initial event is named "old
+  // /rev", which EventSource cannot subscribe to; it carries the current
+  // rev, so a bump missed while nobody watched shows as a difference) ----
+  var timer = null;
+  // a re-render replaces the forms and the inline price inputs, so a
+  // bump waits while one of them has focus; the next bump after blur
+  // refreshes
+  function typing() {
+    var el = document.activeElement;
+    return !!(el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') && view.contains(el));
+  }
+  function bumped() {
+    if (typing()) return;
+    clearTimeout(timer);
+    timer = setTimeout(function () { if (!typing()) refresh(); }, 300);
+  }
+  async function stream() {
+    for (;;) {
+      if (document.hidden) { await new Promise(function (r) { setTimeout(r, 1000); }); continue; }
+      try {
+        var resp = await fetch(KEEP, { headers: { Accept: 'text/event-stream' } });
+        if (!resp.ok) {
+          say('live updates off', true);
+          await new Promise(function (r) { setTimeout(r, 30000); });
+          continue;
+        }
+        var rd = resp.body.getReader();
+        var dec = new TextDecoder();
+        var buf = '';
+        for (;;) {
+          var chunk = await rd.read();
+          if (chunk.done) break;
+          buf += dec.decode(chunk.value, { stream: true });
+          var evs = buf.split('\n\n');
+          buf = evs.pop();
+          evs.forEach(function (ev) {
+            if (document.hidden) return;
+            var parsed = sseEvent(ev);
+            var name = parsed.name, data = parsed.data;
+            if (!name || name.slice(-4) !== '/rev') return;
+            if (name.indexOf('old') === 0) { if (lastRev !== null && data && data !== lastRev) bumped(); lastRev = data; return; }
+            lastRev = data;
+            bumped();
+          });
+        }
+      } catch (e) { /* the stream severed: reconnect below */ }
+      await new Promise(function (r) { setTimeout(r, 3000); });
+    }
+  }
+  refresh();
+  stream();
+  setInterval(function () { if (!document.hidden) refresh(); }, 60000);
+})();
