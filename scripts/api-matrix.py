@@ -480,7 +480,8 @@ text = json.dumps(log)
 ops = set(r.get('op') for r in (log if isinstance(log, list) else []))
 check('GET /api/log answers the ring', code == 200 and isinstance(log, list) and len(log) > 0, (code, str(log)[:200]))
 for op in ('set-provider', 'set-catalog', 'open-account', 'add-key', 'credit', 'debit', 'refund',
-           'drop-key', 'close-account', 'set-plan', 'drop-plan', 'note'):
+           'drop-key', 'close-account', 'set-plan', 'drop-plan',
+           'stripe.webhook', 'stripe.return'):
     check('the ring holds an entry for ' + op, op in ops, sorted(ops))
 check('the ring never carries a secret', 'stub-key' not in text and 'prov-key' not in text and
       STRIPE_KEY not in text and WHSEC not in text and (SEC1 or 'x') not in text, text[:300])
