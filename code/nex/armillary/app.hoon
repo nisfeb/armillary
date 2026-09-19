@@ -1178,8 +1178,10 @@
         ['plan' s+plan.c]
         ['amount' (en-num:arm amount.c)]
         ['url' s+url.c]
+        ['sid' s+sid.c]
         ['expires' (en-time:arm expires.c)]
         ['status' s+status.c]
+        ['note' s+note.c]
     ==
   ?:  =(old row)  (note-then-no 'set-checkout' 'unchanged' who)
   ;<  ~  bind:m
@@ -1468,9 +1470,56 @@
     ==
   ::  the note carries the op and the ship: the ring never sees a secret
   (note-inbox 'mint-key' & '' who)
-::  +inbox-checkout: phase 2 has no money rails, so stub mode answers a
-::  local page that credits the account and live mode answers that the
-::  rail is unavailable. Phase 3 replaces the live branch.
+::  +put-checkout: one checkout row on an account, whatever came of it.
+::  Every branch below ends here, so the customer sees an answer in the
+::  view even when the answer is a refusal.
+::
+++  put-checkout
+  |=  $:  src=@p
+          nonce=@t
+          rail=@t
+          plan=@t
+          amount=@ud
+          url=@t
+          sid=@t
+          expires=@da
+          status=@t
+          note=@t
+      ==
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  poke-writer  0
+  %-  pairs:enjs:format
+  :~  ['op' s+'set-checkout']
+      ['ship' s+(scot %p src)]
+      ['nonce' s+nonce]
+      ['rail' s+rail]
+      ['plan' s+plan]
+      ['amount' (en-num:arm amount)]
+      ['url' s+url]
+      ['sid' s+sid]
+      ['expires' (en-time:arm expires)]
+      ['status' s+status]
+      ['note' s+note]
+  ==
+::  +refuse-checkout: a refused row and a line in /tr/inbox, one arm, so
+::  every refusal below reads the same
+::
+++  refuse-checkout
+  |=  [src=@p nonce=@t rail=@t plan=@t amount=@ud expires=@da status=@t why=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (put-checkout src nonce rail plan amount '' '' expires status why)
+  (note-inbox 'checkout' | why (scot %p src))
+::  +public-of: where a customer reaches this vendor over HTTP
+::
+++  public-of
+  |=  s=settings:arm
+  ^-  @t
+  ?:(=('' public-url.s) 'http://localhost:8080' public-url.s)
+::  +inbox-checkout: stub mode answers a local page that credits the
+::  account; live mode makes a real Stripe Checkout Session. Bitcoin is
+::  phase 4 and says so.
 ::
 ++  inbox-checkout
   |=  [src=@p rail=@t plan=@t amount=@ud nonce=@t]
@@ -1481,32 +1530,115 @@
   =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
   ::  a nonce already here answers the row that is already here
   ?:  (~(has by cm) nonce)  (note-inbox 'checkout' & 'already open' who)
-  ;<  sj=json  bind:m  (read-json (rf 0 / %'settings.json'))
+  ;<  s=settings:arm  bind:m  (settings-of 0)
   ;<  now=@da  bind:m  get-time:io
-  =/  stub=?  !=('live' (gs:arm sj 'mode'))
-  =/  url=@t
-    ?.  stub  ''
-    %^  rap  3  (public-url-of sj)
-    :~  '/apps/armillary/pay/stub?ship='
+  =/  expires=@da  (add now ~d1)
+  ?:  ?=(%stub mode.s)
+    =/  url=@t
+      %^  rap  3  (public-of s)
+      :~  '/apps/armillary/pay/stub?ship='
+          who
+          '&nonce='
+          nonce
+      ==
+    ;<  ~  bind:m
+      (put-checkout src nonce rail plan amount url '' expires 'pending' '')
+    (note-inbox 'checkout' & '' who)
+  ?.  =('stripe' rail)
+    %-  refuse-checkout
+    [src nonce rail plan amount expires 'unavailable' 'bitcoin is not on this vendor yet']
+  (stripe-checkout src s plan amount nonce expires)
+::  +stripe-checkout: the live card rail. Every 400-class refusal is a
+::  row with status refused and a note naming the field, since the
+::  customer reads the view and nothing else.
+::
+++  stripe-checkout
+  |=  [src=@p s=settings:arm plan=@t amount=@ud nonce=@t expires=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  plans=(list plan:arm)  bind:m  (plans-of 0)
+  =/  row=(unit plan:arm)  ?:(=('' plan) ~ (find-plan:arm plans plan))
+  =/  named=?  !=('' plan)
+  =/  found=?  ?=(^ row)
+  =/  bad=@t
+    ?:  =('' stripe-key.s)  'stripe_key: not set'
+    ?:  &(named !=(0 amount))  'plan and amount: choose one'
+    ?:  &(named !found)  'plan: unknown'
+    ?:  &(!named (lth amount min-topup.s))  'amount: below the minimum'
+    ''
+  ?.  =('' bad)
+    (refuse-checkout src nonce 'stripe' plan amount expires 'refused' bad)
+  =/  base=@t  (public-of s)
+  =/  success=@t
+    (rap 3 base '/apps/armillary/pay/return?ship=' (url-encode:ahttp who) ~)
+  =/  cancel=@t  (rap 3 success '&cancelled=1' ~)
+  =/  secs=@ud  (unix-secs:arm expires)
+  ?~  row
+    =/  req=request:http
+      %-  topup-request:astripe
+      :*  stripe-url.s
+          stripe-key.s
+          who
+          (div amount 10.000)
+          'Armillary credit'
+          success
+          cancel
+          secs
+      ==
+    (finish-checkout src nonce plan amount expires req)
+  ?:  ?=(%topup kind.u.row)
+    =/  req=request:http
+      %-  topup-request:astripe
+      :*  stripe-url.s
+          stripe-key.s
+          who
+          (div price.u.row 10.000)
+          'Armillary credit'
+          success
+          cancel
+          secs
+      ==
+    (finish-checkout src nonce plan price.u.row expires req)
+  ?:  =('' stripe-price.u.row)
+    %-  refuse-checkout
+    [src nonce 'stripe' plan amount expires 'refused' 'plan: not on Stripe yet']
+  =/  req=request:http
+    %-  subscription-request:astripe
+    :*  stripe-url.s
+        stripe-key.s
         who
-        '&nonce='
-        nonce
+        stripe-price.u.row
+        plan
+        success
+        cancel
     ==
-  =/  op=json
-    %-  pairs:enjs:format
-    :~  ['op' s+'set-checkout']
-        ['ship' s+who]
-        ['nonce' s+nonce]
-        ['rail' s+rail]
-        ['plan' s+plan]
-        ['amount' (en-num:arm amount)]
-        ['url' s+url]
-        ['expires' (en-time:arm (add now ~d1))]
-        ['status' s+?:(stub 'pending' 'unavailable')]
-    ==
-  ;<  ~  bind:m  (poke-writer 0 op)
-  ?:  stub  (note-inbox 'checkout' & '' who)
-  (note-inbox 'checkout' | 'live rails are phase 3' who)
+  (finish-checkout src nonce plan price.u.row expires req)
+::  +finish-checkout: the call to Stripe and the row it leaves behind
+::
+::    ponytail: this fetch runs in the inbox fiber, so every other
+::    customer's op waits behind it for as long as Stripe takes, up to
+::    two minutes. One spawned fiber per op is the upgrade; one slow
+::    call blocking the queue is the price until a vendor has enough
+::    customers to feel it.
+::
+++  finish-checkout
+  |=  [src=@p nonce=@t plan=@t amount=@ud expires=@da req=request:http]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  res=[status=@ud body=@t]  bind:m  (fetch req)
+  ?.  (two-xx status.res)
+    =/  why=@t  (stripe-why status.res body.res)
+    (refuse-checkout src nonce 'stripe' plan amount expires 'refused' why)
+  =/  got  (read-session:astripe body.res)
+  ?~  got
+    %-  refuse-checkout
+    [src nonce 'stripe' plan amount expires 'refused' 'stripe answered no session']
+  ;<  ~  bind:m
+    %-  put-checkout
+    [src nonce 'stripe' plan amount url.u.got id.u.got expires 'pending' '']
+  (note-inbox 'checkout' & '' who)
 ::  ==  the client: what this ship asks of its vendor
 ::
 ::  +client-loop: send what is queued, read the view, sleep five
@@ -2798,11 +2930,17 @@
   ?~  got
     %^  send-json  eyre-id  202
     (pairs:enjs:format ~[['pending' b+&] ['nonce' s+n]])
+  ::  the vendor refused it, and the note says why. The customer route
+  ::  is the only place that reason is ever seen as an error.
+  =/  status=@t  (gs:arm u.got 'status')
+  =/  note=@t  (gs:arm u.got 'note')
+  ?:  ?|(=('refused' status) =('unavailable' status))
+    (send-err eyre-id 502 ?:(=('' note) status note))
   %^  send-json  eyre-id  200
   %-  pairs:enjs:format
   :~  ['nonce' s+n]
       ['url' s+(gs:arm u.got 'url')]
-      ['status' s+(gs:arm u.got 'status')]
+      ['status' s+status]
   ==
 ++  await-checkout
   |=  [n=@t left=@ud]
@@ -2953,8 +3091,10 @@
         ['plan' s+(gs:arm u.row 'plan')]
         ['amount' (en-num:arm amount)]
         ['url' s+(gs:arm u.row 'url')]
+        ['sid' s+(gs:arm u.row 'sid')]
         ['expires' s+(gs:arm u.row 'expires')]
         ['status' s+'paid']
+        ['note' s+'']
     ==
   =/  heads  ~[['content-type' 'text/plain; charset=utf-8'] ['cache-control' 'no-store']]
   (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html 'paid')])
