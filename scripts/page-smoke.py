@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""page-smoke.py HOST JAR
+The page is served to the owner with the right types and no cache, and
+refused without the cookie; the three views are in it; the beacon stream
+the page reads for live updates answers. Exits 1 on any failure."""
+import re, subprocess, sys
+
+HOST, JAR = sys.argv[1:3]
+fails = []
+count = [0]
+
+
+def get(path, jar=True):
+    cmd = ['curl', '-s', '-m', '30', '-D', '-', '-o', '/dev/stdout', HOST + path]
+    if jar:
+        cmd += ['-b', JAR]
+    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    head, _, body = out.partition('\r\n\r\n')
+    if not _:
+        head, _, body = out.partition('\n\n')
+    code = int(head.split(' ')[1]) if head.startswith('HTTP/') else 0
+    headers = {}
+    for ln in head.split('\n')[1:]:
+        k, _, v = ln.partition(':')
+        headers[k.strip().lower()] = v.strip()
+    return code, headers, body
+
+
+def check(label, cond, detail=''):
+    count[0] += 1
+    print(('  ok   ' if cond else '  FAIL ') + label + ('' if cond else '   ' + str(detail)[:300]))
+    if not cond:
+        fails.append(label)
+
+
+code, h, b = get('/apps/armillary')
+check('the page answers 200 as html', code == 200 and h.get('content-type', '').startswith('text/html'), (code, h))
+check('the page is not cached', 'no-cache' in h.get('cache-control', ''), h)
+check('the page loads its script and style', 'armillary.js' in b and 'armillary.css' in b and 'id="view"' in b, b[:200])
+check('the page names its three views', '#providers' in b and '#catalog' in b and '#accounts' in b, b[:400])
+code, h, js = get('/apps/armillary/armillary.js')
+check('the script answers as javascript', code == 200 and 'javascript' in h.get('content-type', '') and '/apps/armillary/api' in js, (code, h))
+code, h, b = get('/apps/armillary/armillary.css')
+check('the style answers as css', code == 200 and h.get('content-type', '').startswith('text/css'), (code, h))
+code, h, b = get('/apps/armillary/nope.txt')
+check('an unknown file is 404', code == 404, (code, b[:100]))
+code, h, b = get('/apps/armillary', jar=False)
+check('the page is refused without the cookie', code == 403, (code, b[:100]))
+code, h, b = get('/apps/armillary/armillary.js', jar=False)
+check('the script is refused without the cookie', code == 403, (code, b[:100]))
+code, h, b = get('/apps/armillary/armillary.css', jar=False)
+check('the style is refused without the cookie', code == 403, (code, b[:100]))
+
+# the beacon stream the page's live updates hang on, read from the
+# served script so the gate follows the page rather than a copy of it
+m = re.search(r"var KEEP = '([^']+)'", js)
+check('the script names the beacon stream', bool(m), js[:200])
+# a miss on the KEEP regex leaves ev empty, so the two stream checks
+# fail loudly rather than vanishing from the count
+ev = ''
+if m:
+    ev = subprocess.run(['curl', '-s', '-N', '-m', '3', '-b', JAR,
+                         '-H', 'accept: text/event-stream', HOST + m.group(1)],
+                        capture_output=True, text=True).stdout
+lines = [ln.strip() for ln in ev.split('\n')]
+check('the stream names a rev event', any(ln.startswith('event: ') and ln.endswith('/rev') for ln in lines), ev[:200])
+check('the stream carries the rev as digits', any(ln.startswith('data: ') and ln[6:].strip().isdigit() for ln in lines), ev[:200])
+
+if fails:
+    print('FAILED: ' + ', '.join(fails))
+    sys.exit(1)
+print('ALL OK (%d checks)' % count[0])
