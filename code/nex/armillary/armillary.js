@@ -397,6 +397,12 @@
   }
   function seg(s) { return encodeURIComponent(s); }
 
+  // +drawer: a writer for the view, fixed to the hash it was made at.
+  // A read that comes back after the hash moved is dropped.
+  function drawer() {
+    var at = location.hash;
+    return function (html) { if (location.hash === at) view.innerHTML = html; };
+  }
   var refreshing = false, again = false;
   function refresh() {
     if (refreshing) { again = true; return; }
@@ -405,25 +411,29 @@
     if (r.name !== 'account') minted = null;
     if (r.name !== 'keys') custMinted = null;
     var p;
+    // a read can take thirty seconds when it waits on the vendor, and
+    // by then the person may be somewhere else: draw only what the view
+    // is still showing
+    var draw = drawer();
     if (r.name === 'my-account') {
-      p = api('/account').then(function (d) { view.innerHTML = myAccount(d); });
+      p = api('/account').then(function (d) { draw(myAccount(d)); });
     } else if (r.name === 'keys') {
       p = api('/keys').then(function (keys) {
         return api('/inference').catch(function () { return null; })
-          .then(function (cfg) { view.innerHTML = myKeys(keys || [], cfg, custMinted); });
+          .then(function (cfg) { draw(myKeys(keys || [], cfg, custMinted)); });
       });
     } else if (r.name === 'catalog' && isBuyer && !isVendor) {
-      p = api('/catalog').then(function (rows) { view.innerHTML = buyCatalog(rows || [], buyFilter); });
+      p = api('/catalog').then(function (rows) { draw(buyCatalog(rows || [], buyFilter)); });
     } else if (r.name === 'catalog') {
-      p = api('/catalog').then(function (rows) { catRows = rows || []; view.innerHTML = catalog(catRows, catFilter); });
+      p = api('/catalog').then(function (rows) { catRows = rows || []; draw(catalog(catRows, catFilter)); });
     } else if (r.name === 'accounts') {
-      p = api('/accounts').then(function (rows) { view.innerHTML = accounts(rows || [], acctSearch); });
+      p = api('/accounts').then(function (rows) { draw(accounts(rows || [], acctSearch)); });
     } else if (r.name === 'account') {
       // a ship with no account is a 404, and the view draws anyway
       p = api('/accounts/' + seg(r.ship)).catch(function () { return null; })
-        .then(function (d) { view.innerHTML = account(r.ship, d, minted); });
+        .then(function (d) { draw(account(r.ship, d, minted)); });
     } else {
-      p = api('/providers').then(function (rows) { view.innerHTML = providers(rows || [], tests, editing); });
+      p = api('/providers').then(function (rows) { draw(providers(rows || [], tests, editing)); });
     }
     p = p.then(function () { say(''); }).catch(function (e) { say(String(e.message || e), true); });
     p.then(function () { refreshing = false; if (again) { again = false; refresh(); } });
@@ -532,7 +542,9 @@
         .then(function (k) { minted = k; refresh(); })
         .catch(function (e) { say(e.message, true); });
     } else if (d.dismiss) {
-      minted = null; refresh();
+      // one Done button serves both halves: the owner's mint and the
+      // customer's fetched key
+      minted = null; custMinted = null; refresh();
     } else if (d.revoke) {
       if (!confirm('Revoke "' + d.name + '"? Its next request is refused.')) return;
       var s = route(location.hash).ship;
@@ -553,7 +565,8 @@
         .catch(function (e) { say(e.message, true); });
     } else if (d.refreshView) {
       say('reading the vendor');
-      api('/account?fresh=1').then(function (dd) { view.innerHTML = myAccount(dd); say(''); })
+      var drawAccount = drawer();
+      api('/account?fresh=1').then(function (dd) { drawAccount(myAccount(dd)); say(''); })
         .catch(function (e) { say(e.message, true); });
     } else if (d.topup) {
       var amount = micro(document.getElementById('t-amount').value);
