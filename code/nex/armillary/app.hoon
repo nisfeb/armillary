@@ -67,6 +67,8 @@
           [%over %& [/ %'armillary.js'] [[/ %mime] page-js]]
           [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'web.sig'] [[/ %sig] ~]]
+          [%fall %& [/ %'inbox.sig'] [[/ %sig] ~]]
+          [%fall %& [/ %'client.sig'] [[/ %sig] ~]]
           [%fall %| /requests empty-dir:loader]
           [%fall %| /accounts empty-dir:loader]
           [%fall %| /tr empty-dir:loader]
@@ -78,9 +80,14 @@
           [%fall %& [/ %'plans.json'] [[/ %json] [%a ~]]]
           [%fall %& [/ %'vendor.json'] [[/ %json] vendor-starter]]
           [%fall %& [/ %'key-index.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/ %'keys.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/ %'lease.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/ %'view.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/ %'client.json'] [[/ %json] client-starter]]
           [%fall %& [/beacon %rev] [[/ %json] (numb:enjs:format 0)]]
           [%fall %& [/tr %last] [[/ %json] [%o ~]]]
           [%fall %& [/tr %log] [[/ %json] [%a ~]]]
+          [%fall %& [/tr %inbox] [[/ %json] [%a ~]]]
       ==
     ::
     ++  on-file
@@ -107,6 +114,26 @@
         ;<  ~  bind:m  (rise-wait:io prod "%armillary web: failed")
         ;<  ~  bind:m  (bind-http-self:io [~ /apps/armillary])
         (http-dispatch:io %armillary)
+          ::  the vendor's inbox: any ship may poke an account op here,
+          ::  through the /public group's weir. The source ship of the
+          ::  poke is the account; nothing in the payload names a ship.
+          ::  A local poke is this ship acting as its own customer.
+          [~ %'inbox.sig']
+        ;<  ~  bind:m  (rise-wait:io prod "%armillary inbox: failed")
+        ::  the road a stranger pokes is laid from here: the registry
+        ::  keys a grant to the poking fiber's own rail, so only a fiber
+        ::  at the root can grant a road at the root
+        ;<  ~  bind:m  lay-inbox-road
+        |-
+        ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
+        ;<  our=@p  bind:m  get-our:io
+        ;<  ~  bind:m  (take-inbox (fall (get-poke-src:io from) our) sage)
+        $
+          ::  the customer's client: send what is queued, peek the view,
+          ::  and do it again every five minutes or whenever prodded
+          [~ %'client.sig']
+        ;<  ~  bind:m  (rise-wait:io prod "%armillary client: failed")
+        client-loop
           ::  one ephemeral fiber per in-flight request
           [[%requests ~] @]
         ;<  ~  bind:m  (rise-wait:io prod "%armillary request: failed")
@@ -121,9 +148,26 @@
 ++  acct-dir  |=(who=@p ^-(path /accounts/[(scot %p who)]))
 ++  ledger-dir  |=(who=@p ^-(path /accounts/[(scot %p who)]/ledger))
 ++  srv  ~(. http-res:io [%| 1 %& ~ %'web.sig'])
-::  +vendor-starter: the vendor ship, empty until phase 2 names it
+::  +vendor-starter: the vendor ship. Empty means this ship is nobody's
+::  customer; PUT /api/vendor is the only thing that fills it.
 ::
 ++  vendor-starter  ^-(json (pairs:enjs:format ~[['ship' s+'']]))
+::  +client-starter: the ops sent and not yet seen in the view, by nonce
+::
+++  client-starter  ^-(json (pairs:enjs:format ~[['ops' [%o ~]]]))
+::  +ug-base: where this ship keeps its usergroups
+::
+++  ug-base     `path`/sys/ames/usergroups
+::  +public-grp: the group every ship is in, whose weir carries the road
+::  to our inbox
+::
+++  public-grp  `path`/sys/ames/usergroups/'public.grp'
+::  +group-dir: one customer's group directory
+::
+++  group-dir
+  |=  who=@p
+  ^-  path
+  (snoc ug-base (crip (weld (trip (group-name:arm who)) ".grp")))
 ::  ==  the ask
 ::
 ::  every why says what refusing it costs, so consent is informed
@@ -138,14 +182,19 @@
           (line '/sys/eyre/' 'bind /apps/armillary and answer requests, including the inference API')
           (line '/sys/iris/' 'talk to your model providers over HTTPS. Refuse this and no request can be answered')
           (line '/sys/behn/' 'give up on a provider that does not answer within two minutes')
+          (line '/sys/gall/' 'poke the vendor\'s inbox: open your account, mint keys, ask for a lease, buy credit. Refuse this and this ship cannot be a customer')
+          (line '/sys/ames/registry' 'let customer ships poke this ship\'s inbox. Refuse this and this ship cannot be a vendor')
       ==
       :-  'peek'
       :-  %a
       :~  (line '/sys/link/' 'find where this app is installed, so the page can address its own writer')
+          (line '/sys/ames/ships/' 'read your account on the vendor ship. Refuse this and this ship cannot be a customer')
+          (line '/sys/ames/usergroups/' 'one group per customer, so each ship reads its own account and nothing else. Refuse this and this ship cannot be a vendor')
       ==
       :-  'make'
       :-  %a
-      ~
+      :~  (line '/sys/ames/usergroups/' 'one group per customer, so each ship reads its own account and nothing else. Refuse this and this ship cannot be a vendor')
+      ==
   ==
 ::  ==  the writer
 ::
@@ -179,6 +228,16 @@
   ?:  =('close-account' op)  (do-close-account jon)
   ?:  =('drop-account' op)   (do-drop-account jon)
   ?:  =('rebuild' op)        do-rebuild
+  ?:  =('write-view' op)     (do-op-write-view jon)
+  ?:  =('set-pending' op)    (do-set-pending jon)
+  ?:  =('drop-pending' op)   (do-drop-pending jon)
+  ?:  =('set-checkout' op)   (do-set-checkout jon)
+  ?:  =('set-vendor' op)     (do-set-vendor jon)
+  ?:  =('store-key' op)      (do-store-key jon)
+  ?:  =('forget-key' op)     (do-forget-key jon)
+  ?:  =('store-view' op)     (do-store-view jon)
+  ?:  =('note-op' op)        (do-note-op jon)
+  ?:  =('drop-op' op)        (do-drop-op jon)
   (refuse op 'unknown op' '')
 ::  +refuse: a refusal that leaves the writer standing
 ::
@@ -209,6 +268,26 @@
   ;<  ~  bind:m  (over:io (rf 0 /tr %last) [[/ %json] entry])
   ;<  log=json  bind:m  (read-json (rf 0 /tr %log))
   (over:io (rf 0 /tr %log) [[/ %json] (ring-push:arm log entry ring-cap:arm)])
+::  +note-inbox: an outcome of ship traffic, in its own ring of 500, so
+::  a stranger's pokes never push the owner's audit log out of /tr/log.
+::  A secret never reaches here: the mint notes the op and nothing else.
+::
+++  note-inbox
+  |=  [op=@t ok=? why=@t by=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (note-inbox-at 0 op ok why by)
+::  +note-inbox-at: the same ring from a fiber below the nexus root,
+::  which a request fiber is
+::
+++  note-inbox-at
+  |=  [up=@ud op=@t ok=? why=@t by=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  now=@da  bind:m  get-time:io
+  =/  entry=json  (trail-entry:arm op ok why by --0 now)
+  ;<  log=json  bind:m  (read-json (rf up /tr %inbox))
+  (over:io (rf up /tr %inbox) [[/ %json] (ring-push:arm log entry ring-cap:arm)])
 ::  +bump-beacon: the change beacon moves once per op that changed the
 ::  tree, never on a refusal or a no-op. Milliseconds since 1970, so a
 ::  browser keeps it exact.
@@ -233,6 +312,171 @@
     ;<  *  bind:(fiber:fiber:nexus ,~)  (make-soft:io (rv up dir) &+empty-dir:loader)
     (pure:(fiber:fiber:nexus ,~) ~)
   (ensure-dirs up dir t.segs)
+::  ==  ames: where we are, who may read what, and talking to a peer
+::
+::  +self-base: where this instance lives, from the shell's link registry
+::  (/sys/link/armillary/dest.lanes: every instance claiming the name,
+::  ours among them). ~ when the road is refused or the registry is
+::  empty. A usergroup's own roads are absolute, so they need this;
+::  everything else on this ship is nexus-relative.
+::
+++  self-base
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m
+    (peek-soft:io [%& %& /sys/link/armillary %'dest.lanes'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  ls=(unit (set lane:tarball))
+    (mole |.(!<((set lane:tarball) (need-vase:tarball sang.u.vw))))
+  ?~  ls  (pure:m ~)
+  =/  dirs=(list path)
+    (murn ~(tap in u.ls) |=(=lane:tarball ?:(?=(%| -.lane) `p.lane ~)))
+  ?~  dirs  (pure:m ~)
+  ::  an arbitrary lane: a desk app cannot learn its own path, so two
+  ::  instances claiming the name leave nothing here to tell them apart
+  (pure:m `i.dirs)
+::  +ug-read-weir: a usergroup's how, read whole
+::
+++  ug-read-weir
+  |=  gdir=path
+  =/  m  (fiber:fiber:nexus ,weir:nexus)
+  ^-  form:m
+  ;<  hv=(unit view:nexus)  bind:m  (peek-soft:io [%& %& gdir %'how.weir'] ~)
+  ?~  hv  (pure:m *weir:nexus)
+  ?.  ?=([%file *] u.hv)  (pure:m *weir:nexus)
+  (pure:m (fall (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hv)))) *weir:nexus))
+::  +ug-set: a usergroup's who and how, written whole: the ships in it
+::  and the roads they reach through it
+::
+++  ug-set
+  |=  [gname=@t ships=(set @p) pk=(set road:tarball) pok=(set road:tarball)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
+  =/  =weir:nexus  [make.old pok pk]
+  ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] ships])
+  ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
+  (pure:m ~)
+::  +ensure-group: the one customer ship may peek its own account view
+::  and nothing else. One group per account, named for the ship.
+::
+++  ensure-group
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  self-base
+  ?~  base  (pure:m ~)
+  =/  road=road:tarball  [%& %& (weld u.base (acct-dir who)) %'view.json']
+  (ug-set (group-name:arm who) (sy who ~) (sy road ~) ~)
+::  +group-exists: has this account's group been laid yet
+::
+++  group-exists
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m
+    (peek-soft:io [%& %& (group-dir who) %'who.ships'] ~)
+  (pure:m ?=([~ %file *] vw))
+::  +lay-inbox-road: any ship may poke our inbox, and any ship may read
+::  the two public documents, both through the /public group's weir.
+::  Quiet when the roads are refused: a ship that will not be a vendor
+::  still works as a customer.
+::
+++  lay-inbox-road
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  self-base
+  ?~  base  (pure:m ~)
+  ;<  old=weir:nexus  bind:m  (ug-read-weir public-grp)
+  =/  road=road:tarball  [%& %& u.base %'inbox.sig']
+  =/  cat=road:tarball   [%& %& u.base %'catalog-public.json']
+  =/  plans=road:tarball  [%& %& u.base %'plans.json']
+  ?:  ?&  (~(has in poke.old) road)
+          (~(has in peek.old) cat)
+          (~(has in peek.old) plans)
+      ==
+    (pure:m ~)
+  ;<  reg=(unit tang)  bind:m  (reg-register-at-soft:io [u.base %'inbox.sig'])
+  ?^  reg  (pure:m ~)
+  ;<  err=(unit tang)  bind:m
+    (reg-how-soft:io /public [~ (sy road ~) (sy cat plans ~)])
+  (pure:m ~)
+::  +remote-poke-wait: a poke to another ship's grubbery, answered or
+::  timed out. A timer wake answers yes: grubbery's remote acks are
+::  unobservable and a poke that timed out usually landed. A veto or a
+::  nack answers no.
+::
+++  remote-poke-wait
+  |=  [target=@p =lane:tarball jon=json]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  now=@da  bind:m  get-time:io
+  ;<  tw=wire  bind:m  (nonce:io /remote)
+  =/  req=load:remo:nexus  [[/inbox-poke lane] %poke [[/ %json] jon]]
+  ;<  w=wire  bind:m  (nonce:io /inbox-poke)
+  ;<  ~  bind:m
+    %-  send-dart:io
+    [%node w &+&+[/sys/gall %'main.sig'] %poke [[/ %gall-poke] [[target %grubbery] grubbery-load+req]]]
+  ;<  ~  bind:m  (set-timer:io tw (add now ~s30))
+  ;<  ok=?  bind:m
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %veto %node * * *]
+      ?.(=(w wire.dart.u.in) [%skip ~] [%done %.n])
+        [~ %pack * *]
+      ?.  =(w wire.u.in)  [%skip ~]
+      ?~(err.u.in [%wait ~] [%done %.n])
+        [~ %poke * *]
+      ?:  =([/ %timer-wake] p.sage.u.in)
+        ?.(=(tw !<(path q.sage.u.in)) [%skip ~] [%done %.y])
+      ?.  =([/ %poke-ack] p.sage.u.in)  [%skip ~]
+      =/  [aw=wire err=(unit tang)]  !<([wire (unit tang)] q.sage.u.in)
+      ?.  =(w aw)  [%skip ~]
+      [%done ?=(~ err)]
+    ==
+  ;<  ~  bind:m  (cancel-timer:io tw)
+  (pure:m ok)
+::  +peek-remote-wait: a deep peek of another ship's file, ~ on veto, a
+::  miss or a timeout. A ship that is down must not park the fiber.
+::
+++  peek-remote-wait
+  |=  [target=@p road=road:tarball]
+  =/  m  (fiber:fiber:nexus ,(unit view:nexus))
+  ^-  form:m
+  ;<  now=@da  bind:m  get-time:io
+  =/  until=@da  (add now ~s30)
+  ;<  tw=wire  bind:m  (nonce:io /remote)
+  ;<  pw=wire  bind:m  (nonce:io /peek)
+  =/  rr=road:tarball
+    ?-  -.road
+      %|  road
+      %&
+        =/  prefix=path  /sys/ames/ships/[(scot %p target)]/root
+        ?-  -.p.road
+          %&  [%& %& (weld prefix path.p.p.road) name.p.p.road]
+          %|  [%& %| (weld prefix p.p.road)]
+        ==
+    ==
+  ;<  ~  bind:m  (send-dart:io %node pw rr %peek ~ ~ %.y)
+  ;<  ~  bind:m  (set-timer:io tw until)
+  ;<  got=(unit view:nexus)  bind:m
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %veto %node * * *]
+      ?.(=(pw wire.dart.u.in) [%skip ~] [%done ~])
+        [~ %peek * *]
+      ?.(=(pw wire.u.in) [%skip ~] [%done `view.u.in])
+        [~ %poke * *]
+      ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+      ?.(=(tw !<(path q.sage.u.in)) [%skip ~] [%done ~])
+    ==
+  ;<  ~  bind:m  (cancel-timer:io tw)
+  (pure:m got)
 ::  ==  the writer's ops
 ::
 ::  +do-set-settings: replace the document whole
@@ -325,9 +569,17 @@
   =/  got  (de-op-account:arm jon)
   ?:  ?=(%| -.got)  (refuse 'open-account' p.got '')
   =/  who=@p  p.got
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir who) %'account.json'))
+  =/  held=(unit account:arm)  (de-account:arm aj)
+  ::  a closed account is not reopened by a poke from the ship it
+  ::  belongs to; the owner alone can undo a close
+  ?:  ?&(?=(^ held) closed.u.held)
+    (refuse 'open-account' 'account closed' (scot %p who))
   ;<  made=?  bind:m  (ensure-account who)
-  ?.  made  (note-then-no 'open-account' 'already open' (scot %p who))
-  ;<  ~  bind:m  (note 'open-account' & '' (scot %p who) --0)
+  ;<  ~  bind:m  (ensure-group who)
+  ;<  ~  bind:m  (do-write-view who)
+  ;<  ~  bind:m
+    (note 'open-account' & ?:(made '' 'already open') (scot %p who) --0)
   (pure:m &)
 ::  +ensure-account: the account directory, its row and its key table.
 ::  Answers whether it had to make them.
@@ -344,6 +596,8 @@
   ;<  ~  bind:m
     (over:io (rf 0 (acct-dir who) %'account.json') [[/ %json] (en-account:arm row)])
   ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] [%o ~]])
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'pending.json') [[/ %json] [%o ~]])
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'checkouts.json') [[/ %json] [%o ~]])
   (pure:m &)
 ::  +live-account: the account row when it is open and not closed
 ::
@@ -429,6 +683,7 @@
   ;<  now=@da  bind:m  get-time:io
   =/  new=row:arm  [%credit amount.c 0 '' 0 0 '' rail.c ref.c note.c now]
   ;<  ~  bind:m  (write-row ship.c rows u.a new)
+  ;<  ~  bind:m  (do-write-view ship.c)
   ;<  ~  bind:m  (note 'credit' & '' who (sun:si amount.c))
   (pure:m &)
 ::  +do-refund: money back out. A repeated ref is refused the same way.
@@ -448,6 +703,7 @@
   ;<  now=@da  bind:m  get-time:io
   =/  new=row:arm  [%refund amount.c 0 '' 0 0 '' '' ref.c note.c now]
   ;<  ~  bind:m  (write-row ship.c rows u.a new)
+  ;<  ~  bind:m  (do-write-view ship.c)
   ;<  ~  bind:m  (note 'refund' & '' who (new:si | amount.c))
   (pure:m &)
 ::  +do-debit: what a request cost. Never deduplicated: two identical
@@ -468,6 +724,7 @@
   =/  new=row:arm
     [%debit amount.c cost.c model.c in.c out.c mode.c '' ref.c '' now]
   ;<  ~  bind:m  (write-row ship.c rows u.a new)
+  ;<  ~  bind:m  (do-write-view ship.c)
   ;<  ~  bind:m  (note 'debit' & model.c who (new:si | amount.c))
   (pure:m &)
 ::  +do-add-key: one minted key. The row arrives hashed; the writer
@@ -492,6 +749,7 @@
   =/  next=json  [%o (~(put by km) id.k (en-key-row:arm k))]
   ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] next])
   ;<  ~  bind:m  (index-put id.k who)
+  ;<  ~  bind:m  (do-write-view who)
   ;<  ~  bind:m  (note 'add-key' & '' (scot %p who) --0)
   (pure:m &)
 ::  +index-put, +index-del: /key-index.json, a key id to the ship that
@@ -528,6 +786,14 @@
   =/  next=json  [%o (~(del by km) id)]
   ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] next])
   ;<  ~  bind:m  (index-del id)
+  ::  a key revoked before its ship fetched it leaves no secret behind
+  ;<  pend=json  bind:m  (read-json (rf 0 (acct-dir who) %'pending.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] pend) p.pend ~)
+  ;<  ~  bind:m
+    ?.  (~(has by pm) id)  (pure:(fiber:fiber:nexus ,~) ~)
+    %+  over:io  (rf 0 (acct-dir who) %'pending.json')
+    [[/ %json] [%o (~(del by pm) id)]]
+  ;<  ~  bind:m  (do-write-view who)
   ;<  ~  bind:m  (note 'drop-key' & '' (scot %p who) --0)
   (pure:m &)
 ::  +do-touch-key: last use, stamped by the writer's clock. No note:
@@ -568,6 +834,9 @@
   ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] [%o ~]])
   ;<  ~  bind:m
     (over:io (rf 0 (acct-dir who) %'account.json') [[/ %json] (en-account:arm u.a(closed &))])
+  ::  a closed account keeps no unfetched secrets
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'pending.json') [[/ %json] [%o ~]])
+  ;<  ~  bind:m  (do-write-view who)
   ;<  ~  bind:m  (note 'close-account' & '' (scot %p who) --0)
   (pure:m &)
 ++  index-drop-each
@@ -593,6 +862,9 @@
   =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
   ;<  ~  bind:m  (index-drop-each ~(tap in ~(key by km)))
   ;<  *  bind:m  (cull-soft:io (rv 0 (acct-dir who)))
+  ::  the group goes with the account: an empty ship set leaves nothing
+  ::  for the ship to peek, and the view it pointed at is gone anyway
+  ;<  ~  bind:m  (ug-set (group-name:arm who) ~ ~ ~)
   ;<  ~  bind:m  (note 'drop-account' & '' (scot %p who) --0)
   (pure:m &)
 ::  +do-rebuild: refold every account's cached balance from its ledger,
@@ -623,6 +895,285 @@
   ;<  ~  bind:m
     (over:io (rf 0 (acct-dir u.who) %'account.json') [[/ %json] (en-account:arm u.a(balance bal))])
   (rebuild-each t.ships)
+::  ==  the account view, on the vendor
+::
+::  +public-url-of: where a customer reaches this vendor over HTTP. An
+::  unset public url means the dev ship, which is where the gate runs.
+::
+++  public-url-of
+  |=  sj=json
+  ^-  @t
+  =/  u=@t  (gs:arm sj 'public_url')
+  ?:(=('' u) 'http://localhost:8080' u)
+::  +newest-first: ledger rows by time, newest first, the grub name
+::  breaking a tie so two rows in one second keep a stable order
+::
+++  newest-first
+  |=  rows=(list [name=@ta =row:arm])
+  ^-  (list row:arm)
+  %+  turn
+    %+  sort  rows
+    |=  [x=[name=@ta =row:arm] y=[name=@ta =row:arm]]
+    ^-  ?
+    ?:  =(at.row.x at.row.y)  (aor name.y name.x)
+    (gth at.row.x at.row.y)
+  |=([nam=@ta r=row:arm] r)
+::  +do-op-write-view: the write-view op, which is a refresh and nothing
+::  else
+::
+++  do-op-write-view
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-view:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'write-view' p.got '')
+  ;<  ~  bind:m  (do-write-view p.got)
+  (pure:m &)
+::  +do-write-view: the account as its own ship reads it, written whole.
+::  Every writer op that touches an account ends here, so the view is
+::  never stale and the customer never has to ask twice.
+::
+::    The one secret that crosses the wire is in keys_pending, and it is
+::    there because the ship it belongs to is the only ship that may
+::    peek this file.
+::
+++  do-write-view
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (pure:m ~)
+  ::  a group refused or lost at rise is laid again here, so a view is
+  ::  never written that nobody may read
+  ;<  gex=?  bind:m  (group-exists who)
+  ;<  ~  bind:m  ?:(gex (pure:(fiber:fiber:nexus ,~) ~) (ensure-group who))
+  ;<  keys=json  bind:m  (read-json (rf 0 (acct-dir who) %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  =/  key-rows=(list json)
+    %+  murn  ~(tap by km)
+    |=  [id=@t j=json]
+    ^-  (unit json)
+    =/  k=(unit key:arm)  (de-key:arm j)
+    ?~(k ~ `(en-key-public:arm u.k))
+  ;<  pend=json  bind:m  (read-json (rf 0 (acct-dir who) %'pending.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] pend) p.pend ~)
+  =/  pend-rows=(list [nonce=@t id=@t name=@t secret=@t])
+    %+  turn  ~(tap by pm)
+    |=  [id=@t j=json]
+    ^-  [@t @t @t @t]
+    [(gs:arm j 'nonce') id (gs:arm j 'name') (gs:arm j 'secret')]
+  ;<  cj=json  bind:m  (read-json (rf 0 (acct-dir who) %'checkouts.json'))
+  ;<  lj=json  bind:m  (read-json (rf 0 (acct-dir who) %'lease.json'))
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 0 who)
+  =/  newest=(list json)  (turn (scag 50 (newest-first rows)) en-row:arm)
+  ;<  old=json  bind:m  (read-json (rf 0 (acct-dir who) %'view.json'))
+  ;<  sj=json  bind:m  (read-json (rf 0 / %'settings.json'))
+  ;<  now=@da  bind:m  get-time:io
+  =/  lease=json  ?:(=([%o ~] lj) ~ lj)
+  =/  v=view:arm
+    :*  who
+        balance.u.a
+        ''
+        ~
+        key-rows
+        pend-rows
+        lease
+        cj
+        newest
+        (public-url-of sj)
+        +((gn:arm old 'rev'))
+        now
+    ==
+  (over:io (rf 0 (acct-dir who) %'view.json') [[/ %json] (en-view:arm v)])
+::  +do-set-pending: a minted key waiting for its ship to fetch it. The
+::  secret lives in pending.json and in the view, and nowhere else.
+::
+++  do-set-pending
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-pending:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-pending' p.got '')
+  =/  c  p.got
+  =/  who=@t  (scot %p ship.c)
+  ;<  keys=json  bind:m  (read-json (rf 0 (acct-dir ship.c) %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  ::  add-key lands first. If the writer refused it, over twenty or on a
+  ::  closed account, the secret must not be left waiting for nobody.
+  ?.  (~(has by km) id.c)  (refuse 'set-pending' 'id: no such key' who)
+  ;<  pend=json  bind:m  (read-json (rf 0 (acct-dir ship.c) %'pending.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] pend) p.pend ~)
+  ;<  now=@da  bind:m  get-time:io
+  =/  row=json
+    %-  pairs:enjs:format
+    :~  ['nonce' s+nonce.c]
+        ['name' s+name.c]
+        ['secret' s+secret.c]
+        ['made' (en-time:arm now)]
+    ==
+  ;<  ~  bind:m
+    %+  over:io  (rf 0 (acct-dir ship.c) %'pending.json')
+    [[/ %json] [%o (~(put by pm) id.c row)]]
+  ;<  ~  bind:m  (do-write-view ship.c)
+  ::  the audit row names the op and the ship, never the secret
+  ;<  ~  bind:m  (note 'set-pending' & '' who --0)
+  (pure:m &)
+::  +do-drop-pending: the customer says it has the key, so the secret
+::  leaves the vendor
+::
+++  do-drop-pending
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-drop-pending:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'drop-pending' p.got '')
+  =/  who=@p  ship.p.got
+  =/  txt=@t  (scot %p who)
+  ;<  pend=json  bind:m  (read-json (rf 0 (acct-dir who) %'pending.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] pend) p.pend ~)
+  ?.  (~(has by pm) id.p.got)  (note-then-no 'drop-pending' 'nothing pending' txt)
+  ;<  ~  bind:m
+    %+  over:io  (rf 0 (acct-dir who) %'pending.json')
+    [[/ %json] [%o (~(del by pm) id.p.got)]]
+  ;<  ~  bind:m  (do-write-view who)
+  ;<  ~  bind:m  (note 'drop-pending' & '' txt --0)
+  (pure:m &)
+::  +do-set-checkout: one checkout row on an account, keyed by the nonce
+::  the customer chose, so the same nonce answers the same row
+::
+++  do-set-checkout
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-checkout:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-checkout' p.got '')
+  =/  c  p.got
+  =/  who=@t  (scot %p ship.c)
+  ;<  a=(unit account:arm)  bind:m  (live-account ship.c)
+  ?~  a  (refuse 'set-checkout' 'ship: no open account' who)
+  ;<  cj=json  bind:m  (read-json (rf 0 (acct-dir ship.c) %'checkouts.json'))
+  =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
+  =/  old=json  (fall (~(get by cm) nonce.c) ~)
+  =/  row=json
+    %-  pairs:enjs:format
+    :~  ['nonce' s+nonce.c]
+        ['rail' s+rail.c]
+        ['plan' s+plan.c]
+        ['amount' (en-num:arm amount.c)]
+        ['url' s+url.c]
+        ['expires' (en-time:arm expires.c)]
+        ['status' s+status.c]
+    ==
+  ?:  =(old row)  (note-then-no 'set-checkout' 'unchanged' who)
+  ;<  ~  bind:m
+    %+  over:io  (rf 0 (acct-dir ship.c) %'checkouts.json')
+    [[/ %json] [%o (~(put by cm) nonce.c row)]]
+  ;<  ~  bind:m  (do-write-view ship.c)
+  ;<  ~  bind:m  (note 'set-checkout' & status.c who --0)
+  (pure:m &)
+::  ==  the writer's ops on the customer side
+::
+::  +do-set-vendor: who this ship buys from. Empty means nobody, and
+::  then the client fiber sleeps.
+::
+++  do-set-vendor
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-vendor:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-vendor' p.got '')
+  =/  txt=@t  ?~(p.got '' (scot %p u.p.got))
+  =/  doc=json  (pairs:enjs:format ~[['ship' s+txt]])
+  ;<  cur=json  bind:m  (read-json (rf 0 / %'vendor.json'))
+  ?:  =(cur doc)  (note-then-no 'set-vendor' 'unchanged' txt)
+  ;<  ~  bind:m  (over:io (rf 0 / %'vendor.json') [[/ %json] doc])
+  ;<  ~  bind:m  (note 'set-vendor' & '' txt --0)
+  (pure:m &)
+::  +do-store-key: an inference key fetched from the vendor's view. This
+::  ship is the customer, so it keeps the secret.
+::
+++  do-store-key
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-store-key:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'store-key' p.got '')
+  =/  k=held-key:arm  p.got
+  ;<  keys=json  bind:m  (read-json (rf 0 / %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  ?:  (~(has by km) id.k)  (note-then-no 'store-key' 'already held' '')
+  ;<  ~  bind:m
+    (over:io (rf 0 / %'keys.json') [[/ %json] [%o (~(put by km) id.k (en-held:arm k))]])
+  ::  the audit row names the key id, never the secret
+  ;<  ~  bind:m  (note 'store-key' & id.k '' --0)
+  (pure:m &)
+++  do-forget-key
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-forget-key:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'forget-key' p.got '')
+  ;<  keys=json  bind:m  (read-json (rf 0 / %'keys.json'))
+  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
+  ?.  (~(has by km) p.got)  (note-then-no 'forget-key' 'no such key' '')
+  ;<  ~  bind:m
+    (over:io (rf 0 / %'keys.json') [[/ %json] [%o (~(del by km) p.got)]])
+  ;<  ~  bind:m  (note 'forget-key' & p.got '' --0)
+  (pure:m &)
+::  +do-store-view: the vendor's view of our account, kept verbatim with
+::  the time we read it. No audit row: this runs every five minutes and
+::  one row a pass would flush the ring in a day.
+::
+++  do-store-view
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-store-view:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'store-view' p.got '')
+  ;<  now=@da  bind:m  get-time:io
+  =/  doc=json
+    ?.  ?=([%o *] p.got)  p.got
+    [%o (~(put by p.p.got) 'fetched' (en-time:arm now))]
+  ;<  ~  bind:m  (over:io (rf 0 / %'view.json') [[/ %json] doc])
+  (pure:m &)
+::  +do-note-op: an op queued for the vendor, by nonce. The client fiber
+::  sends what is here and drops a nonce once it shows in the view.
+::
+++  do-note-op
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-note-op:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'note-op' p.got '')
+  =/  n  p.got
+  ;<  cj=json  bind:m  (read-json (rf 0 / %'client.json'))
+  =/  ops=json  (gj:arm cj 'ops')
+  =/  om=(map @t json)  ?:(?=([%o *] ops) p.ops ~)
+  ;<  now=@da  bind:m  get-time:io
+  =/  row=json
+    %-  pairs:enjs:format
+    :~  ['nonce' s+nonce.n]
+        ['payload' payload.n]
+        ['sent' b+sent.n]
+        ['at' (en-time:arm now)]
+    ==
+  =/  doc=json  (pairs:enjs:format ~[['ops' [%o (~(put by om) nonce.n row)]]])
+  ;<  ~  bind:m  (over:io (rf 0 / %'client.json') [[/ %json] doc])
+  (pure:m &)
+++  do-drop-op
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-drop-op:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'drop-op' p.got '')
+  ;<  cj=json  bind:m  (read-json (rf 0 / %'client.json'))
+  =/  ops=json  (gj:arm cj 'ops')
+  =/  om=(map @t json)  ?:(?=([%o *] ops) p.ops ~)
+  ?.  (~(has by om) p.got)  (pure:m |)
+  =/  doc=json  (pairs:enjs:format ~[['ops' [%o (~(del by om) p.got)]]])
+  ;<  ~  bind:m  (over:io (rf 0 / %'client.json') [[/ %json] doc])
+  (pure:m &)
 ::  ==  reads: walking the tree
 ::
 ::  +read-json: a JSON grub in the instance, [%o ~] when absent
@@ -690,6 +1241,165 @@
   ;<  vw=view:nexus  bind:m  (peek:io (rv up /accounts) ~)
   ?.  ?=([%ball *] vw)  (pure:m ~)
   (pure:m (accounts-in ball.vw))
+::  ==  the inbox: what other ships ask of this vendor
+::
+::  +ship-op, +ship-id-op: a writer op naming one ship, and one naming a
+::  ship and a key. The ship is always the transport's, never the
+::  payload's: that is what makes the poke an identity.
+::
+++  ship-op
+  |=  [op=@t who=@p]
+  ^-  json
+  (pairs:enjs:format ~[['op' s+op] ['ship' s+(scot %p who)]])
+++  ship-id-op
+  |=  [op=@t who=@p id=@t]
+  ^-  json
+  (pairs:enjs:format ~[['op' s+op] ['ship' s+(scot %p who)] ['id' s+id]])
+::  +has-nonce: is one of these pending rows already this nonce. A
+::  mint-key resent after a timeout must not mint twice.
+::
+++  has-nonce
+  |=  [pm=(map @t json) nonce=@t]
+  ^-  ?
+  %+  lien  ~(tap by pm)
+  |=([id=@t j=json] =(nonce (gs:arm j 'nonce')))
+::  +take-inbox: one poke from a ship. Everything is refused cleanly and
+::  noted in /tr/inbox; nothing a stranger sends reaches /tr/log.
+::
+++  take-inbox
+  |=  [src=@p =sage:tarball]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ?.  =([/ %json] p.sage)  (note-inbox 'inbox' | 'payload: not json' who)
+  =/  jon=json  (fall (mole |.(!<(json q.sage))) ~)
+  =/  got  (de-inbox:arm jon)
+  ?:  ?=(%| -.got)  (note-inbox 'inbox' | p.got who)
+  =/  o=inbox-op:arm  p.got
+  ;<  sj=json  bind:m  (read-json (rf 0 / %'settings.json'))
+  ?:  ?&((gb:arm sj 'refuse_comets') (is-comet:arm src))
+    (note-inbox 'inbox' | 'comet refused' who)
+  ::  a ship with no account gets one on its first op, whatever the op
+  ::  was; hello opens it itself
+  ;<  ex=?  bind:m  (peek-exists:io (rf 0 (acct-dir src) %'account.json'))
+  ;<  ~  bind:m
+    ?:  |(ex ?=(%hello -.o))  (pure:(fiber:fiber:nexus ,~) ~)
+    (poke-writer 0 (ship-op 'open-account' src))
+  (do-inbox-op src o)
+::  +do-inbox-op: the op, decoded, turned into writer pokes. This fiber
+::  writes no account state of its own and waits for nothing.
+::
+++  do-inbox-op
+  |=  [src=@p o=inbox-op:arm]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ?-    -.o
+      %hello
+    ;<  ~  bind:m  (poke-writer 0 (ship-op 'open-account' src))
+    (note-inbox 'hello' & '' who)
+      %refresh
+    ;<  ~  bind:m  (poke-writer 0 (ship-op 'write-view' src))
+    (note-inbox 'refresh' & '' who)
+      %got-key
+    ;<  ~  bind:m  (poke-writer 0 (ship-id-op 'drop-pending' src id.o))
+    (note-inbox 'got-key' & '' who)
+      %drop-key
+    ;<  ~  bind:m  (poke-writer 0 (ship-id-op 'drop-key' src id.o))
+    (note-inbox 'drop-key' & '' who)
+      %mint-key  (inbox-mint src name.o nonce.o)
+      %checkout  (inbox-checkout src rail.o plan.o amount.o nonce.o)
+      %lease                 (note-inbox 'lease' | 'not yet' who)
+      %drop-lease            (note-inbox 'drop-lease' | 'not yet' who)
+      %cancel-subscription   (note-inbox 'cancel-subscription' | 'not yet' who)
+  ==
+::  +inbox-mint: a key minted for a customer ship, the same way the
+::  owner's route mints one. The row goes to keys.json hashed; the
+::  secret goes to pending.json and to the view, and nowhere else.
+::
+++  inbox-mint
+  |=  [src=@p name=@t nonce=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  pend=json  bind:m  (read-json (rf 0 (acct-dir src) %'pending.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] pend) p.pend ~)
+  ::  the nonce is the customer's idempotency key: a resend after a
+  ::  timeout is a no-op, not a second key
+  ?:  (has-nonce pm nonce)  (note-inbox 'mint-key' & 'already minted' who)
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  ;<  now=@da  bind:m  get-time:io
+  =/  id=@t  (id-of:arm eny)
+  =/  salt=@t  (scot %uv (end [3 10] (rsh [3 5] eny)))
+  =/  secret=@t  (secret-of:arm (rsh [3 15] eny))
+  =/  k=key:arm  [id name salt (hash-token:arm salt secret) now ~]
+  ;<  ~  bind:m
+    %+  poke-writer  0
+    %-  pairs:enjs:format
+    :~  ['op' s+'add-key']
+        ['ship' s+who]
+        ['key' (en-key-row:arm k)]
+    ==
+  ;<  ~  bind:m
+    %+  poke-writer  0
+    %-  pairs:enjs:format
+    :~  ['op' s+'set-pending']
+        ['ship' s+who]
+        ['id' s+id]
+        ['secret' s+secret]
+        ['nonce' s+nonce]
+        ['name' s+name]
+    ==
+  ::  the note carries the op and the ship: the ring never sees a secret
+  (note-inbox 'mint-key' & '' who)
+::  +inbox-checkout: phase 2 has no money rails, so stub mode answers a
+::  local page that credits the account and live mode answers that the
+::  rail is unavailable. Phase 3 replaces the live branch.
+::
+++  inbox-checkout
+  |=  [src=@p rail=@t plan=@t amount=@ud nonce=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  cj=json  bind:m  (read-json (rf 0 (acct-dir src) %'checkouts.json'))
+  =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
+  ::  a nonce already here answers the row that is already here
+  ?:  (~(has by cm) nonce)  (note-inbox 'checkout' & 'already open' who)
+  ;<  sj=json  bind:m  (read-json (rf 0 / %'settings.json'))
+  ;<  now=@da  bind:m  get-time:io
+  =/  stub=?  !=('live' (gs:arm sj 'mode'))
+  =/  url=@t
+    ?.  stub  ''
+    %^  rap  3  (public-url-of sj)
+    :~  '/apps/armillary/pay/stub?ship='
+        who
+        '&nonce='
+        nonce
+    ==
+  =/  op=json
+    %-  pairs:enjs:format
+    :~  ['op' s+'set-checkout']
+        ['ship' s+who]
+        ['nonce' s+nonce]
+        ['rail' s+rail]
+        ['plan' s+plan]
+        ['amount' (en-num:arm amount)]
+        ['url' s+url]
+        ['expires' (en-time:arm (add now ~d1))]
+        ['status' s+?:(stub 'pending' 'unavailable')]
+    ==
+  ;<  ~  bind:m  (poke-writer 0 op)
+  ?:  stub  (note-inbox 'checkout' & '' who)
+  (note-inbox 'checkout' | 'live rails are phase 3' who)
+::  +client-loop: the customer's fiber. Phase 3 fills it; for now it
+::  waits, so a ship with no vendor costs nothing.
+::
+++  client-loop
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |-
+  ;<  *  bind:m  take-poke-from:io
+  $
 ::  ==  HTTP
 ::
 ::  +send-json, +send-err: every error is OpenAI's shape, so one client
@@ -859,11 +1569,6 @@
   =/  size=@ud  ?~(body.request.req 0 p.u.body.request.req)
   ?:  (gth size max-body:arm)
     (send-err eyre-id 413 'body: over 4 MB')
-  ;<  who=(unit actor)  bind:m  (identify req src our)
-  ?~  who  (send-err eyre-id 403 'forbidden')
-  =/  act=actor  u.who
-  ::  +own: a route the owner alone may take
-  =/  own  |=(f=form:m ^-(form:m ?:(owner.act f (send-err eyre-id 403 'owner only'))))
   ::  a body is read as JSON, so a request carrying one says it is JSON
   =/  ctype=@t
     =/  raw=tape
@@ -880,6 +1585,15 @@
   =/  s2=@ta  ?:(?=([@ @ @ *] suffix) i.t.t.suffix %$)
   =/  s4=@ta  ?:(?=([@ @ @ @ @ *] suffix) i.t.t.t.t.suffix %$)
   =/  args=quay:eyre  args.parsed
+  ::  the two public routes, ahead of the cookie: a customer who is
+  ::  paying is a browser with no login on this ship
+  ?:  &(=('GET' meth) ?=([%pay %stub ~] suffix))   (serve-pay-page eyre-id args)
+  ?:  &(=('POST' meth) ?=([%pay %stub ~] suffix))  (serve-pay-stub eyre-id args jon)
+  ;<  who=(unit actor)  bind:m  (identify req src our)
+  ?~  who  (send-err eyre-id 403 'forbidden')
+  =/  act=actor  u.who
+  ::  +own: a route the owner alone may take
+  =/  own  |=(f=form:m ^-(form:m ?:(owner.act f (send-err eyre-id 403 'owner only'))))
   ?:  &(=('GET' meth) ?=(~ suffix))                      (own (serve-file eyre-id %'armillary.html'))
   ?:  &(=('GET' meth) ?=([%'armillary.css' ~] suffix))   (own (serve-file eyre-id %'armillary.css'))
   ?:  &(=('GET' meth) ?=([%'armillary.js' ~] suffix))    (own (serve-file eyre-id %'armillary.js'))
@@ -1154,10 +1868,27 @@
       (gth at.row.x at.row.y)
     |=([nam=@ta r=row:arm] r)
   =/  newest=(list row:arm)  (scag 100 sorted)
+  ::  what the customer has not fetched yet, by id and name. The secret
+  ::  stays in pending.json and in that ship's own view.
+  ;<  pend=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'pending.json'))
+  =/  pm=(map @t json)  ?:(?=([%o *] pend) p.pend ~)
+  =/  pend-rows=(list json)
+    %+  turn  ~(tap by pm)
+    |=  [id=@t j=json]
+    ^-  json
+    %-  pairs:enjs:format
+    :~  ['id' s+id]
+        ['name' s+(gs:arm j 'name')]
+        ['nonce' s+(gs:arm j 'nonce')]
+        ['made' s+(gs:arm j 'made')]
+    ==
+  ;<  cj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'checkouts.json'))
   %^  send-json  eyre-id  200
   %-  pairs:enjs:format
   :~  ['account' (en-account:arm u.a)]
       ['keys' a+key-rows]
+      ['pending' a+pend-rows]
+      ['checkouts' cj]
       ['ledger' a+(turn newest en-row:arm)]
   ==
 ::  +serve-mint: a new inference key. The account is opened when it is
@@ -1397,6 +2128,111 @@
   ::  request
   ;<  ~  bind:m  (poke-writer 1 op)
   (send-raw eyre-id status.res body.res)
+::  ==  the stub checkout, public
+::
+::  +safe-nonce: a nonce as it may appear in a URL and in HTML. Only
+::  these characters, so nothing that reaches the page has to be
+::  escaped on the way out.
+::
+++  safe-nonce
+  |=  t=@t
+  ^-  ?
+  =/  tap=tape  (trip t)
+  ?:  ?|(?=(~ tap) (gth (lent tap) 64))  |
+  %+  levy  `tape`tap
+  |=  c=@t
+  ^-  ?
+  ?|  &((gte c 'a') (lte c 'z'))
+      &((gte c 'A') (lte c 'Z'))
+      &((gte c '0') (lte c '9'))
+      =('-' c)
+      =('_' c)
+      =('.' c)
+  ==
+::  +serve-pay-page: the browser page a stub checkout URL opens. Public:
+::  the ship paying has no login here. Nothing is written by the GET.
+::
+++  serve-pay-page
+  |=  [eyre-id=@ta args=quay:eyre]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  raw=@t  (fall (get-key:kv:html-utils 'ship' args) '')
+  =/  nonce=@t  (fall (get-key:kv:html-utils 'nonce' args) '')
+  =/  who=(unit @p)  (slaw %p raw)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ?.  (safe-nonce nonce)  (send-err eyre-id 400 'nonce: 1 to 64 bytes')
+  =/  ship=@t  (scot %p u.who)
+  =/  parts=(list @t)
+    :~  '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<title>armillary checkout</title></head><body>'
+        '<h1>Stub checkout</h1>'
+        '<p>Account <code>'
+        ship
+        '</code>, order <code>'
+        nonce
+        '</code>.</p>'
+        '<p>This vendor is in stub mode. No money moves: paying credits the account so the whole loop can be run without a rail.</p>'
+        '<form method="post" action="/apps/armillary/pay/stub?ship='
+        ship
+        '&amp;nonce='
+        nonce
+        '"><button type="submit">Pay</button></form>'
+        '</body></html>'
+    ==
+  =/  heads  ~[['content-type' 'text/html; charset=utf-8'] ['cache-control' 'no-store']]
+  (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html (rap 3 parts))])
+::  +serve-pay-stub: the button. In stub mode it credits the checkout's
+::  amount and marks the row paid; the credit op dedupes on the ref, so
+::  two clicks are one credit.
+::
+++  serve-pay-stub
+  |=  [eyre-id=@ta args=quay:eyre jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  qship=@t  (fall (get-key:kv:html-utils 'ship' args) '')
+  =/  raw=@t  ?:(=('' qship) (gs:arm jon 'ship') qship)
+  =/  qnonce=@t  (fall (get-key:kv:html-utils 'nonce' args) '')
+  =/  nonce=@t  ?:(=('' qnonce) (gs:arm jon 'nonce') qnonce)
+  =/  who=(unit @p)  (slaw %p raw)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ?.  (safe-nonce nonce)  (send-err eyre-id 400 'nonce: 1 to 64 bytes')
+  ;<  sj=json  bind:m  (read-json (rf 1 / %'settings.json'))
+  ?:  =('live' (gs:arm sj 'mode'))  (send-err eyre-id 403 'stub mode only')
+  ;<  cj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'checkouts.json'))
+  =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
+  =/  row=(unit json)  (~(get by cm) nonce)
+  ?~  row  (send-err eyre-id 404 'no such checkout')
+  =/  ship=@t  (scot %p u.who)
+  =/  amount=@ud  (gn:arm u.row 'amount')
+  ::  plans arrive in phase 3, so a plan checkout in stub mode is worth
+  ::  ten dollars and nothing turns on the number
+  =/  credit=@ud  ?:(=(0 amount) 10.000.000 amount)
+  ;<  ~  bind:m
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'credit']
+        ['ship' s+ship]
+        ['amount' (en-num:arm credit)]
+        ['rail' s+'stub']
+        ['ref' s+(rap 3 'stub-' nonce ~)]
+        ['note' s+'stub checkout']
+    ==
+  ;<  ~  bind:m
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'set-checkout']
+        ['ship' s+ship]
+        ['nonce' s+nonce]
+        ['rail' s+(gs:arm u.row 'rail')]
+        ['plan' s+(gs:arm u.row 'plan')]
+        ['amount' (en-num:arm amount)]
+        ['url' s+(gs:arm u.row 'url')]
+        ['expires' s+(gs:arm u.row 'expires')]
+        ['status' s+'paid']
+    ==
+  =/  heads  ~[['content-type' 'text/plain; charset=utf-8'] ['cache-control' 'no-store']]
+  (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html 'paid')])
 ::  ==  the page
 ::
 ::  +serve-file: one of the page's grubs, no-cache so an updated desk
