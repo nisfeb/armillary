@@ -712,8 +712,15 @@
     } else if (d.refreshView) {
       say('reading the vendor');
       var drawAccount = drawer();
-      api('/account?fresh=1').then(function (dd) { drawAccount(myAccount(dd)); say(''); })
-        .catch(function (e) { say(e.message, true); });
+      api('/account?fresh=1').then(function (dd) {
+        // the plans go with it, or the buttons and the plan's name
+        // vanish on the redraw
+        return api('/plans').catch(function () { return myPlans; }).then(function (pl) {
+          myPlans = pl || [];
+          drawAccount(myAccount(dd, myPlans));
+          say('');
+        });
+      }).catch(function (e) { say(e.message, true); });
     } else if (d.topup) {
       var amount = micro(document.getElementById('t-amount').value);
       var railEl = view.querySelector('input[name="rail"]:checked');
