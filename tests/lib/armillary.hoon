@@ -11,8 +11,6 @@
 ::  call rather than of a face
 ++  refused  |=(e=(each * @t) ^-(? ?=(%| -.e)))
 ++  taken    |=(e=(each * @t) ^-(? ?=(%& -.e)))
-::  +why: the field a decoder named, or '' when it took the row
-++  why      |=(e=(each * @t) ^-(@t ?:(?=(%| -.e) p.e '')))
 ++  t0  ~2026.9.19..22.05.00
 ::  ==  time
 ::

@@ -173,6 +173,17 @@
       '</div>' +
       (a.closed ? '' : '<button class="danger" data-close="1">Close account</button>') +
       '</div>';
+    // the owner's own read, so the Stripe ids are here; the customer's
+    // view of the same account never carries them
+    var sub = (d && d.subscription) || {};
+    if (sub.active) {
+      out += '<div class="card"><h2>Subscription</h2><p>Plan <code>' +
+        esc((d && d.plan) || '') + '</code>' +
+        (sub.renews ? ', renews ' + fmtTime(sub.renews).slice(0, 10) : '') + '</p>' +
+        '<p class="muted">Stripe <code>' + esc(sub.id || '') + '</code>, customer <code>' +
+        esc(a.stripe_customer || '') + '</code></p>' +
+        '<button class="danger" data-clear-sub="1">Clear</button></div>';
+    }
     out += '<div class="card"><h2>Keys</h2>';
     if (minted) {
       out += '<div class="secret"><p>Copy this now. The ship keeps only a salted hash of it.</p>' +
@@ -218,6 +229,97 @@
     return out + '</div>';
   }
 
+  // ---- payments, the vendor's half ----
+  var STRIPE_DEFAULT = 'https://api.stripe.com';
+  function planRows(plans, withStripe) {
+    var out = thead(['Id', 'Name', 'Kind', { name: 'Price', num: true },
+      { name: 'Credit', num: true }, 'Interval', 'Stripe price', '']);
+    plans.forEach(function (p) {
+      var sp = p.stripe_price
+        ? '<code>' + esc(p.stripe_price) + '</code>'
+        : (p.kind === 'subscription' && withStripe
+          ? '<button data-plan-stripe="' + esc(p.id) + '">Create on Stripe</button>'
+          : '<span class="muted">not needed</span>');
+      out += '<tr>' +
+        cell('Id', '<code>' + esc(p.id) + '</code>') +
+        cell('Name', esc(p.name)) +
+        cell('Kind', esc(p.kind)) +
+        cell('Price', esc(dollars(p.price)), 'num') +
+        cell('Credit', esc(dollars(p.credit)), 'num') +
+        cell('Interval', esc(p.interval || '')) +
+        cell('Stripe', sp) +
+        cell('', '<button data-plan-edit="' + esc(p.id) + '">Edit</button>' +
+          '<button class="danger" data-plan-drop="' + esc(p.id) + '">Delete</button>') +
+        '</tr>';
+    });
+    return out + '</tbody></table>';
+  }
+  function planForm(p) {
+    var open = p || { id: '', name: '', kind: 'topup', price: 0, credit: 0, interval: 'month' };
+    var sub = open.kind === 'subscription';
+    return '<div class="card" id="plan-form"><h2>' +
+      (p ? 'Edit ' + esc(p.id) : 'Add a plan') + '</h2><div class="inline">' +
+      '<div class="field"><label for="pl-id">Id</label><input id="pl-id" value="' + esc(open.id) + '"' + (p ? ' readonly' : '') + '></div>' +
+      '<div class="field"><label for="pl-name">Name</label><input id="pl-name" value="' + esc(open.name) + '"></div>' +
+      '<div class="field"><label>Kind</label>' +
+      '<label><input type="radio" name="plan-kind" value="topup"' + (sub ? '' : ' checked') + '> top-up</label> ' +
+      '<label><input type="radio" name="plan-kind" value="subscription"' + (sub ? ' checked' : '') + '> subscription</label></div>' +
+      '<div class="field"><label for="pl-price">Price, dollars</label><input id="pl-price" value="' + esc(dollars(open.price)) + '"></div>' +
+      '<div class="field"><label for="pl-credit">Credit, dollars</label><input id="pl-credit" value="' + esc(dollars(open.credit)) + '"></div>' +
+      '<div class="field"><label for="pl-interval">Interval</label>' +
+      '<select id="pl-interval"><option value="month"' + (open.interval === 'year' ? '' : ' selected') + '>month</option>' +
+      '<option value="year"' + (open.interval === 'year' ? ' selected' : '') + '>year</option></select></div>' +
+      '</div><button data-plan-save="' + esc(open.id) + '">' + (p ? 'Save' : 'Add') + '</button>' +
+      (p ? '<button data-plan-cancel="1">Cancel</button>' : '') + '</div>';
+  }
+  function payments(st, plans, log, editing) {
+    var s = st || {};
+    var pub = s.public_url || '';
+    var hook = (pub || 'your public URL') + '/apps/armillary/hooks/stripe';
+    var out = '<h1>Payments</h1><div class="card"><h2>Stripe</h2>' +
+      '<p class="muted">The key and the signing secret are shown masked. Leave a field blank to keep what is stored.</p>' +
+      '<div class="inline">' +
+      '<div class="field"><label for="st-key">Secret key</label>' +
+      '<input id="st-key" type="password" placeholder="leave blank to keep"></div>' +
+      '<div class="field"><label for="st-hook">Webhook signing secret</label>' +
+      '<input id="st-hook" type="password" placeholder="leave blank to keep"></div>' +
+      '<div class="field"><label for="st-pub">Public URL</label>' +
+      '<input id="st-pub" value="' + esc(pub) + '" placeholder="https://your.ship"></div>' +
+      '<div class="field"><label>Mode</label>' +
+      '<label><input type="radio" name="st-mode" value="stub"' + (s.mode === 'live' ? '' : ' checked') + '> stub</label> ' +
+      '<label><input type="radio" name="st-mode" value="live"' + (s.mode === 'live' ? ' checked' : '') + '> live</label></div>' +
+      '</div>' +
+      '<p>Key <code>' + esc(s.stripe_key || 'not set') + '</code>, ' +
+      'signing secret <code>' + esc(s.stripe_webhook_secret || 'not set') + '</code></p>' +
+      (s.stripe_url && s.stripe_url !== STRIPE_DEFAULT
+        ? '<p class="muted">API base <code>' + esc(s.stripe_url) + '</code>, not Stripe itself.</p>' : '') +
+      '<p class="muted">Paste this into Stripe as the endpoint: <code>' + esc(hook) + '</code></p>' +
+      '<button data-save-stripe="1">Save</button></div>';
+    out += '<div class="card"><h2>Plans</h2>' +
+      (plans.length ? planRows(plans, !!s.stripe_key) : '<p class="muted">No plans yet.</p>') +
+      '</div>';
+    var cur = editing ? (plans.filter(function (p) { return p.id === editing; })[0] || null) : null;
+    out += planForm(cur);
+    var rows = (log || []).filter(function (r) {
+      return String(r.op || '').indexOf('stripe.') === 0;
+    }).slice(0, 10);
+    out += '<div class="card"><h2>Recent Stripe outcomes</h2>';
+    if (!rows.length) out += '<p class="muted">Nothing yet.</p>';
+    else {
+      out += thead(['At', 'What', 'Ok', 'Why']);
+      rows.forEach(function (r) {
+        out += '<tr>' +
+          cell('At', fmtTime(r.at)) +
+          cell('What', esc(r.op)) +
+          cell('Ok', r.ok ? 'yes' : 'no') +
+          cell('Why', esc(r.why || '')) +
+          '</tr>';
+      });
+      out += '</tbody></table>';
+    }
+    return out + '</div>';
+  }
+
   // ---- the customer's own views ----
   // the ledger table is the same one the owner reads, so one renderer
   // serves both sides
@@ -253,7 +355,29 @@
     });
     return out + '</tbody></table></div>';
   }
-  function myAccount(d) {
+  // the plans the vendor sells, as buttons. A top-up plan credits what
+  // it costs; a subscription says how often it charges.
+  function planButtons(plans) {
+    if (!plans || !plans.length) return '';
+    return '<div class="field wide"><label>Plans</label><div>' +
+      plans.map(function (p) {
+        var how = p.kind === 'subscription'
+          ? ' per ' + esc(p.interval || 'month')
+          : ' for ' + esc(dollars(p.credit)) + ' of credit';
+        return '<button data-buy="' + esc(p.id) + '">' + esc(p.name) +
+          ' &middot; $' + esc(dollars(p.price)) + how + '</button> ';
+      }).join('') + '</div></div>';
+  }
+  function subscriptionLine(d, plans) {
+    var sub = (d && d.subscription) || {};
+    if (!sub.active) return '';
+    var named = (plans || []).filter(function (p) { return p.id === d.plan; })[0];
+    var name = named ? named.name : (d.plan || 'a plan');
+    var when = sub.renews ? ', renews ' + fmtTime(sub.renews).slice(0, 10) : '';
+    return '<p>Subscribed to ' + esc(name) + esc(when) +
+      ' <button class="danger" data-cancel-sub="1">Cancel</button></p>';
+  }
+  function myAccount(d, plans) {
     var vendor = (d && d.vendor) || '';
     var out = '<h1>Account</h1>' +
       '<div class="card"><h2>Vendor</h2><p>' +
@@ -267,7 +391,9 @@
     if (!vendor) return out + '<p class="muted">Name a vendor ship above to open an account on it.</p>';
     out += '<div class="card"><h2>Balance</h2>' +
       '<p style="font-size:1.6rem;margin:.2rem 0">' + signed(d && d.balance) + '</p>' +
+      subscriptionLine(d, plans) +
       '<div class="inline">' +
+      planButtons(plans) +
       '<div class="field"><label for="t-amount">Top up, dollars</label><input id="t-amount" value=""></div>' +
       '<div class="field"><label>Rail</label>' +
       '<label><input type="radio" name="rail" value="stripe" checked> card</label> ' +
@@ -355,6 +481,8 @@
   var render = {
     esc: esc, dollars: dollars, micro: micro, margin: margin,
     providers: providers, catalog: catalog, accounts: accounts, account: account,
+    payments: payments, planRows: planRows, planButtons: planButtons,
+    subscriptionLine: subscriptionLine,
     myAccount: myAccount, myKeys: myKeys, buyCatalog: buyCatalog,
     route: route, sseEvent: sseEvent,
   };
@@ -376,6 +504,9 @@
   var isVendor = true, isBuyer = false;
   var buyFilter = '';
   var custMinted = null;               // a fetched secret shown once
+  var planEditing = null;              // the plan id whose form is open
+  var st0 = null;                      // the settings the Payments view last read
+  var myPlans = [];                    // the vendor's plans, as the customer reads them
 
   function say(msg, bad) { statusEl.textContent = msg; statusEl.className = 'status' + (bad ? ' bad' : ''); }
   function api(path, opts) {
@@ -410,13 +541,28 @@
     var r = route(location.hash);
     if (r.name !== 'account') minted = null;
     if (r.name !== 'keys') custMinted = null;
+    if (r.name !== 'payments') planEditing = null;
     var p;
     // a read can take thirty seconds when it waits on the vendor, and
     // by then the person may be somewhere else: draw only what the view
     // is still showing
     var draw = drawer();
     if (r.name === 'my-account') {
-      p = api('/account').then(function (d) { draw(myAccount(d)); });
+      p = api('/account').then(function (d) {
+        return api('/plans').catch(function () { return []; }).then(function (pl) {
+          myPlans = pl || [];
+          draw(myAccount(d, myPlans));
+        });
+      });
+    } else if (r.name === 'payments') {
+      p = api('/settings').then(function (st) {
+        st0 = st;
+        return api('/plans').then(function (pl) {
+          return api('/log').catch(function () { return []; }).then(function (lg) {
+            draw(payments(st, pl || [], lg || [], planEditing));
+          });
+        });
+      });
     } else if (r.name === 'keys') {
       p = api('/keys').then(function (keys) {
         return api('/inference').catch(function () { return null; })
@@ -591,6 +737,72 @@
     } else if (d.dropKey) {
       if (!confirm('Revoke "' + d.name + '"? Its next request is refused.')) return;
       api('/keys/' + seg(d.dropKey), { method: 'DELETE' })
+        .then(later).catch(function (e) { say(e.message, true); });
+    } else if (d.saveStripe) {
+      var pub = document.getElementById('st-pub').value.trim();
+      var modeEl = view.querySelector('input[name="st-mode"]:checked');
+      // a blank secret keeps what the ship holds, which is what an
+      // untouched field sends
+      var was = st0 || {};
+      post('/settings', {
+        markup_pct: was.markup_pct || 130,
+        min_topup: was.min_topup === undefined ? 5000000 : was.min_topup,
+        public_url: pub,
+        mode: modeEl ? modeEl.value : 'stub',
+        refuse_comets: !!was.refuse_comets,
+        stripe_key: document.getElementById('st-key').value.trim(),
+        stripe_webhook_secret: document.getElementById('st-hook').value.trim(),
+        stripe_url: was.stripe_url || '',
+      }, 'PUT').then(function () { say('saved'); later(); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.planEdit) {
+      planEditing = d.planEdit; refresh();
+    } else if (d.planCancel) {
+      planEditing = null; refresh();
+    } else if (d.planSave !== undefined) {
+      var kindEl = view.querySelector('#plan-form input[name="plan-kind"]:checked');
+      var body = {
+        id: document.getElementById('pl-id').value.trim(),
+        name: document.getElementById('pl-name').value.trim(),
+        kind: kindEl ? kindEl.value : 'topup',
+        price: micro(document.getElementById('pl-price').value),
+        credit: micro(document.getElementById('pl-credit').value),
+        interval: document.getElementById('pl-interval').value,
+      };
+      if (!body.id) { say('id: 1 to 64 bytes', true); return; }
+      if (!body.price || !body.credit) { say('price and credit: dollars above zero', true); return; }
+      var was = planEditing;
+      var call = was ? post('/plans/' + seg(was), body, 'PUT') : post('/plans', body);
+      planEditing = null;
+      call.then(function () { say('saved'); later(); })
+        .catch(function (e) { planEditing = was; say(e.message, true); refresh(); });
+    } else if (d.planDrop) {
+      if (!confirm('Delete the plan "' + d.planDrop + '"?')) return;
+      api('/plans/' + seg(d.planDrop), { method: 'DELETE' })
+        .then(later).catch(function (e) { say(e.message, true); });
+    } else if (d.planStripe) {
+      say('making the product and the price on Stripe');
+      post('/plans/' + seg(d.planStripe) + '/stripe')
+        .then(function (p) { say('price ' + p.stripe_price); later(); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.buy) {
+      var plan = myPlans.filter(function (p) { return p.id === d.buy; })[0] || {};
+      say('opening a checkout');
+      post('/checkout', { rail: 'stripe', plan: d.buy })
+        .then(function (r) {
+          if (r.url) { window.open(r.url, '_blank', 'noopener'); say('checkout open'); }
+          else say('the vendor has not answered yet; it will show under Checkouts');
+          later();
+        })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.cancelSub) {
+      if (!confirm('Cancel the subscription at the end of the period?')) return;
+      post('/cancel-subscription').then(function () { say('asked the vendor to cancel'); later(); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.clearSub) {
+      var cs = route(location.hash).ship;
+      if (!confirm('Clear the subscription on ' + cs + '? Only do this when Stripe says it is gone.')) return;
+      post('/accounts/' + seg(cs) + '/clear-subscription')
         .then(later).catch(function (e) { say(e.message, true); });
     } else if (d.copyInference) {
       var pre = document.getElementById('inference');
