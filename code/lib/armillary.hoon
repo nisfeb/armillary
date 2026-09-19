@@ -30,6 +30,9 @@
   ^-  @ud
   ?:  (lth d ~1970.1.1)  0
   (div (sub d ~1970.1.1) ~s1)
+::  +from-unix: the other way, for a time a rail reports in seconds
+::
+++  from-unix  |=(n=@ud ^-(@da (add ~1970.1.1 (mul n ~s1))))
 ::  +de-iso: "2026-09-19T22:05:00Z" (a fraction is allowed and dropped,
 ::  Z only) to a @da, or ~
 ::

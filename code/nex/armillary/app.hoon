@@ -40,6 +40,7 @@
 /&  page-html  armillary.html
 /&  page-css   armillary.css
 /&  page-js    armillary.js
+/&  page-return  return.html
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -67,6 +68,7 @@
           [%over %& [/ %'armillary.html'] [[/ %mime] page-html]]
           [%over %& [/ %'armillary.css'] [[/ %mime] page-css]]
           [%over %& [/ %'armillary.js'] [[/ %mime] page-js]]
+          [%over %& [/ %'return.html'] [[/ %mime] page-return]]
           [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'web.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'inbox.sig'] [[/ %sig] ~]]
@@ -234,6 +236,7 @@
   ?:  =('close-account' op)  (do-close-account jon)
   ?:  =('drop-account' op)   (do-drop-account jon)
   ?:  =('rebuild' op)        do-rebuild
+  ?:  =('note' op)           (do-note jon)
   ?:  =('write-view' op)     (do-op-write-view jon)
   ?:  =('set-pending' op)    (do-set-pending jon)
   ?:  =('drop-pending' op)   (do-drop-pending jon)
@@ -274,6 +277,18 @@
   ;<  ~  bind:m  (over:io (rf 0 /tr %last) [[/ %json] entry])
   ;<  log=json  bind:m  (read-json (rf 0 /tr %log))
   (over:io (rf 0 /tr %log) [[/ %json] (ring-push:arm log entry ring-cap:arm)])
+::  +do-note: one line in the audit ring, asked for by a request fiber.
+::  A request fiber never writes a grub itself, so a webhook's outcome
+::  comes through the writer like every other change.
+::
+++  do-note
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  what=@t  (gs:arm jon 'what')
+  ?:  =('' what)  (refuse 'note' 'what: required' '')
+  ;<  ~  bind:m  (note what (gb:arm jon 'ok') (gs:arm jon 'why') (gs:arm jon 'ship') --0)
+  (pure:m &)
 ::  +note-inbox: an outcome of ship traffic, in its own ring of 500, so
 ::  a stranger's pokes never push the owner's audit log out of /tr/log.
 ::  A secret never reaches here: the mint notes the op and nothing else.
@@ -1427,10 +1442,33 @@
     (note-inbox 'drop-key' & '' who)
       %mint-key  (inbox-mint src name.o nonce.o)
       %checkout  (inbox-checkout src rail.o plan.o amount.o nonce.o)
+      %cancel-subscription   (inbox-cancel src)
       %lease                 (note-inbox 'lease' | 'not yet' who)
       %drop-lease            (note-inbox 'drop-lease' | 'not yet' who)
-      %cancel-subscription   (note-inbox 'cancel-subscription' | 'not yet' who)
   ==
+::  +inbox-cancel: the customer asks Stripe to stop renewing. The row on
+::  the account stays until customer.subscription.deleted arrives, so
+::  what it already paid for is still its own until the period ends.
+::
+++  inbox-cancel
+  |=  src=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir src) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (note-inbox 'cancel-subscription' | 'no account' who)
+  ?:  =('' stripe-subscription.u.a)
+    (note-inbox 'cancel-subscription' | 'no subscription' who)
+  ;<  s=settings:arm  bind:m  (settings-of 0)
+  ?:  =('' stripe-key.s)
+    (note-inbox 'cancel-subscription' | 'stripe_key: not set' who)
+  ;<  res=[status=@ud body=@t]  bind:m
+    %-  fetch
+    (cancel-request:astripe stripe-url.s stripe-key.s stripe-subscription.u.a)
+  ?.  (two-xx status.res)
+    (note-inbox 'cancel-subscription' | (stripe-why status.res body.res) who)
+  (note-inbox 'cancel-subscription' & 'cancels at period end' who)
 ::  +inbox-mint: a key minted for a customer ship, the same way the
 ::  owner's route mints one. The row goes to keys.json hashed; the
 ::  secret goes to pending.json and to the view, and nowhere else.
@@ -1989,6 +2027,12 @@
   ::  paying is a browser with no login on this ship
   ?:  &(=('GET' meth) ?=([%pay %stub ~] suffix))   (serve-pay-page eyre-id args)
   ?:  &(=('POST' meth) ?=([%pay %stub ~] suffix))  (serve-pay-stub eyre-id args jon)
+  ?:  &(=('GET' meth) ?=([%pay %return ~] suffix))  (serve-pay-return eyre-id args)
+  ::  the webhook reads the raw bytes, not the parsed body: the
+  ::  signature is over exactly what Stripe sent
+  ?:  &(=('POST' meth) ?=([%hooks %stripe ~] suffix))
+    %^  serve-stripe-hook  eyre-id  header-list.request.req
+    ?~(body.request.req '' q.u.body.request.req)
   ;<  who=(unit actor)  bind:m  (identify req src our)
   ?~  who  (send-err eyre-id 403 'forbidden')
   =/  act=actor  u.who
@@ -2039,6 +2083,8 @@
     (own (serve-refund eyre-id s2 jon))
   ?:  &(=('POST' meth) ?=([%api %accounts @ %close ~] suffix))
     (own (serve-close eyre-id s2))
+  ?:  &(=('POST' meth) ?=([%api %accounts @ %'clear-subscription' ~] suffix))
+    (own (serve-clear-subscription eyre-id s2))
   ?:  &(=('GET' meth) ?=([%api %log ~] suffix))          (own (serve-log eyre-id))
   ::  the customer's routes, what Talon calls on its own ship
   ?:  &(=('GET' meth) ?=([%api %account ~] suffix))      (own (serve-my-account eyre-id args))
@@ -2052,7 +2098,7 @@
   ?:  &(=('POST' meth) ?=([%api %lease ~] suffix))       (own (send-err eyre-id 501 'not yet'))
   ?:  &(=('DELETE' meth) ?=([%api %lease ~] suffix))     (own (send-err eyre-id 501 'not yet'))
   ?:  &(=('POST' meth) ?=([%api %'cancel-subscription' ~] suffix))
-    (own (send-err eyre-id 501 'not yet'))
+    (own (serve-my-cancel eyre-id))
   (send-err eyre-id 404 'no such route')
 ::  +ship-of: a ship named in a route. The segment carries its ~.
 ::
@@ -2600,6 +2646,23 @@
     (pairs:enjs:format ~[['op' s+'close-account'] ['ship' s+(scot %p u.who)]])
   ;<  ~  bind:m  (poke-writer 1 op)
   (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+(scot %p u.who)] ['closed' b+&]]))
+::  +serve-clear-subscription: the owner's Clear button, for a
+::  subscription Stripe says is gone and never told us about
+::
+++  serve-clear-subscription
+  |=  [eyre-id=@ta seg=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ;<  aj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (send-err eyre-id 404 'no such account')
+  ?:  =('' stripe-subscription.u.a)  (send-err eyre-id 409 'no subscription')
+  =/  op=json
+    (pairs:enjs:format ~[['op' s+'clear-subscription'] ['ship' s+(scot %p u.who)]])
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+(scot %p u.who)] ['ok' b+&]]))
 ::  +serve-drop-account: a hard delete, the gate's broom. The owner
 ::  alone may take it and nothing on the page calls it.
 ::
@@ -2942,6 +3005,20 @@
       ['url' s+(gs:arm u.got 'url')]
       ['status' s+status]
   ==
+::  +serve-my-cancel: the customer asks its vendor to stop the
+::  subscription renewing. The vendor answers in the view, so this is a
+::  202 and nothing more.
+::
+++  serve-my-cancel
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vendor=(unit @p)  bind:m  (vendor-of 1)
+  ?~  vendor  (send-err eyre-id 409 'vendor: not set')
+  ;<  n=@t  bind:m  fresh-nonce
+  ;<  ~  bind:m  (queue-at n (en-inbox:arm [%cancel-subscription ~]))
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  (send-json eyre-id 202 (pairs:enjs:format ~[['queued' b+&]]))
 ++  await-checkout
   |=  [n=@t left=@ud]
   =/  m  (fiber:fiber:nexus ,(unit json))
@@ -3098,6 +3175,278 @@
     ==
   =/  heads  ~[['content-type' 'text/plain; charset=utf-8'] ['cache-control' 'no-store']]
   (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html 'paid')])
+::  ==  verifying a Stripe payment
+::
+::    Two routes reach the same two arms: the webhook, which Stripe calls
+::    when it can, and the return page, which the person's own browser
+::    loads on the way back. Either one credits; whichever is second
+::    finds the ref already recorded and credits nothing. The body of a
+::    webhook is read for the event type and the object id and for
+::    nothing else: the amount, the ship and the state all come from
+::    reading the object back from Stripe.
+::
+::  +poke-note: one line in the audit ring, through the writer
+::
+++  poke-note
+  |=  [up=@ud what=@t ok=? why=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  poke-writer  up
+  %-  pairs:enjs:format
+  :~  ['op' s+'note']
+      ['what' s+what]
+      ['ok' b+ok]
+      ['why' s+why]
+  ==
+::  +checkout-by-sid: the checkout row a session id belongs to. The row
+::  is written before the url is answered, so a session with no row here
+::  is one this ship never made.
+::
+++  checkout-by-sid
+  |=  [cj=json sid=@t]
+  ^-  (unit [nonce=@t row=json])
+  ?:  =('' sid)  ~
+  =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
+  =/  hits=(list [@t json])
+    (skim ~(tap by cm) |=([n=@t j=json] =(sid (gs:arm j 'sid'))))
+  ?~(hits ~ `i.hits)
+::  +mark-paid: the checkout row, with its status moved to paid and
+::  every other field as it was
+::
+++  mark-paid
+  |=  [who=@p nonce=@t row=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  =('paid' (gs:arm row 'status'))  (pure:m ~)
+  %+  poke-writer  1
+  %-  pairs:enjs:format
+  :~  ['op' s+'set-checkout']
+      ['ship' s+(scot %p who)]
+      ['nonce' s+nonce]
+      ['rail' s+(gs:arm row 'rail')]
+      ['plan' s+(gs:arm row 'plan')]
+      ['amount' (gj:arm row 'amount')]
+      ['url' s+(gs:arm row 'url')]
+      ['sid' s+(gs:arm row 'sid')]
+      ['expires' s+(gs:arm row 'expires')]
+      ['status' s+'paid']
+      ['note' s+'']
+  ==
+::  +credit-session: read a Checkout Session back from Stripe and credit
+::  what it says was paid. A cent is ten thousand microdollars.
+::
+++  credit-session
+  |=  sid=@t
+  =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
+  ^-  form:m
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ?:  =('' stripe-key.s)  (pure:m [| 'stripe_key: not set'])
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (session-request:astripe stripe-url.s stripe-key.s sid))
+  ?.  (two-xx status.res)  (pure:m [| (stripe-why status.res body.res)])
+  =/  got  (read-session:astripe body.res)
+  ?~  got  (pure:m [| 'stripe answered no session'])
+  ?.  paid.u.got  (pure:m [| 'not paid yet'])
+  =/  who=(unit @p)  (slaw %p ship.u.got)
+  ?~  who  (pure:m [| 'ship: not an @p'])
+  ;<  cj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'checkouts.json'))
+  =/  hit=(unit [nonce=@t row=json])  (checkout-by-sid cj id.u.got)
+  ?~  hit  (pure:m [| 'unknown session'])
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 1 u.who)
+  =/  already=?  (has-ref rows id.u.got)
+  ;<  ~  bind:m
+    ?:  already  (pure:(fiber:fiber:nexus ,~) ~)
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'credit']
+        ['ship' s+(scot %p u.who)]
+        ['amount' (en-num:arm (mul total.u.got 10.000))]
+        ['rail' s+'stripe']
+        ['ref' s+id.u.got]
+        ['note' s+'stripe checkout']
+    ==
+  ::  a subscription session is also where the Stripe ids first arrive.
+  ::  renews is unknown until the first invoice says so.
+  ;<  ~  bind:m
+    ?.  =('subscription' mode.u.got)  (pure:(fiber:fiber:nexus ,~) ~)
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'set-subscription']
+        ['ship' s+(scot %p u.who)]
+        ['customer' s+customer.u.got]
+        ['subscription' s+subscription.u.got]
+        ['plan' s+(gs:arm row.u.hit 'plan')]
+    ==
+  ;<  ~  bind:m  (mark-paid u.who nonce.u.hit row.u.hit)
+  (pure:m [& ?:(already 'already recorded' '')])
+::  +credit-invoice: a subscription renewed. The plan says what to
+::  credit, and the invoice says when the next period ends.
+::
+++  credit-invoice
+  |=  iid=@t
+  =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
+  ^-  form:m
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ?:  =('' stripe-key.s)  (pure:m [| 'stripe_key: not set'])
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (invoice-request:astripe stripe-url.s stripe-key.s iid))
+  ?.  (two-xx status.res)  (pure:m [| (stripe-why status.res body.res)])
+  =/  got  (read-invoice:astripe body.res)
+  ?~  got  (pure:m [| 'stripe answered no invoice'])
+  ?.  paid.u.got  (pure:m [| 'not paid yet'])
+  ?:  =('' customer.u.got)  (pure:m [| 'no customer on the invoice'])
+  ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 1)
+  =/  hits=(list [=account:arm keys=@ud])
+    %+  skim  all
+    |=  [a=account:arm keys=@ud]
+    ^-  ?
+    =(stripe-customer.a customer.u.got)
+  ?~  hits  (pure:m [| 'no account on that customer'])
+  =/  a=account:arm  account.i.hits
+  ;<  plans=(list plan:arm)  bind:m  (plans-of 1)
+  =/  byp=(unit plan:arm)  (plan-by-price:arm plans price.u.got)
+  =/  p=(unit plan:arm)  ?^(byp byp (find-plan:arm plans plan.a))
+  ?~  p  (pure:m [| 'no plan on that price'])
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 1 ship.a)
+  =/  already=?  (has-ref rows id.u.got)
+  ;<  ~  bind:m
+    ?:  already  (pure:(fiber:fiber:nexus ,~) ~)
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'credit']
+        ['ship' s+(scot %p ship.a)]
+        ['amount' (en-num:arm credit.u.p)]
+        ['rail' s+'stripe']
+        ['ref' s+id.u.got]
+        ['note' s+'stripe subscription']
+    ==
+  ;<  ~  bind:m
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'set-subscription']
+        ['ship' s+(scot %p ship.a)]
+        ['customer' s+customer.u.got]
+        ['subscription' s+subscription.u.got]
+        ['plan' s+id.u.p]
+        ['renews' (en-time:arm (from-unix:arm period-end.u.got))]
+    ==
+  (pure:m [& ?:(already 'already recorded' '')])
+::  +drop-subscription: Stripe says the subscription is gone. The
+::  account it belongs to is the one holding that id.
+::
+++  drop-subscription
+  |=  sub=@t
+  =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
+  ^-  form:m
+  ?:  =('' sub)  (pure:m [| 'no subscription id'])
+  ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 1)
+  =/  hits=(list [=account:arm keys=@ud])
+    %+  skim  all
+    |=  [a=account:arm keys=@ud]
+    ^-  ?
+    =(stripe-subscription.a sub)
+  ?~  hits  (pure:m [| 'no account on that subscription'])
+  =/  op=json
+    %-  pairs:enjs:format
+    :~  ['op' s+'clear-subscription']
+        ['ship' s+(scot %p ship.account.i.hits)]
+    ==
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (pure:m [& ''])
+::  +serve-stripe-hook: the webhook, public and without a cookie. Every
+::  case answers 200, even a failed read: Stripe retries a non-2xx, and
+::  a retry storm against an upstream that is already unhappy helps
+::  nobody. The one exception is a bad signature, which is a 400.
+::
+++  serve-stripe-hook
+  |=  [eyre-id=@ta heads=header-list:http raw=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ;<  now=@da  bind:m  get-time:io
+  =/  sig=@t  (fall (get-header:http 'stripe-signature' heads) '')
+  =/  checked=?
+    ?:  =('' stripe-webhook-secret.s)  &
+    (verify-signature:astripe stripe-webhook-secret.s sig raw (unix-secs:arm now))
+  ?.  checked
+    ;<  ~  bind:m  (poke-note 1 'stripe.webhook' | 'signature')
+    (send-err eyre-id 400 'signature')
+  =/  ev=(unit [type=@t id=@t])  (event-of:astripe raw)
+  ?~  ev  (send-ok eyre-id)
+  =/  type=@t  type.u.ev
+  ?:  ?|  =('checkout.session.completed' type)
+          =('checkout.session.async_payment_succeeded' type)
+      ==
+    ;<  got=[ok=? why=@t]  bind:m  (credit-session id.u.ev)
+    ;<  ~  bind:m  (poke-note 1 'stripe.webhook' ok.got why.got)
+    (send-ok eyre-id)
+  ?:  =('invoice.paid' type)
+    ;<  got=[ok=? why=@t]  bind:m  (credit-invoice id.u.ev)
+    ;<  ~  bind:m  (poke-note 1 'stripe.webhook' ok.got why.got)
+    (send-ok eyre-id)
+  ?:  =('customer.subscription.deleted' type)
+    ;<  got=[ok=? why=@t]  bind:m  (drop-subscription id.u.ev)
+    ;<  ~  bind:m  (poke-note 1 'stripe.webhook' ok.got why.got)
+    (send-ok eyre-id)
+  (send-ok eyre-id)
+++  send-ok
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (send-json eyre-id 200 (pairs:enjs:format ~[['ok' b+&]]))
+::  +fill: one placeholder in a template, replaced once
+::
+++  fill
+  |=  [tpl=@t key=@t val=@t]
+  ^-  @t
+  =/  t=tape  (trip tpl)
+  =/  k=tape  (trip key)
+  =/  at=(unit @ud)  (find k t)
+  ?~  at  tpl
+  =/  pre=@t  (crip (scag u.at t))
+  =/  post=@t  (crip (slag (add u.at (lent k)) t))
+  (rap 3 pre val post ~)
+::  +send-return: the little page a browser lands on after paying. The
+::  handler writes only its own fixed strings into it, so nothing here
+::  needs escaping, and it reads no cookie and shows no balance.
+::
+++  send-return
+  |=  [eyre-id=@ta state=@t detail=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io (rf 1 / %'return.html') `[/ %mime])
+  =/  got=(unit mime)
+    ?.  ?=([%file *] vw)  ~
+    (mole |.(!<(mime (need-vase:tarball sang.vw))))
+  =/  tpl=@t
+    ?~  got  '<!doctype html><html lang="en"><body><h1>{{state}}</h1><p>{{detail}}</p></body></html>'
+    q.q.u.got
+  =/  page=@t  (fill (fill tpl '{{state}}' state) '{{detail}}' detail)
+  =/  heads  ~[['content-type' 'text/html; charset=utf-8'] ['cache-control' 'no-store']]
+  (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html page)])
+::  +serve-pay-return: where Stripe sends the browser. The sid is the
+::  whole of it: the ship in the query is ignored, since the session's
+::  own metadata is the only thing that says whose account this is.
+::
+++  serve-pay-return
+  |=  [eyre-id=@ta args=quay:eyre]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  cancelled=@t  (fall (get-key:kv:html-utils 'cancelled' args) '')
+  =/  sid=@t  (fall (get-key:kv:html-utils 'sid' args) '')
+  ?.  =('' cancelled)
+    (send-return eyre-id 'Payment cancelled.' 'Go back to the app.')
+  ?:  =('' sid)
+    %^  send-return  eyre-id  'Payment pending.'
+    'We have not confirmed this payment yet. Give it a minute and reload.'
+  ;<  got=[ok=? why=@t]  bind:m  (credit-session sid)
+  ;<  ~  bind:m  (poke-note 1 'stripe.return' ok.got why.got)
+  ?:  ok.got
+    %^  send-return  eyre-id  'Payment received.'
+    'Your balance updates on your ship within a minute. You can close this tab.'
+  =/  head=@t  'We have not confirmed this payment yet. Give it a minute and reload.'
+  =/  detail=@t  ?:(=('' why.got) head (rap 3 head ' ' why.got ~))
+  (send-return eyre-id 'Payment pending.' detail)
 ::  ==  the page
 ::
 ::  +serve-file: one of the page's grubs, no-cache so an updated desk
