@@ -2117,6 +2117,9 @@
   ?:  &(=('POST' meth) ?=([%hooks %stripe ~] suffix))
     %^  serve-stripe-hook  eyre-id  header-list.request.req
     ?~(body.request.req '' q.u.body.request.req)
+  ?:  &(=('POST' meth) ?=([%hooks %btcpay ~] suffix))
+    %^  serve-btcpay-hook  eyre-id  header-list.request.req
+    ?~(body.request.req '' q.u.body.request.req)
   ;<  who=(unit actor)  bind:m  (identify req src our)
   ?~  who  (send-err eyre-id 403 'forbidden')
   =/  act=actor  u.who
@@ -3307,14 +3310,16 @@
   =/  hits=(list [@t json])
     (skim ~(tap by cm) |=([n=@t j=json] =(sid (gs:arm j 'sid'))))
   ?~(hits ~ `i.hits)
-::  +mark-paid: the checkout row, with its status moved to paid and
-::  every other field as it was
+::  +mark-checkout: the checkout row, with its status moved and every
+::  other field as it was. set-checkout replaces the row whole, so a
+::  status update has to carry the stored url and sid back with it or
+::  they would be dropped.
 ::
-++  mark-paid
-  |=  [who=@p nonce=@t row=json]
+++  mark-checkout
+  |=  [who=@p nonce=@t row=json status=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ?:  =('paid' (gs:arm row 'status'))  (pure:m ~)
+  ?:  =(status (gs:arm row 'status'))  (pure:m ~)
   %+  poke-writer  1
   %-  pairs:enjs:format
   :~  ['op' s+'set-checkout']
@@ -3326,9 +3331,16 @@
       ['url' s+(gs:arm row 'url')]
       ['sid' s+(gs:arm row 'sid')]
       ['expires' s+(gs:arm row 'expires')]
-      ['status' s+'paid']
+      ['status' s+status]
       ['note' s+'']
   ==
+::  +mark-paid: the money arrived
+::
+++  mark-paid
+  |=  [who=@p nonce=@t row=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (mark-checkout who nonce row 'paid')
 ::  +credit-session: read a Checkout Session back from Stripe and credit
 ::  what it says was paid. A cent is ten thousand microdollars.
 ::
@@ -3491,6 +3503,96 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (send-json eyre-id 200 (pairs:enjs:format ~[['ok' b+&]]))
+::  +credit-btc-invoice: read an invoice back from BTCPay and do what
+::  its status says. One arm serves the webhook and the return page, so
+::  a customer whose webhook never arrived still gets credited by
+::  coming back to the browser tab.
+::
+::    The invoice's own metadata names the ship. Nothing in the webhook
+::    body and nothing in the return query decides whose money this is.
+::
+++  credit-btc-invoice
+  |=  id=@t
+  =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
+  ^-  form:m
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  =/  unset=?
+    ?|  =('' btcpay-url.s)
+        =('' btcpay-store.s)
+        =('' btcpay-key.s)
+    ==
+  ?:  unset  (pure:m [| 'btcpay: not set'])
+  ;<  res=[status=@ud body=@t]  bind:m
+    %-  fetch
+    (invoice-get-request:abtc btcpay-url.s btcpay-store.s btcpay-key.s id)
+  ?.  (two-xx status.res)  (pure:m [| (btcpay-why status.res body.res)])
+  =/  got  (read-invoice:abtc body.res)
+  ?~  got  (pure:m [| 'btcpay answered no invoice'])
+  =/  who=(unit @p)  (slaw %p ship.u.got)
+  ?~  who  (pure:m [| 'ship: not an @p'])
+  ;<  cj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'checkouts.json'))
+  =/  hit=(unit [nonce=@t row=json])  (checkout-by-sid cj id.u.got)
+  ?~  hit  (pure:m [| 'unknown invoice'])
+  =/  st=@t  status.u.got
+  ::  seen on chain and not yet confirmed: the row says so and nothing
+  ::  is credited until the store's confirmation count is met
+  ?:  =('Processing' st)
+    ;<  ~  bind:m  (mark-checkout u.who nonce.u.hit row.u.hit 'processing')
+    (pure:m [& 'processing'])
+  ?:  =('Expired' st)
+    ;<  ~  bind:m  (mark-checkout u.who nonce.u.hit row.u.hit 'expired')
+    (pure:m [& 'expired'])
+  ?:  =('Invalid' st)
+    ;<  ~  bind:m  (mark-checkout u.who nonce.u.hit row.u.hit 'invalid')
+    (pure:m [& 'invalid'])
+  ?.  (settled:abtc st)  (pure:m [| 'not settled yet'])
+  =/  micro=(unit @ud)  (micro-of:abtc amount.u.got)
+  ?~  micro  (pure:m [| 'amount: not a decimal'])
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 1 u.who)
+  =/  already=?  (has-ref rows id.u.got)
+  ;<  ~  bind:m
+    ?:  already  (pure:(fiber:fiber:nexus ,~) ~)
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'credit']
+        ['ship' s+(scot %p u.who)]
+        ['amount' (en-num:arm u.micro)]
+        ['rail' s+'btcpay']
+        ['ref' s+id.u.got]
+        ['note' s+'btcpay invoice']
+    ==
+  ;<  ~  bind:m  (mark-paid u.who nonce.u.hit row.u.hit)
+  (pure:m [& ?:(already 'already recorded' '')])
+::  +serve-btcpay-hook: the webhook, public and without a cookie. A bad
+::  or missing signature is a 401; after that every case answers 200,
+::  even a failed read, since BTCPay retries a non-2xx six times and a
+::  retry storm against an upstream that is already unhappy helps
+::  nobody.
+::
+++  serve-btcpay-hook
+  |=  [eyre-id=@ta heads=header-list:http raw=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  =/  sig=@t  (fall (get-header:http 'btcpay-sig' heads) '')
+  =/  checked=?
+    ?:  =('' btcpay-webhook-secret.s)  &
+    (verify-sig:abtc btcpay-webhook-secret.s sig raw)
+  ?.  checked
+    ;<  ~  bind:m  (poke-note 1 'btcpay.webhook' | 'signature')
+    (send-err eyre-id 401 'signature')
+  =/  ev=(unit [type=@t id=@t])  (event-of:abtc raw)
+  ?~  ev  (send-ok eyre-id)
+  =/  type=@t  type.u.ev
+  ?:  ?|  =('InvoiceSettled' type)
+          =('InvoiceProcessing' type)
+          =('InvoiceExpired' type)
+          =('InvoiceInvalid' type)
+      ==
+    ;<  got=[ok=? why=@t]  bind:m  (credit-btc-invoice id.u.ev)
+    ;<  ~  bind:m  (poke-note 1 'btcpay.webhook' ok.got why.got)
+    (send-ok eyre-id)
+  (send-ok eyre-id)
 ::  +fill: one placeholder in a template, replaced once
 ::
 ++  fill
@@ -3521,9 +3623,15 @@
   =/  page=@t  (fill (fill tpl '{{state}}' state) '{{detail}}' detail)
   =/  heads  ~[['content-type' 'text/html; charset=utf-8'] ['cache-control' 'no-store']]
   (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html page)])
-::  +serve-pay-return: where Stripe sends the browser. The sid is the
-::  whole of it: the ship in the query is ignored, since the session's
-::  own metadata is the only thing that says whose account this is.
+::  +pending-text: what the return page says when nothing is confirmed
+::
+++  pending-text
+  ^-  @t
+  'We have not confirmed this payment yet. Give it a minute and reload.'
+::  +serve-pay-return: where a rail sends the browser. On the card rail
+::  the sid is the whole of it: the ship in the query is ignored, since
+::  the session's own metadata is the only thing that says whose
+::  account this is.
 ::
 ++  serve-pay-return
   |=  [eyre-id=@ta args=quay:eyre]
@@ -3531,18 +3639,54 @@
   ^-  form:m
   =/  cancelled=@t  (fall (get-key:kv:html-utils 'cancelled' args) '')
   =/  sid=@t  (fall (get-key:kv:html-utils 'sid' args) '')
+  =/  rail=@t  (fall (get-key:kv:html-utils 'rail' args) '')
+  =/  nonce=@t  (fall (get-key:kv:html-utils 'nonce' args) '')
+  =/  ship=@t  (fall (get-key:kv:html-utils 'ship' args) '')
   ?.  =('' cancelled)
     (send-return eyre-id 'Payment cancelled.' 'Go back to the app.')
-  ?:  =('' sid)
-    %^  send-return  eyre-id  'Payment pending.'
-    'We have not confirmed this payment yet. Give it a minute and reload.'
+  ?:  &(=('btcpay' rail) !=('' nonce))
+    (serve-btc-return eyre-id ship nonce)
+  ?:  =('' sid)  (send-return eyre-id 'Payment pending.' pending-text)
   ;<  got=[ok=? why=@t]  bind:m  (credit-session sid)
   ;<  ~  bind:m  (poke-note 1 'stripe.return' ok.got why.got)
   ?:  ok.got
     %^  send-return  eyre-id  'Payment received.'
     'Your balance updates on your ship within a minute. You can close this tab.'
-  =/  head=@t  'We have not confirmed this payment yet. Give it a minute and reload.'
-  =/  detail=@t  ?:(=('' why.got) head (rap 3 head ' ' why.got ~))
+  =/  detail=@t
+    ?:(=('' why.got) pending-text (rap 3 pending-text ' ' why.got ~))
+  (send-return eyre-id 'Payment pending.' detail)
+::  +serve-btc-return: where BTCPay sends the browser. An invoice id is
+::  not in the redirect, so the nonce finds the row and the row holds
+::  the id. This is the one place the ship in the query is used, and
+::  only to find the row: the invoice's metadata is what credits.
+::
+++  serve-btc-return
+  |=  [eyre-id=@ta ship=@t nonce=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (slaw %p ship)
+  ?~  who  (send-return eyre-id 'Payment pending.' pending-text)
+  ;<  cj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'checkouts.json'))
+  =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
+  =/  row=(unit json)  (~(get by cm) nonce)
+  ?~  row  (send-return eyre-id 'Payment pending.' pending-text)
+  =/  sid=@t  (gs:arm u.row 'sid')
+  ?:  =('' sid)  (send-return eyre-id 'Payment pending.' pending-text)
+  ;<  got=[ok=? why=@t]  bind:m  (credit-btc-invoice sid)
+  ;<  ~  bind:m  (poke-note 1 'btcpay.return' ok.got why.got)
+  ?:  &(ok.got =('processing' why.got))
+    %^  send-return  eyre-id  'Payment seen.'
+    'Waiting for confirmations. Your balance updates on your ship once it settles, usually within an hour on chain and at once over Lightning.'
+  =/  done=?
+    ?&  ok.got
+        !=('expired' why.got)
+        !=('invalid' why.got)
+    ==
+  ?:  done
+    %^  send-return  eyre-id  'Payment received.'
+    'Your balance updates on your ship within a minute. You can close this tab.'
+  =/  detail=@t
+    ?:(=('' why.got) pending-text (rap 3 pending-text ' ' why.got ~))
   (send-return eyre-id 'Payment pending.' detail)
 ::  ==  the page
 ::
