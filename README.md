@@ -128,7 +128,7 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 
 | route | answers |
 |---|---|
-| `POST /hooks/stripe` | Stripe's webhook. The body is trusted for the event type and the object id and nothing else; the object is read back from Stripe before anything is credited. A bad or missing signature is 400 when the signing secret is set; everything else answers 200, including a failed read |
+| `POST /hooks/stripe` | Stripe's webhook. The body is trusted for the event type and the object id and nothing else; the object is read back from Stripe before anything is credited. In live mode a bad, missing or uncheckable signature is 400; everything else answers 200, including a failed read. It handles the two completions, the async failure, the paid invoice, the deleted subscription and both dispute events |
 | `POST /hooks/btcpay` | BTCPay's webhook. The body is trusted for the event type and the invoice id and nothing else; the invoice is read back from BTCPay before anything is credited. A bad or missing signature is 401 when the webhook secret is set; everything else answers 200, including a failed read |
 | `GET /pay/return?ship&sid` | where Stripe sends the browser. It verifies the session itself, so a payment lands even when the webhook does not. `&cancelled=1` says so instead |
 | `GET /pay/return?ship&nonce&rail=btcpay` | where BTCPay sends the browser. The nonce finds the checkout row, the row holds the invoice id, and the invoice is read back the same way |
@@ -166,6 +166,8 @@ curl -s -b jar "$API/inference"
 The ops go over ames from this ship's armillary desk into the vendor's inbox, signed by ames, so the source ship is the identity and no password or claim token exists. The answers come back in an account view on the vendor that this ship alone may peek, through a usergroup the vendor makes for it. A minted key's secret crosses that way once and is cleared as soon as this ship says it has it.
 
 Topping up opens a checkout with the vendor and answers a URL to open in a browser. In stub mode that URL is the vendor's own page with one button and no money moves, which is how the whole loop is proved without a rail. In live mode it is a Stripe Checkout Session on the card rail or a BTCPay invoice on the bitcoin one, and `docs/payments.md` is how both halves work.
+
+The Stripe key is a restricted key, `rk_`, with write on Checkout Sessions, Customers, Products, Prices, Subscriptions and the Billing Portal and read on Invoices and Disputes, and live mode will not save without the endpoint's signing secret beside it.
 
 A ship can be its own customer: point `vendor.json` at itself and the page shows both halves with a note saying so. That is what `scripts/ship-matrix.py` runs against with two arguments.
 

@@ -320,7 +320,7 @@
       '<p class="muted">The key and the signing secret are shown masked. Leave a field blank to keep what is stored.</p>' +
       '<div class="inline">' +
       '<div class="field"><label for="st-key">Secret key</label>' +
-      '<input id="st-key" type="password" placeholder="leave blank to keep"></div>' +
+      '<input id="st-key" type="password" placeholder="rk_live_..."></div>' +
       '<div class="field"><label for="st-hook">Webhook signing secret</label>' +
       '<input id="st-hook" type="password" placeholder="leave blank to keep">' +
       '<span class="muted">Live mode will not save without it.</span></div>' +

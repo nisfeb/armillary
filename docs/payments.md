@@ -61,7 +61,7 @@ The account is then reconciled: a lease is recapped to the balance that is left,
 
 | field | what it is |
 |---|---|
-| `stripe_key` | the secret key. Masked on every read; a blank field on save keeps what is stored, an explicit `null` clears it |
+| `stripe_key` | a restricted key, `rk_live_...` or `rk_test_...`, with write on Checkout Sessions, Customers, Products, Prices, Subscriptions and the Billing Portal, and read on Invoices and Disputes. A full secret key works and is a bigger blast radius. Masked on every read; a blank field on save keeps what is stored, an explicit `null` clears it |
 | `stripe_webhook_secret` | the endpoint's signing secret, the same rules. Live mode refuses to save without it once a key is set |
 | `stripe_url` | the API base, `https://api.stripe.com` unless the gate points it at `scripts/fake-stripe.py` |
 | `public_url` | where a customer's browser reaches this ship, which is what the return url and the webhook url are built from |
@@ -78,9 +78,23 @@ A top-up plan needs nothing on Stripe: its checkout carries the amount inline. A
 
 ## What Stripe needs from the owner
 
-1. A restricted key with write on Checkout Sessions, Products, Prices and Subscriptions, and read on Invoices. A full secret key works too; a restricted one is the smaller blast radius.
-2. A webhook endpoint on the public URL, pointing at `<public_url>/apps/armillary/hooks/stripe`, subscribed to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid` and `customer.subscription.deleted`.
-3. That endpoint's signing secret, pasted into the Payments view.
+1. A restricted key, `rk_`, with exactly these permissions and nothing else:
+
+| resource | access |
+|---|---|
+| Checkout Sessions | write |
+| Customers | write |
+| Products | write |
+| Prices | write |
+| Subscriptions | write |
+| Invoices | read |
+| Disputes | read |
+| Billing Portal | write |
+
+   A full secret key works too; a restricted one is the smaller blast radius. Billing Portal is there for the self-serve portal that is still to come, and costs nothing to grant now.
+
+2. A webhook endpoint on the public URL, pointing at `<public_url>/apps/armillary/hooks/stripe`, subscribed to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `invoice.paid`, `customer.subscription.deleted`, `charge.dispute.created` and `charge.dispute.closed`.
+3. That endpoint's signing secret, pasted into the Payments view. Live mode will not save without it.
 
 Without a public URL the return page still proves the whole flow: it verifies the session from the browser's own visit. The webhook is proven on the production ship, which is the register rule.
 
