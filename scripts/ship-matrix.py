@@ -158,7 +158,8 @@ def settings(host, jar, **over):
            'mode': 'stub', 'refuse_comets': False, 'stripe_key': '',
            'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com',
            'btcpay_url': '', 'btcpay_store': '', 'btcpay_key': '',
-           'btcpay_webhook_secret': ''}
+           'btcpay_webhook_secret': '', 'lease_provider': '',
+           'stripe_minutes': 1440, 'btcpay_minutes': 60}
     doc.update(over)
     return curl('PUT', api(host) + '/settings', doc, jar=jar)
 
@@ -186,6 +187,7 @@ def broom():
     for k in (held if isinstance(held, list) else []):
         curl('DELETE', api(PEER) + '/keys/' + str(k.get('id', '')), jar=PJAR)
         settle(0.3)
+    curl('DELETE', api(PEER) + '/lease', jar=PJAR)
     curl('PUT', api(PEER) + '/vendor', {'ship': ''}, jar=PJAR)
     curl('DELETE', api(HOST) + '/accounts/' + CUST, jar=JAR)
     curl('PUT', api(HOST) + '/catalog', [], jar=JAR)
@@ -193,7 +195,7 @@ def broom():
     curl('DELETE', api(HOST) + '/plans/' + PLAN['id'], jar=JAR)
     # null clears a secret, blank would keep it
     settings(HOST, JAR, stripe_key=None, stripe_webhook_secret=None,
-             btcpay_key=None, btcpay_webhook_secret=None)
+             btcpay_key=None, btcpay_webhook_secret=None, lease_provider='')
     settle()
 
 
@@ -510,8 +512,201 @@ check('the expired row says so',
 
 settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB)
 settle()
+
+print('leases')
+
+
+def tick():
+    """prod the vendor's housekeeping and give it room to run"""
+    curl('POST', api(HOST) + '/tick', {}, jar=JAR, timeout=120)
+    settle(4)
+
+
+def lease_row():
+    code, acct = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR)
+    return dictish(dictish(acct).get('lease')), acct
+
+
+def stub_key(h):
+    code, d = curl('GET', STUB + '/api/v1/keys/' + h, bearer='prov-key')
+    return code, dictish(dictish(d).get('data'))
+
+
+code, d = curl('PUT', api(HOST) + '/providers/stub',
+               {'name': 'Stub', 'kind': 'openrouter', 'base_url': STUB + '/v1',
+                'api_key': '', 'provisioning_key': 'prov-key'}, jar=JAR)
+check('the stub provider carries a provisioning key', code == 200, (code, d))
+settle()
+code, co = curl('POST', api(PEER) + '/lease', {}, jar=PJAR, timeout=120)
+check('a lease with no lease provider is 404',
+      code == 404 and 'no lease' in err_of(co), (code, co))
+code, d = settings(HOST, JAR, lease_provider='stub')
+check('the vendor names its lease provider', code == 200, (code, d))
+settle(2)
+
+# the proxy is what a disabled lease falls back to, so this ship needs a
+# key again: the revoke earlier left it with none
+code, k = curl('POST', api(PEER) + '/keys', {'name': 'lease-gate'}, jar=PJAR, timeout=120)
+PSECRET = dictish(k).get('secret', '')
+check('the customer holds an inference key again', code == 200 and '.' in PSECRET, (code, k))
+
+BASE3 = dictish(fresh(PEER, PJAR)).get('balance', 0)
+code, lease = curl('POST', api(PEER) + '/lease', {}, jar=PJAR, timeout=120)
+LKEY = dictish(lease).get('key', '')
+check('a lease answers a provider key',
+      code == 200 and LKEY.startswith('sk-or-stub-'), (code, lease))
+check('the lease names the provider base url and what it sells',
+      dictish(lease).get('base_url') == STUB + '/v1'
+      and 'stub/alpha' in dictish(lease).get('models', []), lease)
+LHASH = dictish(lease).get('hash', '')
+code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
+check('the inference config is lease mode with that key',
+      code == 200 and dictish(inf).get('mode') == 'lease'
+      and dictish(inf).get('key') == LKEY, (code, inf))
+check('and points at the provider, not the proxy',
+      dictish(inf).get('base_url') == STUB + '/v1', inf)
+
+code, d = curl('POST', STUB + '/v1/chat/completions',
+               {'model': 'stub/alpha', 'messages': message('hi')}, bearer=LKEY)
+check('a completion straight at the provider with the leased key is 200',
+      code == 200, (code, str(d)[:200]))
+
+row, acct = lease_row()
+check('the owner sees the lease hash', row.get('hash') == LHASH, row)
+check('the owner never sees the key',
+      'key' not in row and LKEY not in json.dumps(acct), row)
+
+code, d = curl('POST', STUB + '/stub/spend/' + LHASH, {'usd': 0.10})
+check('the stub records ten cents of spend', code == 200, (code, str(d)[:120]))
+tick()
+code, rec = stub_key(LHASH)
+SPENT = int(round(float(rec.get('usage', 0)) * 1000000))
+WANT = (SPENT * MARKUP + 99) // 100
+view = wait_view(PEER, PJAR, lambda v: dictish(v.get('lease')).get('usage') == SPENT, tries=10)
+lv = dictish(view.get('lease'))
+check('the lease view carries what the key has spent', lv.get('usage') == SPENT, (SPENT, lv))
+debits = [r for r in ledger_of(HOST, JAR, CUST) if r.get('mode') == 'lease']
+check('one lease debit at the markup was written',
+      len(debits) == 1 and debits[0].get('amount') == WANT
+      and debits[0].get('model') == 'openrouter', (WANT, debits))
+check('and its cost is what the provider charged us',
+      debits and debits[0].get('cost') == SPENT, debits[:1])
+BAL3 = view.get('balance', 0)
+check('the balance fell by the debit', BAL3 == BASE3 - WANT, (BASE3 - WANT, BAL3))
+check('the cap tracks what the balance still buys',
+      lv.get('limit') == SPENT + (BAL3 * 100) // MARKUP,
+      (SPENT + (BAL3 * 100) // MARKUP, lv.get('limit')))
+
+print('a lease that runs out')
+over = (BAL3 * 100) // MARKUP + 1000000
+code, d = curl('POST', STUB + '/stub/spend/' + LHASH, {'usd': over / 1000000.0})
+check('the stub records spending past the balance', code == 200, (code, str(d)[:120]))
+tick()
+view = wait_view(PEER, PJAR, lambda v: dictish(v.get('lease')).get('disabled') is True, tries=10)
+check('the view says the lease is disabled',
+      dictish(view.get('lease')).get('disabled') is True, view.get('lease'))
+code, rec = stub_key(LHASH)
+check('and the provider was told so', rec.get('disabled') is True, rec)
+code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
+check('the inference config falls back to the proxy',
+      code == 200 and dictish(inf).get('mode') == 'proxy', (code, inf))
+code, d = curl('POST', STUB + '/v1/chat/completions',
+               {'model': 'stub/alpha', 'messages': message('hi')}, bearer=LKEY)
+check('the provider refuses the leased key', code == 401, (code, str(d)[:120]))
+
+print('a credit brings it back')
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': 10000000},
+                jar=PJAR, timeout=120)
+url = dictish(co).get('url', '')
+nonce = dictish(co).get('nonce', '')
+check('a top-up checkout answers a stub pay url', code == 200 and '/pay/stub' in url, (code, co))
+code, d = curl('POST', HOST + '/apps/armillary/pay/stub', {'ship': CUST, 'nonce': nonce})
+check('paying it answers paid', code == 200 and str(d).strip() == 'paid', (code, d))
+settle(2)
+tick()
+view = wait_view(PEER, PJAR, lambda v: dictish(v.get('lease')).get('disabled') is False, tries=10)
+lv = dictish(view.get('lease'))
+check('the lease is enabled again', lv.get('disabled') is False, lv)
+check('with a cap above what it has already spent',
+      lv.get('limit', 0) > lv.get('usage', 0), lv)
+code, rec = stub_key(LHASH)
+check('and the provider has the higher cap',
+      int(round(float(rec.get('limit', 0)) * 1000000)) == lv.get('limit'),
+      (lv.get('limit'), rec.get('limit')))
+code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
+check('the inference config is lease mode again',
+      dictish(inf).get('mode') == 'lease', inf)
+
+print('giving the lease back')
+code, d = curl('DELETE', api(PEER) + '/lease', jar=PJAR, timeout=120)
+check('the customer drops its lease', code == 200, (code, d))
+gone = 0
+for _ in range(20):
+    gone, rec = stub_key(LHASH)
+    if gone == 404:
+        break
+    settle(2)
+check('the provider no longer holds the key', gone == 404, gone)
+row, acct = lease_row()
+check('the owner sees no lease', row == {}, row)
+inf = {}
+for _ in range(10):
+    code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
+    if dictish(inf).get('mode') != 'lease':
+        break
+    settle(2)
+check('the inference config is back to the proxy',
+      code == 200 and dictish(inf).get('mode') == 'proxy', (code, inf))
+
+print('the report')
+code, rep = curl('GET', api(HOST) + '/report?days=30', jar=JAR)
+r = dictish(rep)
+c = dictish(r.get('credits'))
+check('the report answers 200', code == 200, (code, rep))
+check('it counts the ship that moved money', r.get('accounts', 0) >= 1, r.get('accounts'))
+check('it shows what the lease spent', r.get('lease_spend', 0) >= WANT, (WANT, r.get('lease_spend')))
+check('it counts the proxy request', r.get('requests', 0) >= 1, r.get('requests'))
+check('it splits the credits by rail',
+      c.get('stub', 0) > 0 and c.get('stripe', 0) > 0 and c.get('btcpay', 0) > 0, c)
+models = [t.get('model') for t in (r.get('top_models') or [])]
+check('and names the models that were charged for',
+      'stub/alpha' in models and 'openrouter' in models, models)
+check('the margin is charged less cost',
+      int(r.get('margin', 0)) == int(r.get('charged', 0)) - int(r.get('cost', 0)),
+      (r.get('margin'), r.get('charged'), r.get('cost')))
+
+print('a checkout that runs out of time')
+code, d = settings(HOST, JAR, lease_provider='stub', stripe_minutes=0)
+check('the vendor gives a card checkout no time at all', code == 200, (code, d))
+settle(2)
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': 6000000},
+                jar=PJAR, timeout=120)
+enonce = dictish(co).get('nonce', '')
+check('the checkout still opens', code == 200 and enonce, (code, co))
+settle(2)
+tick()
+view = wait_view(PEER, PJAR, lambda v: dictish(
+    dictish(v.get('checkouts')).get(enonce)).get('status') == 'expired', tries=10)
+check('the tick expires it',
+      dictish(dictish(view.get('checkouts')).get(enonce)).get('status') == 'expired',
+      dictish(view.get('checkouts')).get(enonce))
+
+print('compaction leaves fresh rows alone')
+before = len(ledger_of(HOST, JAR, CUST))
+tick()
+settle(2)
+check('a ledger with nothing older than ninety days is untouched',
+      len(ledger_of(HOST, JAR, CUST)) == before, (before, len(ledger_of(HOST, JAR, CUST))))
+
+settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB)
+settle()
 code, d = curl('GET', api(HOST) + '/settings', jar=JAR)
 check('the vendor is back in stub mode', dictish(d).get('mode') == 'stub', d)
+check('and offers no leases', dictish(d).get('lease_provider') == '', d)
+log = raw(HOST, JAR, '/tr/log')
+inbox = raw(HOST, JAR, '/tr/inbox')
+check('neither ring ever carried the leased key',
+      LKEY not in log and LKEY not in inbox, LKEY)
 log = raw(HOST, JAR, '/tr/log')
 check('the audit ring holds both rails and no secret',
       'stripe.' in log and 'btcpay.' in log and STRIPE_KEY not in log

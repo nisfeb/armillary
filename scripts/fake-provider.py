@@ -6,6 +6,19 @@ Usage: fake-provider.py PORT KEY
 It listens on 127.0.0.1:PORT and wants `Authorization: Bearer KEY` on
 every /v1 route. The ship reaches it as http://127.0.0.1:PORT/v1.
 
+It also answers the key provisioning API a lease is made through, under
+/api/v1/keys, which wants any non-empty `Authorization: Bearer ...`:
+
+  POST   /api/v1/keys          mints sk-or-stub-<n> with hash h<n>
+  GET    /api/v1/keys/<hash>   the record
+  PATCH  /api/v1/keys/<hash>   moves `limit` and `disabled`
+  DELETE /api/v1/keys/<hash>   forgets it
+  POST   /stub/spend/<hash>    {"usd": n} adds to that key's usage
+
+A leased key works as the bearer on the chat route: each completion adds
+one cent to its usage, and a key that is disabled or has reached its
+limit is refused 401, the way OpenRouter refuses one.
+
 Models it knows:
   stub/alpha  priced, answers "ok: <the last user message>"
   stub/beta   priced, the same
@@ -28,7 +41,34 @@ MODELS = [
     {"id": "stub/free"},
 ]
 
-STATE = {"count": 0, "last": None, "n": 0}
+STATE = {"count": 0, "last": None, "n": 0, "keys": 0}
+
+# the leases this stub has minted: hash -> record, and the plaintext key
+# back to its hash, since a completion arrives under the key
+LEASES = {}
+BY_KEY = {}
+PER_REQUEST_USD = 0.01
+
+
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def six(n):
+    """a money figure with no scientific notation in it"""
+    return float("%.6f" % float(n or 0))
+
+
+def record(rec):
+    out = dict(rec)
+    out["usage"] = six(out["usage"])
+    out["usage_daily"] = out["usage"]
+    out["usage_weekly"] = out["usage"]
+    out["usage_monthly"] = out["usage"]
+    if out.get("limit") is not None:
+        out["limit"] = six(out["limit"])
+        out["limit_remaining"] = six(max(0.0, out["limit"] - out["usage"]))
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -49,6 +89,22 @@ class Handler(BaseHTTPRequestHandler):
         head = self.headers.get("authorization", "")
         return head == "Bearer " + self.server.key
 
+    def bearer(self):
+        head = self.headers.get("authorization", "")
+        return head[7:] if head.startswith("Bearer ") else ""
+
+    def provisioning_ok(self):
+        """any non-empty bearer is a provisioning key here"""
+        return bool(self.bearer())
+
+    def leased(self):
+        """the lease record this request's bearer names, or None"""
+        return LEASES.get(BY_KEY.get(self.bearer(), ""), None)
+
+    def hash_of(self, prefix):
+        rest = self.path.rstrip("/")[len(prefix):]
+        return rest if rest and "/" not in rest else ""
+
     def read_body(self):
         length = int(self.headers.get("content-length") or 0)
         raw = self.rfile.read(length) if length else b""
@@ -58,6 +114,16 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_GET(self):
+        if self.path.startswith("/api/v1/keys/"):
+            if not self.provisioning_ok():
+                self.send(401, {"error": {"message": "no provisioning key"}})
+                return
+            rec = LEASES.get(self.hash_of("/api/v1/keys/"))
+            if rec is None:
+                self.send(404, {"error": {"message": "no such key"}})
+                return
+            self.send(200, {"data": record(rec)})
+            return
         if self.path == "/stub/requests":
             self.send(200, {"count": STATE["count"], "last": STATE["last"]})
             return
@@ -71,13 +137,59 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.rstrip("/")
+        if path == "/api/v1/keys":
+            if not self.provisioning_ok():
+                self.send(401, {"error": {"message": "no provisioning key"}})
+                return
+            body = self.read_body()
+            STATE["keys"] += 1
+            n = STATE["keys"]
+            key = "sk-or-stub-%d" % n
+            rec = {
+                "hash": "h%d" % n,
+                "name": body.get("name") or "",
+                "label": body.get("name") or "",
+                "limit": body.get("limit"),
+                "limit_reset": None,
+                "disabled": False,
+                "usage": 0,
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+            }
+            LEASES[rec["hash"]] = rec
+            BY_KEY[key] = rec["hash"]
+            self.send(201, {"key": key, "data": record(rec)})
+            return
+        if path.startswith("/stub/spend/"):
+            rec = LEASES.get(self.hash_of("/stub/spend/"))
+            if rec is None:
+                self.send(404, {"error": {"message": "no such key"}})
+                return
+            body = self.read_body()
+            rec["usage"] = six(rec["usage"] + float(body.get("usd") or 0))
+            rec["updated_at"] = now_iso()
+            self.send(200, {"data": record(rec)})
+            return
         if path not in ("/v1/chat/completions", "/v1/embeddings"):
             self.send(404, {"error": {"message": "no such route"}})
             return
         body = self.read_body()
         STATE["count"] += 1
         STATE["last"] = body
-        if not self.bearer_ok():
+        lease = self.leased()
+        if lease is not None:
+            # a leased key spends like the real thing: a flat cent a
+            # call, refused once it is switched off or over its cap
+            if lease["disabled"]:
+                self.send(401, {"error": {"message": "key disabled"}})
+                return
+            cap = lease.get("limit")
+            if cap is not None and lease["usage"] >= float(cap):
+                self.send(401, {"error": {"message": "key limit reached"}})
+                return
+            lease["usage"] = six(lease["usage"] + PER_REQUEST_USD)
+            lease["updated_at"] = now_iso()
+        elif not self.bearer_ok():
             self.send(401, {"error": {"message": "bad key"}})
             return
         if path == "/v1/embeddings":
@@ -117,6 +229,45 @@ class Handler(BaseHTTPRequestHandler):
                 },
             },
         )
+
+
+    def do_PATCH(self):
+        if not self.path.startswith("/api/v1/keys/"):
+            self.send(404, {"error": {"message": "no such route"}})
+            return
+        if not self.provisioning_ok():
+            self.send(401, {"error": {"message": "no provisioning key"}})
+            return
+        rec = LEASES.get(self.hash_of("/api/v1/keys/"))
+        if rec is None:
+            self.send(404, {"error": {"message": "no such key"}})
+            return
+        body = self.read_body()
+        if "limit" in body:
+            rec["limit"] = body["limit"]
+        if "disabled" in body:
+            rec["disabled"] = bool(body["disabled"])
+        if "name" in body:
+            rec["name"] = body["name"]
+        rec["updated_at"] = now_iso()
+        self.send(200, {"data": record(rec)})
+
+    def do_DELETE(self):
+        if not self.path.startswith("/api/v1/keys/"):
+            self.send(404, {"error": {"message": "no such route"}})
+            return
+        if not self.provisioning_ok():
+            self.send(401, {"error": {"message": "no provisioning key"}})
+            return
+        h = self.hash_of("/api/v1/keys/")
+        rec = LEASES.pop(h, None)
+        if rec is None:
+            self.send(404, {"error": {"message": "no such key"}})
+            return
+        for key, held in list(BY_KEY.items()):
+            if held == h:
+                del BY_KEY[key]
+        self.send(200, {"data": {"deleted": True}})
 
 
 def main():

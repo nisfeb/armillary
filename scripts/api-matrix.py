@@ -94,7 +94,8 @@ def settings(**over):
            'mode': 'stub', 'refuse_comets': False, 'stripe_key': '',
            'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com',
            'btcpay_url': '', 'btcpay_store': '', 'btcpay_key': '',
-           'btcpay_webhook_secret': ''}
+           'btcpay_webhook_secret': '', 'lease_provider': '',
+           'stripe_minutes': 1440, 'btcpay_minutes': 60}
     doc.update(over)
     return curl('PUT', API + '/settings', doc)
 
@@ -161,7 +162,7 @@ def broom():
     # null clears a secret, blank would keep it: the ship is left with
     # no rail secrets at all and back in stub mode
     settings(stripe_key=None, stripe_webhook_secret=None,
-             btcpay_key=None, btcpay_webhook_secret=None)
+             btcpay_key=None, btcpay_webhook_secret=None, lease_provider='')
     # the catalog outlives a dropped provider on purpose, so the gate
     # clears it by hand or a rerun imports nothing
     curl('PUT', API + '/catalog', [])
@@ -174,6 +175,26 @@ if not SELF:
     sys.exit(1)
 
 broom()
+
+print('the report')
+code, rep = curl('GET', API + '/report')
+r = dictish(rep)
+c = dictish(r.get('credits'))
+check('GET /api/report answers 200', code == 200, (code, rep))
+check('the window defaults to thirty days', r.get('days') == 30, r.get('days'))
+check('the report names every rail', sorted(c.keys()) == ['btcpay', 'other', 'owner', 'stripe', 'stub'],
+      sorted(c.keys()))
+for field in ('charged', 'cost', 'margin', 'refunds', 'requests', 'tokens_in',
+              'tokens_out', 'lease_spend', 'accounts'):
+    check('the report carries ' + field, field in r, sorted(r.keys()))
+check('an empty ship reports zeros',
+      r.get('charged') == 0 and r.get('cost') == 0 and r.get('requests') == 0
+      and r.get('accounts') == 0 and r.get('top_models') == [], r)
+code, rep = curl('GET', API + '/report?days=7')
+check('the window follows days=7', dictish(rep).get('days') == 7, dictish(rep).get('days'))
+code, rep = curl('GET', API + '/report?days=nonsense')
+check('an unreadable window falls back to thirty', dictish(rep).get('days') == 30, dictish(rep).get('days'))
+
 print('settings')
 code, d = curl('GET', API + '/settings')
 check('GET /api/settings answers the starter document', code == 200 and dictish(d).get('markup_pct') == MARKUP, (code, d))
@@ -550,6 +571,29 @@ check('the btcpay return page with an unknown nonce is 200 and says pending',
       code == 200 and 'pending' in text.lower(), (code, text[:200]))
 settings()
 settle()
+
+print('leases: the setting')
+code, d = settings(lease_provider='stub')
+check('PUT /api/settings takes a lease provider', code == 200, (code, d))
+settle()
+code, d = curl('GET', API + '/settings')
+check('the lease provider round-trips unmasked',
+      dictish(d).get('lease_provider') == 'stub', d)
+check('the two checkout lifetimes round-trip',
+      dictish(d).get('stripe_minutes') == 1440 and dictish(d).get('btcpay_minutes') == 60, d)
+code, d = settings(lease_provider='stub', stripe_minutes=0)
+settle()
+code, d = curl('GET', API + '/settings')
+check('a zero lifetime is kept, not defaulted away',
+      dictish(d).get('stripe_minutes') == 0, d)
+settings()
+settle()
+
+print('the tick')
+code, d = curl('POST', API + '/tick', {})
+check('POST /api/tick answers ok', code == 200 and dictish(d).get('ok') is True, (code, d))
+code, d = curl('GET', API + '/tick')
+check('GET /api/tick is not a route', code == 404, (code, d))
 
 print('the audit ring')
 code, log = curl('GET', API + '/log')

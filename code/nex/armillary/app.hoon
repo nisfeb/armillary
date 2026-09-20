@@ -147,7 +147,7 @@
           ::  minutes or whenever prodded
           [~ %'tick.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%armillary tick: failed")
-        tick-loop
+        (tick-round |)
           ::  one ephemeral fiber per in-flight request
           [[%requests ~] @]
         ;<  ~  bind:m  (rise-wait:io prod "%armillary request: failed")
@@ -1521,6 +1521,12 @@
   =/  got  (de-op-store-lease:arm jon)
   ?:  ?=(%| -.got)  (refuse 'store-lease' p.got '')
   ;<  cur=json  bind:m  (read-json (rf 0 / %'lease.json'))
+  ::  a drop leaves a mark here. The vendor's view still carries the
+  ::  lease until the op lands over there, and a peek in between must
+  ::  not hand a key back that this ship has already given up. The
+  ::  first view that says null clears the mark with it.
+  =/  empty=?  =('' (gs:arm p.got 'key'))
+  ?:  &((gb:arm cur 'dropped') !empty)  (pure:m |)
   ?:  =(cur p.got)  (pure:m |)
   ;<  ~  bind:m  (over:io (rf 0 / %'lease.json') [[/ %json] p.got])
   (pure:m &)
@@ -2259,47 +2265,55 @@
   (note-inbox 'checkout' & '' who)
 ::  ==  the tick: the vendor's housekeeping
 ::
-::  +tick-loop: a pass, then ten minutes or a prod, then again. A
+::  +tick-round: a pass, then ten minutes or a prod, then again. A
 ::  vendor with no accounts does nothing and costs nothing.
 ::
-++  tick-loop
+::    The owner's prod forces the pass: a timer wake takes the nine
+::    minute rule below, a prod means do it now. The loop recurses by
+::    arm name, since a $ with arguments inside a ;< continuation
+::    cannot find the trap.
+::
+++  tick-round
+  |=  force=?
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  |-
-  ;<  ~  bind:m  tick-pass
+  ;<  ~  bind:m  (tick-pass force)
   ;<  now=@da  bind:m  get-time:io
   ;<  ~  bind:m  (set-timer:io /tick (add now ~m10))
-  ;<  *  bind:m  take-poke-from:io
+  ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
   ;<  ~  bind:m  (cancel-timer:io /tick)
-  $
+  (tick-round =([/ %json] p.sage))
 ::  +tick-pass: reconcile every lease that has not been read lately,
 ::  expire the checkouts whose window has run out, and fold the ledger
 ::  rows that are too old to read one at a time.
 ::
 ++  tick-pass
+  |=  force=?
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 0)
   =/  ships=(list @p)  (turn all |=([a=account:arm n=@ud] ship.a))
   ;<  now=@da  bind:m  get-time:io
-  ;<  ~  bind:m  (tick-leases ships now)
+  ;<  ~  bind:m  (tick-leases ships now force)
   ;<  ~  bind:m
     (poke-writer 0 (pairs:enjs:format ~[['op' s+'expire-checkouts']]))
   (tick-compact ships)
-::  +tick-leases: a lease read under nine minutes ago is left alone, so
-::  a prod between ticks does not call the provider again for nothing
+::  +tick-leases: on the timer, a lease read under nine minutes ago is
+::  left alone, so a pass right after a lease op does not call the
+::  provider again for nothing. A forced pass reads every one.
 ::
 ++  tick-leases
-  |=  [ships=(list @p) now=@da]
+  |=  [ships=(list @p) now=@da force=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?~  ships  (pure:m ~)
   ;<  lj=json  bind:m  (read-json (rf 0 (acct-dir i.ships) %'lease.json'))
   =/  held=(unit lease:arm)  (de-lease:arm lj)
-  ?~  held  (tick-leases t.ships now)
-  ?:  (lth now (add checked.u.held ~m9))  (tick-leases t.ships now)
+  ?~  held  (tick-leases t.ships now force)
+  ?:  &(!force (lth now (add checked.u.held ~m9)))
+    (tick-leases t.ships now force)
   ;<  *  bind:m  (reconcile 0 i.ships)
-  (tick-leases t.ships now)
+  (tick-leases t.ships now force)
 ++  tick-compact
   |=  ships=(list @p)
   =/  m  (fiber:fiber:nexus ,~)
@@ -3836,6 +3850,10 @@
   ;<  vendor=(unit @p)  bind:m  (vendor-of 1)
   ?~  vendor  (send-err eyre-id 409 'vendor: not set')
   ;<  before=json  bind:m  (read-json (rf 1 / %'view.json'))
+  ::  a lease asked for again clears the mark a drop left, or the next
+  ::  peek would throw the fresh key away
+  ;<  ~  bind:m
+    (poke-writer 1 (pairs:enjs:format ~[['op' s+'store-lease'] ['lease' ~]]))
   ;<  n=@t  bind:m  fresh-nonce
   ;<  ~  bind:m  (queue-at n (en-inbox:arm [%lease ~]))
   ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
@@ -3875,7 +3893,11 @@
   ;<  n=@t  bind:m  fresh-nonce
   ;<  ~  bind:m  (queue-at n (en-inbox:arm [%drop-lease ~]))
   ;<  ~  bind:m
-    (poke-writer 1 (pairs:enjs:format ~[['op' s+'store-lease'] ['lease' ~]]))
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'store-lease']
+        ['lease' (pairs:enjs:format ~[['dropped' b+&]])]
+    ==
   ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
   (send-json eyre-id 200 (pairs:enjs:format ~[['ok' b+&]]))
 ::  ==  the stub checkout, public

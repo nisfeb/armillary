@@ -97,7 +97,7 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 
 | route | answers |
 |---|---|
-| `GET` and `PUT /api/settings` | markup, minimum top-up, public URL, mode, `refuse_comets`, the Stripe key, the webhook signing secret and the Stripe API base; both secrets masked on read, a blank field keeps the stored one and a JSON `null` clears it |
+| `GET` and `PUT /api/settings` | markup, minimum top-up, public URL, mode, `refuse_comets`, the Stripe and BTCPay fields, `lease_provider` and how many minutes a checkout on each rail stays open; every secret masked on read, a blank field keeps the stored one and a JSON `null` clears it |
 | `GET /api/providers` | every provider, both secrets masked |
 | `POST /api/providers` | a new row; 409 when the id is taken |
 | `PUT /api/providers/<id>` | an edit; 409 when the id is unknown. A blank secret keeps the stored one, a JSON `null` clears it |
@@ -115,9 +115,13 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 | `POST /api/accounts/<ship>/keys` | `{"name"}`: mint. Opens the account when there is none. The secret is answered once |
 | `DELETE /api/accounts/<ship>/keys/<kid>` | revoke |
 | `POST /api/accounts/<ship>/credit` and `/refund` | `{"amount", "note"}`: owner rows in the ledger. A repeated `ref` is 409 `ref: already recorded` |
-| `POST /api/accounts/<ship>/close` | revoke every key, keep the ledger |
+| `POST /api/accounts/<ship>/close` | revoke every key, delete the lease key upstream, keep the ledger |
+| `POST /api/accounts/<ship>/reconcile` | read this account's lease from the provider, charge what it spent and move its cap; answers `{"ship", "ok", "why"}` |
+| `DELETE /api/accounts/<ship>/lease` | delete the lease key upstream and drop the row |
 | `POST /api/accounts/<ship>/clear-subscription` | forget a subscription Stripe says is gone; 409 when there is none |
 | `DELETE /api/accounts/<ship>` | delete the account, its keys and its whole ledger. Owner only, and irreversible: this exists so the gate can leave the ship as it found it, and nothing on the page calls it |
+| `GET /api/report?days=30` | what the vendor made over a window: credits by rail, charged, cost, margin, refunds, requests, tokens, lease spend, accounts and the top ten models |
+| `POST /api/tick` | prod the housekeeping fiber: reconcile every lease, expire stale checkouts, fold old ledger rows. It runs itself every ten minutes; this is for when ten minutes is too long to wait |
 | `GET /api/log` | the audit ring, the last 500 writer outcomes, newest first. No secret ever reaches it |
 
 ### Public, no cookie
@@ -143,9 +147,10 @@ These are what a client on the customer's own ship calls, over the cookie it alr
 | `DELETE /api/keys/<id>` | tell the vendor to revoke it and forget it here at once |
 | `POST /api/checkout` | `{"rail", "plan" or "amount"}`: `rail` is `stripe` for a card or `btcpay` for bitcoin. Opens a checkout and answers `{"url"}`, or 202 with the nonce. 502 with the vendor's reason when the vendor refused it. A subscription plan is card only |
 | `POST /api/cancel-subscription` | ask the vendor to stop the subscription renewing; 202, and the view says when Stripe confirms |
-| `GET /api/inference` | everything a client needs: `{"mode": "proxy", "base_url", "key", "models"}`. 404 `no key yet` when this ship holds none |
+| `GET /api/inference` | everything a client needs: `{"mode", "base_url", "key", "models"}`. `lease` mode with the provider's own key when this ship holds a lease that can still spend, `proxy` mode with the vendor's base URL and the newest inference key otherwise. 404 `no key yet` when this ship holds neither |
 | `GET /api/catalog` | the vendor's public catalog with prices, read live; 502 `vendor unreachable` when the vendor does not answer. On a ship that is nobody's customer this is the owner's own catalog instead |
-| `POST /api/lease`, `DELETE /api/lease` | 501 `not yet`. Phase 5 |
+| `POST /api/lease` | ask the vendor for a lease and wait for it. Answers the lease, or 404 `no lease for this account` when the vendor offers none, 502 with the vendor's reason when the provider refused, 202 with the nonce after thirty seconds |
+| `DELETE /api/lease` | give it back: this ship forgets the key at once and the vendor deletes it upstream. `docs/leases.md` is how a lease works |
 
 ### Being a customer
 
@@ -172,7 +177,7 @@ Live updates come from the instance's change beacon, streamed through grubbery's
 - `code/lib/armillary-http.hoon`, `code/lib/armillary-stripe.hoon` and `code/lib/armillary-btcpay.hoon` are the two rails' pure half: percent encoding, form bodies, HMAC-SHA256, decimal dollars, and each rail's request builders and readers. Import-free like the model, so each one builds in both places, which is why the small encoders appear in all three.
 - `tests/lib/armillary.hoon`, `tests/lib/armillary-http.hoon` and `tests/lib/armillary-stripe.hoon` are the unit suites, run with `-test` on a dev ship.
 - `scripts/` holds the gates, all against a dev ship: `api-matrix.py` (the story above, over HTTP), `ship-matrix.py` (the account channel and both rails, one ship or two), `page-smoke.py`, `fake-provider.py` (the OpenAI-compatible stub), `fake-stripe.py` (the Stripe stub) and `fake-btcpay.py` (the BTCPay stub), `code-closure.py` and `weir-check.py`. `live-matrix.py` is run by hand against Stripe test mode and a real BTCPay store.
-- `docs/`: the design at `docs/superpowers/specs/2026-09-19-armillary-design.md` and the plans under `docs/superpowers/plans`; `docs/channel.md` for the account channel over ames; `docs/payments.md` for both money rails; `docs/releasing.md` for how a release reaches ricsul and its subscribers.
+- `docs/`: the design at `docs/superpowers/specs/2026-09-19-armillary-design.md` and the plans under `docs/superpowers/plans`; `docs/channel.md` for the account channel over ames; `docs/payments.md` for both money rails; `docs/leases.md` for the lease path; `docs/releasing.md` for how a release reaches ricsul and its subscribers.
 - Family: [lattice](https://github.com/nisfeb/lattice), [auspex](https://github.com/nisfeb/auspex), [calendar](https://github.com/nisfeb/calendar), [orrery](https://github.com/nisfeb/orrery), [register](https://github.com/nisfeb/register), installed from `~ricsul-bilwyt` the same way.
 
 © nisfeb

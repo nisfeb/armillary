@@ -8,7 +8,9 @@ the two may be the same ship, which makes it its own customer.
 Every secret comes from the environment and from nowhere else: never a
 file in this repo, and none of them is ever printed. The card half reads
 STRIPE_TEST_KEY; the bitcoin half reads BTCPAY_URL, BTCPAY_STORE and
-BTCPAY_KEY, and runs only when all three are set. Run it by hand:
+BTCPAY_KEY, and runs only when all three are set; the lease half reads
+OPENROUTER_PROVISIONING_KEY and runs only when it is set. Run it by
+hand:
 
     STRIPE_TEST_KEY=rk_test_... python3 scripts/live-matrix.py \\
         http://localhost:8080 wex.cookies http://localhost:8080 wex.cookies
@@ -43,6 +45,9 @@ BTC_URL = os.environ.get('BTCPAY_URL', '')
 BTC_STORE = os.environ.get('BTCPAY_STORE', '')
 BTC_KEY = os.environ.get('BTCPAY_KEY', '')
 BTC_POLL_SECONDS = 1800
+OR_KEY = os.environ.get('OPENROUTER_PROVISIONING_KEY', '')
+OR_BASE = os.environ.get('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')
+OR_MODEL = os.environ.get('OPENROUTER_MODEL', 'openrouter/auto')
 
 
 def api(host):
@@ -73,7 +78,8 @@ def settings(**over):
            'mode': 'stub', 'refuse_comets': False, 'stripe_key': '',
            'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com',
            'btcpay_url': '', 'btcpay_store': '', 'btcpay_key': '',
-           'btcpay_webhook_secret': ''}
+           'btcpay_webhook_secret': '', 'lease_provider': '',
+           'stripe_minutes': 1440, 'btcpay_minutes': 60}
     doc.update(over)
     return curl('PUT', api(HOST) + '/settings', doc, jar=JAR)
 
@@ -101,8 +107,10 @@ def restore():
     curl('DELETE', api(HOST) + '/plans/' + PLAN['id'], jar=JAR)
     curl('PUT', api(PEER) + '/vendor', {'ship': ''}, jar=PJAR)
     settings(stripe_key=None, stripe_webhook_secret=None,
-             btcpay_key=None, btcpay_webhook_secret=None)
-    print('restored: stub mode, no rail keys')
+             btcpay_key=None, btcpay_webhook_secret=None, lease_provider='')
+    curl('DELETE', api(PEER) + '/lease', jar=PJAR)
+    curl('DELETE', api(HOST) + '/providers/live-openrouter', jar=JAR)
+    print('restored: stub mode, no rail keys, no lease')
 
 
 PUBLIC = os.environ.get('ARMILLARY_PUBLIC_URL', HOST)
@@ -183,5 +191,63 @@ try:
             nonce = dictish(co).get('nonce', '')
             row = dictish(dictish(after.get('checkouts')).get(nonce))
             print('  the checkout row is %s' % json.dumps(row))
+    if not OR_KEY:
+        print('\nno OPENROUTER_PROVISIONING_KEY set, so the lease half is skipped.')
+    else:
+        print('\na real lease')
+        # the provisioning key rides on a provider row and is never
+        # printed: the ship masks it on every read route
+        code, d = curl('POST', api(HOST) + '/providers',
+                       {'id': 'live-openrouter', 'name': 'OpenRouter',
+                        'kind': 'openrouter', 'base_url': OR_BASE,
+                        'api_key': '', 'provisioning_key': OR_KEY}, jar=JAR)
+        if code == 409:
+            code, d = curl('PUT', api(HOST) + '/providers/live-openrouter',
+                           {'name': 'OpenRouter', 'kind': 'openrouter',
+                            'base_url': OR_BASE, 'api_key': '',
+                            'provisioning_key': OR_KEY}, jar=JAR)
+        print('  the provider row: %s' % code)
+        time.sleep(1)
+        code, d = settings(stripe_key='', public_url=PUBLIC, mode='live',
+                           lease_provider='live-openrouter')
+        print('  lease provider set: %s' % code)
+        time.sleep(2)
+        base = dictish(account()).get('balance', 0)
+        print('  balance before the lease: %d microdollars' % base)
+        code, lease = curl('POST', api(PEER) + '/lease', {}, jar=PJAR, timeout=180)
+        key = dictish(lease).get('key', '')
+        if not key:
+            print('  no lease: %s %s' % (code, lease))
+        else:
+            # the key itself is never printed, only its hash and figures
+            print('  lease hash %s, cap %s microdollars' %
+                  (dictish(lease).get('hash'), dictish(lease).get('limit')))
+            out = subprocess.run(
+                ['curl', '-s', '-m', '180', '-X', 'POST',
+                 '-H', 'content-type: application/json',
+                 '-H', 'authorization: Bearer ' + key,
+                 '-d', json.dumps({'model': OR_MODEL,
+                                   'messages': [{'role': 'user', 'content': 'Say ok.'}],
+                                   'max_tokens': 5}),
+                 dictish(lease).get('base_url', OR_BASE) + '/chat/completions'],
+                capture_output=True, text=True).stdout
+            try:
+                answer = json.loads(out)
+            except ValueError:
+                answer = {}
+            said = ''
+            if dictish(answer).get('choices'):
+                said = dictish(dictish(answer['choices'][0]).get('message')).get('content', '')
+            print('  OpenRouter answered: %s' % (said or str(out)[:200]))
+            code, d = curl('POST', api(HOST) + '/tick', {}, jar=JAR, timeout=180)
+            print('  tick: %s' % code)
+            after = wait_for('the lease debit',
+                             lambda a: any(r.get('mode') == 'lease' for r in a.get('ledger', [])),
+                             seconds=120)
+            rows = [r for r in after.get('ledger', []) if r.get('mode') == 'lease']
+            print('  newest lease row %s' % (json.dumps(rows[0]) if rows else 'none'))
+            print('  lease now %s' % json.dumps(after.get('lease')))
+            code, d = curl('DELETE', api(PEER) + '/lease', jar=PJAR, timeout=180)
+            print('  dropped the lease: %s' % code)
 finally:
     restore()
