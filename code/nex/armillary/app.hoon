@@ -2335,7 +2335,13 @@
   ;<  vj=json  bind:m  (read-json (rf 0 / %'vendor.json'))
   =/  vendor=(unit @p)  (slaw %p (gs:arm vj 'ship'))
   ?~  vendor
+    ::  a ship with no vendor waits, but not forever: the prod that
+    ::  named a vendor can land before the writer has written it down,
+    ::  and then only a second look finds it
+    ;<  now=@da  bind:m  get-time:io
+    ;<  ~  bind:m  (set-timer:io /idle (add now ~m5))
     ;<  *  bind:m  take-poke-from:io
+    ;<  ~  bind:m  (cancel-timer:io /idle)
     $
   ;<  ~  bind:m  (client-pass u.vendor)
   ;<  now=@da  bind:m  get-time:io
@@ -3648,6 +3654,11 @@
     ?~  p.got  (pure:(fiber:fiber:nexus ,~) ~)
     ;<  n=@t  bind:(fiber:fiber:nexus ,~)  fresh-nonce
     (queue-at n (en-inbox:arm [%hello ~]))
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  ::  the first prod can reach the client before the writer has stored
+  ::  the vendor, and a client that read no vendor goes back to sleep.
+  ::  The second one finds it.
+  ;<  ~  bind:m  (nap ~s1)
   ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
   (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+txt] ['ok' b+&]]))
 ::  +serve-my-keys: the keys this ship holds, never their secrets

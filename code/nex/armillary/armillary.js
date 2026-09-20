@@ -392,7 +392,7 @@
         (Number(days) === n ? ' class="on"' : '') + '>' + n + ' days</button>';
     }).join(' ');
     var out = '<h1>Report</h1><div class="card"><p>' + pick + '</p>' +
-      '<p class="muted">' + esc(r.accounts || 0) + ' accounts moved money in this window.</p></div>';
+      '<p class="muted">Accounts that moved money: ' + esc(r.accounts || 0) + '</p></div>';
     out += '<div class="card"><h2>Money</h2>' +
       thead(['What', { name: 'Dollars', num: true }]) +
       money('Credit by card', c.stripe) +
@@ -939,12 +939,17 @@
       refresh();
     } else if (d.takeLease) {
       say('asking the vendor for a lease');
-      post('/lease').then(function () { say('lease in hand'); later(); })
+      // the card draws from the stored view, so the vendor is read
+      // once more before the redraw
+      post('/lease').then(function () {
+        return api('/account?fresh=1').catch(function () { return null; });
+      }).then(function () { say('lease in hand'); refresh(); })
         .catch(function (e) { say(e.message, true); refresh(); });
     } else if (d.dropMyLease) {
       if (!confirm('Drop the lease? The provider key is deleted and clients fall back to the proxy.')) return;
-      api('/lease', { method: 'DELETE' })
-        .then(function () { say('dropped'); later(); })
+      api('/lease', { method: 'DELETE' }).then(function () {
+        return api('/account?fresh=1').catch(function () { return null; });
+      }).then(function () { say('dropped'); refresh(); })
         .catch(function (e) { say(e.message, true); });
     } else if (d.saveStripe) {
       // a blank secret keeps what the ship holds, which is what an
