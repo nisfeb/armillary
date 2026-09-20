@@ -706,6 +706,77 @@
   =/  amt=@sd  (sun:si amount.i.rows)
   =/  next=@sd  ?:(=(%credit kind.i.rows) (sum:si acc amt) (dif:si acc amt))
   $(rows t.rows, acc next)
+::  +month-start: the first second of the month a time falls in, which
+::  is where a summary row is filed
+::
+++  month-start
+  |=  at=@da
+  ^-  @da
+  =/  dat=date  (yore at)
+  (year dat(t [1 0 0 0 ~]))
+::  +month-of: that month as yyyy-mm, which is what a summary ref names
+::
+++  month-of
+  |=  at=@da
+  ^-  @t
+  =/  dat=date  (yore at)
+  =/  yr=tape  (a-co:co y.dat)
+  =/  mo=tape  ?:((lth m.dat 10) ['0' (a-co:co m.dat)] (a-co:co m.dat))
+  (crip :(weld yr "-" mo))
+::  +is-summary: was this row written by a compaction. A summary is
+::  never folded again, however old it gets, or a year of them would
+::  collapse into one line with no month left in it.
+::
+++  is-summary
+  |=  ref=@t
+  ^-  ?
+  =("compact-" (scag 8 (trip ref)))
+::  +compact-fold: old rows folded to one summary per month per kind.
+::  Answers the summaries to write and the grub names they replace, so
+::  the caller writes and culls and the arithmetic stays pure.
+::
+++  compact-fold
+  |=  [rows=(list [name=@ta =row]) cutoff=@da]
+  ^-  [fresh=(list row) stale=(list @ta)]
+  =/  acc=(map [@da @t] [amount=@ud cost=@ud n=@ud])  ~
+  =/  names=(list @ta)  ~
+  =/  todo=(list [name=@ta =row])  rows
+  |-  ^-  [fresh=(list row) stale=(list @ta)]
+  ?^  todo
+    =/  r=row  row.i.todo
+    ?.  &((lth at.r cutoff) !(is-summary ref.r))
+      $(todo t.todo)
+    =/  k=[@da @t]  [(month-start at.r) `@t`kind.r]
+    =/  cur=[amount=@ud cost=@ud n=@ud]  (fall (~(get by acc) k) [0 0 0])
+    =/  next=[amount=@ud cost=@ud n=@ud]
+      [(add amount.cur amount.r) (add cost.cur cost.r) +(n.cur)]
+    $(todo t.todo, names [name.i.todo names], acc (~(put by acc) k next))
+  =/  groups=(list [[@da @t] [amount=@ud cost=@ud n=@ud]])
+    %+  sort  ~(tap by acc)
+    |=  [x=[k=[@da @t] *] y=[k=[@da @t] *]]
+    ^-  ?
+    ?:  =(-.k.x -.k.y)  (aor +.k.x +.k.y)
+    (lth -.k.x -.k.y)
+  :_  names
+  %+  turn  groups
+  |=  [k=[when=@da kind=@t] v=[amount=@ud cost=@ud n=@ud]]
+  ^-  row
+  =/  akind=?(%credit %debit %refund)
+    ?:  =('credit' kind.k)  %credit
+    ?:(=('debit' kind.k) %debit %refund)
+  =/  count=tape  (a-co:co n.v)
+  :*  akind
+      amount.v
+      cost.v
+      ''
+      0
+      0
+      ''
+      ''
+      (rap 3 'compact-' (month-of when.k) '-' kind.k ~)
+      (crip (weld count " rows"))
+      when.k
+  ==
 ::  +row-name: the grub name a ledger row lives under. The seconds sort
 ::  the directory; n is bumped by the writer while the name exists.
 ::
@@ -809,6 +880,8 @@
       btcpay-key=@t
       btcpay-webhook-secret=@t
       lease-provider=@t
+      stripe-minutes=@ud
+      btcpay-minutes=@ud
   ==
 ::  +stripe-base: where Stripe's API lives. A blank stripe_url is the
 ::  real one; the gate points it at the stub instead.
@@ -842,6 +915,8 @@
       ['btcpay_key' s+'']
       ['btcpay_webhook_secret' s+'']
       ['lease_provider' s+'']
+      ['stripe_minutes' (en-num 1.440)]
+      ['btcpay_minutes' (en-num 60)]
   ==
 ++  de-settings
   |=  jon=json
@@ -874,6 +949,8 @@
       (gs jon 'btcpay_key')
       (gs jon 'btcpay_webhook_secret')
       (gs jon 'lease_provider')
+      ?.((has-key jon 'stripe_minutes') 1.440 (gn jon 'stripe_minutes'))
+      ?.((has-key jon 'btcpay_minutes') 60 (gn jon 'btcpay_minutes'))
   ==
 ++  en-settings
   |=  s=settings
@@ -892,6 +969,8 @@
       ['btcpay_key' s+btcpay-key.s]
       ['btcpay_webhook_secret' s+btcpay-webhook-secret.s]
       ['lease_provider' s+lease-provider.s]
+      ['stripe_minutes' (en-num stripe-minutes.s)]
+      ['btcpay_minutes' (en-num btcpay-minutes.s)]
   ==
 ::  ==  plans
 ::
@@ -1561,6 +1640,12 @@
       status
       (gs jon 'note')
   ==
+::  +de-op-compact: one account's old ledger rows, folded
+::
+++  de-op-compact
+  |=  jon=json
+  ^-  (each @p @t)
+  (ship-field jon)
 ::  ==  the lease's writer ops
 ::
 ::  +de-op-lease: the whole row, from the fiber that minted it

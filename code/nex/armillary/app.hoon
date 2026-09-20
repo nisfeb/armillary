@@ -12,6 +12,7 @@
 ::    /plans.json                        the plans a customer may buy, by id
 ::    /vendor.json                       the vendor ship; ours on the vendor
 ::    /key-index.json                    a key id to the ship that holds it
+::    /tick.sig                          the vendor's ten minute housekeeping
 ::    /accounts/<ship>/account.json      ship, cached balance, made, seen, closed
 ::    /accounts/<ship>/keys.json         one salted hash per key, by id
 ::    /accounts/<ship>/ledger/<name>     [/armillary %row], one per money move
@@ -75,6 +76,7 @@
           [%fall %& [/ %'web.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'inbox.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'client.sig'] [[/ %sig] ~]]
+          [%fall %& [/ %'tick.sig'] [[/ %sig] ~]]
           [%fall %| /requests empty-dir:loader]
           [%fall %| /accounts empty-dir:loader]
           [%fall %| /tr empty-dir:loader]
@@ -140,6 +142,12 @@
           [~ %'client.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%armillary client: failed")
         client-loop
+          ::  the vendor's housekeeping: reconcile every lease, expire
+          ::  stale checkouts and fold old ledger rows, every ten
+          ::  minutes or whenever prodded
+          [~ %'tick.sig']
+        ;<  ~  bind:m  (rise-wait:io prod "%armillary tick: failed")
+        tick-loop
           ::  one ephemeral fiber per in-flight request
           [[%requests ~] @]
         ;<  ~  bind:m  (rise-wait:io prod "%armillary request: failed")
@@ -247,6 +255,8 @@
   ?:  =('drop-lease' op)     (do-drop-lease jon)
   ?:  =('touch-lease' op)    (do-touch-lease jon)
   ?:  =('lease-error' op)    (do-set-lease-error jon)
+  ?:  =('expire-checkouts' op)  do-expire-checkouts
+  ?:  =('compact' op)        (do-compact jon)
   ?:  =('set-vendor' op)     (do-set-vendor jon)
   ?:  =('store-key' op)      (do-store-key jon)
   ?:  =('forget-key' op)     (do-forget-key jon)
@@ -787,7 +797,13 @@
 ++  free-name
   |=  [rows=(list [name=@ta =row:arm]) at=@da n=@ud]
   ^-  @ta
-  =/  taken=(set @ta)  (sy (turn rows |=([nam=@ta =row:arm] nam)))
+  (free-in (sy (turn rows |=([nam=@ta =row:arm] nam))) at n)
+::  +free-in: the same against a set of names already spoken for, which
+::  is what writing several rows in one op needs
+::
+++  free-in
+  |=  [taken=(set @ta) at=@da n=@ud]
+  ^-  @ta
   |-  ^-  @ta
   =/  nam=@ta  (row-name:arm at n)
   ?.  (~(has in taken) nam)  nam
@@ -1329,6 +1345,98 @@
   ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'lease.json') [[/ %json] doc])
   ;<  ~  bind:m  (do-write-view who)
   (pure:m &)
+::  ==  housekeeping, on the vendor
+::
+::  +do-expire-checkouts: a checkout whose window has run out is
+::  expired, so a customer's view never offers a url a rail has already
+::  forgotten. A paid or refused row is left as it is.
+::
+++  do-expire-checkouts
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io (rv 0 /accounts) ~)
+  ?.  ?=([%ball *] vw)  (pure:m |)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  n=@ud  bind:m  (expire-each ~(tap in ~(key by dir.ball.vw)) now 0)
+  ?:  =(0 n)  (pure:m |)
+  =/  count=tape  (a-co:co n)
+  ;<  ~  bind:m  (note 'expire-checkouts' & (crip count) '' --0)
+  (pure:m &)
+++  expire-each
+  |=  [ships=(list @ta) now=@da n=@ud]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ?~  ships  (pure:m n)
+  =/  who=(unit @p)  (slaw %p i.ships)
+  ?~  who  (expire-each t.ships now n)
+  ;<  cj=json  bind:m  (read-json (rf 0 (acct-dir u.who) %'checkouts.json'))
+  =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
+  =/  next=(map @t json)
+    %-  ~(urn by cm)
+    |=  [k=@t row=json]
+    ^-  json
+    =/  status=@t  (gs:arm row 'status')
+    ?.  |(=('pending' status) =('processing' status))  row
+    =/  when=(unit @da)  (gt:arm row 'expires')
+    ?~  when  row
+    ?:  (gte u.when now)  row
+    ?.  ?=([%o *] row)  row
+    [%o (~(put by p.row) 'status' s+'expired')]
+  ?:  =(cm next)  (expire-each t.ships now n)
+  ;<  ~  bind:m
+    (over:io (rf 0 (acct-dir u.who) %'checkouts.json') [[/ %json] [%o next]])
+  ;<  ~  bind:m  (do-write-view u.who)
+  (expire-each t.ships now +(n))
+::  +do-compact: one account's ledger rows older than ninety days,
+::  folded to one row per month per kind. A summary row is skipped by
+::  its ref, so a year of them never collapses into one line.
+::
+++  do-compact
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-compact:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'compact' p.got '')
+  =/  who=@p  p.got
+  =/  txt=@t  (scot %p who)
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (pure:m |)
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 0 who)
+  ;<  now=@da  bind:m  get-time:io
+  =/  folded  (compact-fold:arm rows (sub now ~d90))
+  ?~  stale.folded  (pure:m |)
+  =/  taken=(set @ta)  (sy (turn rows |=([nam=@ta r=row:arm] nam)))
+  ;<  ~  bind:m  (write-summaries who taken fresh.folded)
+  ;<  ~  bind:m  (cull-each who stale.folded)
+  ::  the fold moves no money, but the cached balance is refolded from
+  ::  what is left, which is always the truth
+  ;<  after=(list [name=@ta =row:arm])  bind:m  (ledger-of 0 who)
+  =/  bal=@sd  (fold-balance:arm (turn after |=([nam=@ta r=row:arm] r)))
+  ;<  ~  bind:m
+    %+  over:io  (rf 0 (acct-dir who) %'account.json')
+    [[/ %json] (en-account:arm u.a(balance bal))]
+  ;<  ~  bind:m  (do-write-view who)
+  =/  count=tape  (a-co:co (lent stale.folded))
+  ;<  ~  bind:m  (note 'compact' & (crip count) txt --0)
+  (pure:m &)
+++  write-summaries
+  |=  [who=@p taken=(set @ta) fresh=(list row:arm)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  fresh  (pure:m ~)
+  =/  nam=@ta  (free-in taken at.i.fresh 0)
+  ;<  ~  bind:m
+    %+  over:io  (rf 0 (ledger-dir who) nam)
+    [[/armillary %row] `stored-row:arm`[%1 i.fresh]]
+  (write-summaries who (~(put in taken) nam) t.fresh)
+++  cull-each
+  |=  [who=@p names=(list @ta)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  names  (pure:m ~)
+  ;<  *  bind:m  (cull-soft:io (rf 0 (ledger-dir who) i.names))
+  (cull-each who t.names)
 ::  ==  the writer's ops on the customer side
 ::
 ::  +do-set-vendor: who this ship buys from. Empty means nobody, and
@@ -1944,7 +2052,11 @@
   ?:  (~(has by cm) nonce)  (note-inbox 'checkout' & 'already open' who)
   ;<  s=settings:arm  bind:m  (settings-of 0)
   ;<  now=@da  bind:m  get-time:io
-  =/  expires=@da  (add now ~d1)
+  ::  how long a checkout stays open is the rail's own setting, since a
+  ::  card session and a bitcoin invoice do not live alike
+  =/  card=@da  (add now (mul ~m1 stripe-minutes.s))
+  =/  coin=@da  (add now (mul ~m1 btcpay-minutes.s))
+  =/  expires=@da  ?:(=('btcpay' rail) coin card)
   ?:  ?=(%stub mode.s)
     =/  url=@t
       %^  rap  3  (public-of s)
@@ -1956,11 +2068,8 @@
     ;<  ~  bind:m
       (put-checkout src nonce rail plan amount url '' expires 'pending' '')
     (note-inbox 'checkout' & '' who)
-  ?:  =('stripe' rail)  (stripe-checkout src s plan amount nonce expires)
-  ::  a bitcoin invoice lives an hour, which is what the create call
-  ::  asks BTCPay for, so the row says the same
-  ?:  =('btcpay' rail)
-    (btcpay-checkout src s plan amount nonce (add now ~h1))
+  ?:  =('stripe' rail)  (stripe-checkout src s plan amount nonce card)
+  ?:  =('btcpay' rail)  (btcpay-checkout src s plan amount nonce coin)
   %-  refuse-checkout
   [src nonce rail plan amount expires 'refused' 'rail: stripe or btcpay']
 ::  +stripe-checkout: the live card rail. Every 400-class refusal is a
@@ -2126,6 +2235,56 @@
     %-  put-checkout
     [src nonce 'stripe' plan amount url.u.got id.u.got expires 'pending' '']
   (note-inbox 'checkout' & '' who)
+::  ==  the tick: the vendor's housekeeping
+::
+::  +tick-loop: a pass, then ten minutes or a prod, then again. A
+::  vendor with no accounts does nothing and costs nothing.
+::
+++  tick-loop
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |-
+  ;<  ~  bind:m  tick-pass
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m  (set-timer:io /tick (add now ~m10))
+  ;<  *  bind:m  take-poke-from:io
+  ;<  ~  bind:m  (cancel-timer:io /tick)
+  $
+::  +tick-pass: reconcile every lease that has not been read lately,
+::  expire the checkouts whose window has run out, and fold the ledger
+::  rows that are too old to read one at a time.
+::
+++  tick-pass
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 0)
+  =/  ships=(list @p)  (turn all |=([a=account:arm n=@ud] ship.a))
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m  (tick-leases ships now)
+  ;<  ~  bind:m
+    (poke-writer 0 (pairs:enjs:format ~[['op' s+'expire-checkouts']]))
+  (tick-compact ships)
+::  +tick-leases: a lease read under nine minutes ago is left alone, so
+::  a prod between ticks does not call the provider again for nothing
+::
+++  tick-leases
+  |=  [ships=(list @p) now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  ships  (pure:m ~)
+  ;<  lj=json  bind:m  (read-json (rf 0 (acct-dir i.ships) %'lease.json'))
+  =/  held=(unit lease:arm)  (de-lease:arm lj)
+  ?~  held  (tick-leases t.ships now)
+  ?:  (lth now (add checked.u.held ~m9))  (tick-leases t.ships now)
+  ;<  *  bind:m  (reconcile 0 i.ships)
+  (tick-leases t.ships now)
+++  tick-compact
+  |=  ships=(list @p)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  ships  (pure:m ~)
+  ;<  ~  bind:m  (poke-writer 0 (ship-op 'compact' i.ships))
+  (tick-compact t.ships)
 ::  ==  the client: what this ship asks of its vendor
 ::
 ::  +client-loop: send what is queued, read the view, sleep five
@@ -2542,6 +2701,7 @@
   ?:  &(=('POST' meth) ?=([%api %accounts @ %'clear-subscription' ~] suffix))
     (own (serve-clear-subscription eyre-id s2))
   ?:  &(=('GET' meth) ?=([%api %log ~] suffix))          (own (serve-log eyre-id))
+  ?:  &(=('POST' meth) ?=([%api %tick ~] suffix))        (own (serve-tick eyre-id))
   ::  the customer's routes, what Talon calls on its own ship
   ?:  &(=('GET' meth) ?=([%api %account ~] suffix))      (own (serve-my-account eyre-id args))
   ?:  &(=('PUT' meth) ?=([%api %vendor ~] suffix))       (own (serve-set-vendor eyre-id jon))
@@ -2599,7 +2759,7 @@
   ;<  jon=json  bind:m  (read-json (rf up / %'settings.json'))
   =/  got  (de-settings:arm jon)
   ?:  ?=(%| -.got)
-    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm '' '' '' '' ''])
+    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm '' '' '' '' '' 1.440 60])
   (pure:m p.got)
 ::  +two-xx: did the upstream say yes
 ::
@@ -3202,6 +3362,16 @@
   ^-  form:m
   ;<  log=json  bind:m  (read-json (rf 1 /tr %log))
   (send-json eyre-id 200 log)
+::  +serve-tick: the owner prods the housekeeping fiber. It answers as
+::  soon as the poke is sent: a pass talks to a provider and takes as
+::  long as that takes.
+::
+++  serve-tick
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  *  bind:m  (poke-soft:io (rf 1 / %'tick.sig') [[/ %json] [%o ~]])
+  (send-json eyre-id 200 (pairs:enjs:format ~[['ok' b+&]]))
 ::  ==  the inference API
 ::
 ::  +serve-models: the enabled catalog, rows whose provider still

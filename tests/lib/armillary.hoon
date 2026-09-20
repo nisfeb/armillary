@@ -678,4 +678,62 @@
     (expect !>((taken (de-op-lease-error:arm (jo '{"ship":"~wex","why":""}')))))
     (expect !>((refused (de-op-lease-error:arm (jo '{"why":"x"}')))))
   ==
+::  ==  compaction
+::
+::  three months of rows, two kinds, plus one row inside the window and
+::  one summary already written. Only the first four fold.
+::
+++  old-rows
+  ^-  (list [name=@ta =row:arm])
+  :~  ['a' [%credit 100 0 '' 0 0 '' 'stub' 'r1' '' ~2026.1.5]]
+      ['b' [%credit 50 0 '' 0 0 '' 'stub' 'r2' '' ~2026.1.20]]
+      ['c' [%debit 30 20 'x' 1 2 'proxy' '' 'r3' '' ~2026.2.3]]
+      ['d' [%debit 7 5 'y' 1 1 'proxy' '' 'r4' '' ~2026.3.9]]
+      ['e' [%credit 9 0 '' 0 0 '' 'stub' 'compact-2025-12-credit' '' ~2025.12.1]]
+      ['f' [%debit 1 1 'z' 0 0 'proxy' '' 'r5' '' ~2026.9.18]]
+  ==
+++  test-month-start
+  ;:  weld
+    (expect-eq !>(`@da`~2026.2.1) !>((month-start:arm ~2026.2.3..11.30.00)))
+    (expect-eq !>('2026-02') !>((month-of:arm ~2026.2.3..11.30.00)))
+    (expect-eq !>('2026-11') !>((month-of:arm ~2026.11.30)))
+  ==
+++  test-is-summary
+  ;:  weld
+    (expect !>((is-summary:arm 'compact-2026-01-credit')))
+    (expect !>(!(is-summary:arm 'stub-n1')))
+    (expect !>(!(is-summary:arm '')))
+  ==
+++  test-compact-fold
+  =/  got  (compact-fold:arm old-rows ~2026.6.1)
+  =/  refs=(list @t)  (turn fresh.got |=(r=row:arm ref.r))
+  ;:  weld
+    (expect-eq !>(`@ud`3) !>((lent fresh.got)))
+    (expect-eq !>(`@ud`4) !>((lent stale.got)))
+    %+  expect-eq
+      !>(`(list @t)`~['compact-2026-01-credit' 'compact-2026-02-debit' 'compact-2026-03-debit'])
+    !>(refs)
+    (expect-eq !>(`@ud`150) !>(amount:(snag 0 fresh.got)))
+    (expect-eq !>('2 rows') !>(note:(snag 0 fresh.got)))
+    (expect-eq !>(`@ud`30) !>(amount:(snag 1 fresh.got)))
+    (expect-eq !>(`@ud`20) !>(cost:(snag 1 fresh.got)))
+    (expect-eq !>(`@da`~2026.2.1) !>(at:(snag 1 fresh.got)))
+  ==
+++  test-compact-fold-keeps-the-balance
+  ::  a fold moves nothing: the sum over the summaries plus the rows it
+  ::  left alone is the sum over everything
+  =/  got  (compact-fold:arm old-rows ~2026.6.1)
+  =/  all=(list row:arm)  (turn old-rows |=([n=@ta r=row:arm] r))
+  =/  kept=(list row:arm)
+    %+  murn  old-rows
+    |=([n=@ta r=row:arm] ^-((unit row:arm) ?:((lien stale.got |=(x=@ta =(x n))) ~ `r)))
+  %+  expect-eq
+    !>((fold-balance:arm all))
+  !>((fold-balance:arm (weld fresh.got kept)))
+++  test-compact-fold-nothing-old
+  =/  got  (compact-fold:arm old-rows ~2025.1.1)
+  ;:  weld
+    (expect-eq !>(`@ud`0) !>((lent fresh.got)))
+    (expect-eq !>(`@ud`0) !>((lent stale.got)))
+  ==
 --

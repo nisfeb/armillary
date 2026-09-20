@@ -607,6 +607,8 @@
       btcpay_key: '',
       btcpay_webhook_secret: '',
       lease_provider: was.lease_provider || '',
+      stripe_minutes: was.stripe_minutes === undefined ? 1440 : was.stripe_minutes,
+      btcpay_minutes: was.btcpay_minutes === undefined ? 60 : was.btcpay_minutes,
     };
     Object.keys(extra).forEach(function (k) { body[k] = extra[k]; });
     return post('/settings', body, 'PUT');
