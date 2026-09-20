@@ -213,9 +213,7 @@
   ^-  request:http
   =/  extra=(list [@t @t])
     ?:  =('' customer)  ~
-    :~  ['customer' (url-encode customer)]
-        ['customer_update[name]' (url-encode 'auto')]
-    ==
+    ~[['customer' (url-encode customer)]]
   =/  kvs=(list [@t @t])
     ;:  weld
       :~  ['mode' (url-encode 'payment')]
@@ -227,6 +225,7 @@
           ['expires_at' (num expires)]
           ['line_items[0][price_data][currency]' 'usd']
           ['line_items[0][price_data][product_data][name]' (url-encode label)]
+          ['line_items[0][price_data][product_data][tax_code]' tax-code]
           ['line_items[0][price_data][unit_amount]' (num amount-cents)]
           ['line_items[0][quantity]' '1']
       ==
@@ -376,12 +375,19 @@
   =/  id=@t  (gs (gj (gj jon 'data') 'object') 'id')
   ?:  =('' id)  ~
   `[type id]
+::  +tax-code: Stripe's product tax code for what the vendor sells,
+::  "Artificial Intelligence as a Service, cloud based, personal use"
+::  (txcd_10105001), from Stripe's own list. Every line item carries
+::  it: Managed Payments refuses a product without one, and Stripe Tax
+::  needs it to tax a digital service right in the US.
+::
+++  tax-code  'txcd_10105001'
 ::  ==  products, prices and cancellation
 ::
 ++  product-request
   |=  [base=@t key=@t name=@t]
   ^-  request:http
-  =/  kvs=(list [@t @t])  ~[['name' (url-encode name)]]
+  =/  kvs=(list [@t @t])  ~[['name' (url-encode name)] ['tax_code' tax-code]]
   [%'POST' (at base '/v1/products') (heads key) `(form-enc kvs)]
 ++  price-request
   |=  [base=@t key=@t product=@t cents=@ud interval=@t]

@@ -66,6 +66,7 @@
         ['expires_at' '1789855500']
         ['line_items[0][price_data][currency]' 'usd']
         ['line_items[0][price_data][product_data][name]' 'Armillary credit']
+        ['line_items[0][price_data][product_data][tax_code]' 'txcd_10105001']
         ['line_items[0][price_data][unit_amount]' '1000']
         ['line_items[0][quantity]' '1']
     ==
@@ -89,13 +90,13 @@
     :~  ['mode' 'payment']
         ['metadata[ship]' '~feb']
         ['customer' 'cus_9']
-        ['customer_update[name]' 'auto']
         :-  'success_url'
         'https://ex.com/apps/armillary/pay/return?ship=~feb&sid={CHECKOUT_SESSION_ID}'
         ['cancel_url' no-url]
         ['expires_at' '1789855500']
         ['line_items[0][price_data][currency]' 'usd']
         ['line_items[0][price_data][product_data][name]' 'Armillary credit']
+        ['line_items[0][price_data][product_data][tax_code]' 'txcd_10105001']
         ['line_items[0][price_data][unit_amount]' '1000']
         ['line_items[0][quantity]' '1']
     ==
@@ -153,7 +154,7 @@
   =/  req=request:http  (product-request:ast base key 'Pro plan')
   ;:  weld
     (expect-eq !>('http://127.0.0.1:3399/v1/products') !>(url.req))
-    (expect-eq !>(`(list [@t @t])`~[['name' 'Pro plan']]) !>((pairs-of body.req)))
+    (expect-eq !>(`(list [@t @t])`~[['name' 'Pro plan'] ['tax_code' 'txcd_10105001']]) !>((pairs-of body.req)))
   ==
 ++  test-price-request
   =/  req=request:http  (price-request:ast base key 'prod_1' 2.500 'month')
