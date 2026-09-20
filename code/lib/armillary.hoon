@@ -15,6 +15,7 @@
 ++  max-name       200                          ::  a key name
 ++  max-id         64                           ::  a provider id or name
 ++  max-url        500                          ::  a base url
+++  max-pay-url    4.000                        ::  a rail's checkout url, which Stripe pads with a long fragment
 ++  max-model-id   200                          ::  a catalog id
 ++  max-providers  200
 ++  max-catalog    2.000
@@ -1754,7 +1755,7 @@
   =/  status=@t  (gs jon 'status')
   ?:  =('' status)  [%| 'status: required']
   =/  url=@t  (gs jon 'url')
-  ?:  (gth (met 3 url) max-url)  [%| 'url: at most 500 bytes']
+  ?:  (gth (met 3 url) max-pay-url)  [%| 'url: at most 4000 bytes']
   =/  sid=@t  (gs jon 'sid')
   ?:  (gth (met 3 sid) max-name)  [%| 'sid: at most 200 bytes']
   =/  intent=@t  (gs jon 'intent')

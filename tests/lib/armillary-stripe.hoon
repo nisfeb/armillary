@@ -247,6 +247,25 @@
     (expect-eq !>('price_1') !>(price.u.got))
     (expect-eq !>(`@ud`1.792.447.500) !>(period-end.u.got))
   ==
+::  +test-read-invoice-new-shape: the shape the 2025-03 API answers,
+::  where the subscription and the price live under parent and
+::  pricing. Seen on the first real sandbox invoice, 2026-09-20.
+::
+++  test-read-invoice-new-shape
+  =/  body=@t
+    %+  rap  3
+    :~  '{"id":"in_2","object":"invoice","status":"paid","customer":"cus_9",'
+        '"parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_new"}},'
+        '"lines":{"data":[{"id":"il_1","period":{"end":1792525000,"start":1789933000},'
+        '"pricing":{"type":"price_details","price_details":{"price":"price_new","product":"prod_1"}}}]}}'
+    ==
+  =/  got  (read-invoice:ast body)
+  ?~  got  (expect !>(|))
+  ;:  weld
+    (expect-eq !>('sub_new') !>(subscription.u.got))
+    (expect-eq !>('price_new') !>(price.u.got))
+    (expect-eq !>(`@ud`1.792.525.000) !>(period-end.u.got))
+  ==
 ++  a-dispute
   '''
   {"id":"dp_1","payment_intent":"pi_7","amount":1000,"currency":"usd",

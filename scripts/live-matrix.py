@@ -119,13 +119,21 @@ try:
     code, d = settings(stripe_key=KEY, public_url=PUBLIC, mode='live')
     print('live mode: %s' % code)
     time.sleep(2)
-    code, d = curl('PUT', api(PEER) + '/vendor', {'ship': dictish(account()).get('self')
-                                                  or ''}, jar=PJAR)
-    code, d = curl('GET', api(PEER) + '/account', jar=PJAR)
-    vendor = dictish(d).get('vendor', '')
+    # the vendor's own name comes from the desk's settings route, which
+    # answers before any view exists; the view is what a set vendor makes
+    code, d = curl('GET', api(HOST) + '/settings', jar=JAR)
+    code, me = curl('GET', HOST + '/~/name', jar=JAR)
+    self_ship = (me if isinstance(me, str) else '').strip() or ''
+    if not self_ship.startswith('~'):
+        code, d = curl('GET', api(PEER) + '/account', jar=PJAR)
+        self_ship = dictish(d).get('self', '') or dictish(d).get('vendor', '')
+    vendor = os.environ.get('ARMILLARY_VENDOR', self_ship)
     if not vendor:
-        print('the customer has no vendor set. Set it and run again.')
+        print('cannot learn the vendor ship. Set ARMILLARY_VENDOR=~ship and run again.')
         raise SystemExit(2)
+    code, d = curl('PUT', api(PEER) + '/vendor', {'ship': vendor}, jar=PJAR)
+    print('customer vendor %s: %s' % (vendor, code))
+    time.sleep(6)
     before = dictish(account()).get('balance', 0)
     print('balance now %d microdollars' % before)
 

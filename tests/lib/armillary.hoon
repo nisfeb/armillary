@@ -600,6 +600,24 @@
     %-  expect-eq
     :-  !>('status: required')
     !>((why (de-op-checkout:arm (jo '{"ship":"~wex","nonce":"n2"}'))))
+    ::  a real Stripe checkout url runs past 600 bytes: the hosted page
+    ::  rides a long fragment. The cap is the rail's, not a base url's.
+    =/  long=@t  (crip (weld "https://checkout.stripe.com/c/pay/cs_test_" (reap 700 'a')))
+    =/  doc=@t
+      %+  rap  3
+      :~  '{"ship":"~wex","nonce":"n3","rail":"stripe","amount":10,"url":"'
+          long
+          '","status":"pending"}'
+      ==
+    (expect !>((taken (de-op-checkout:arm (jo doc)))))
+    =/  huge=@t  (crip (weld "https://x/" (reap 4.100 'a')))
+    =/  doc2=@t
+      %+  rap  3
+      :~  '{"ship":"~wex","nonce":"n4","rail":"stripe","amount":10,"url":"'
+          huge
+          '","status":"pending"}'
+      ==
+    (expect !>((refused (de-op-checkout:arm (jo doc2)))))
   ==
 ++  test-de-op-vendor
   ;:  weld

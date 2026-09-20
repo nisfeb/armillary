@@ -328,12 +328,23 @@
   ?:  =('' id)  ~
   =/  lines=(list json)  (ga (gj jon 'lines') 'data')
   =/  first=json  ?~(lines ~ i.lines)
+  ::  the subscription and the price moved on the 2025-03 API: the
+  ::  subscription under parent.subscription_details and the price
+  ::  under pricing.price_details. The old top-level fields are read
+  ::  when the new ones are absent, so either version of the object
+  ::  answers
+  =/  sub=@t
+    =/  new=@t  (gs (gj (gj jon 'parent') 'subscription_details') 'subscription')
+    ?:(=('' new) (gs jon 'subscription') new)
+  =/  price=@t
+    =/  new=@t  (gs (gj (gj first 'pricing') 'price_details') 'price')
+    ?:(=('' new) (gs (gj first 'price') 'id') new)
   :-  ~
   :*  id
       ?|(=('paid' (gs jon 'status')) (gb jon 'paid'))
       (gs jon 'customer')
-      (gs jon 'subscription')
-      (gs (gj first 'price') 'id')
+      sub
+      price
       (gn (gj first 'period') 'end')
   ==
 ::  ==  disputes

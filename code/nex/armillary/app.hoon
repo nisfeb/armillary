@@ -2825,6 +2825,8 @@
     (own (serve-owner-drop-lease eyre-id s2))
   ?:  &(=('POST' meth) ?=([%api %accounts @ %'clear-subscription' ~] suffix))
     (own (serve-clear-subscription eyre-id s2))
+  ?:  &(=('POST' meth) ?=([%api %accounts @ %'set-subscription' ~] suffix))
+    (own (serve-set-subscription eyre-id s2 jon))
   ?:  &(=('GET' meth) ?=([%api %log ~] suffix))          (own (serve-log eyre-id))
   ?:  &(=('POST' meth) ?=([%api %tick ~] suffix))        (own (serve-tick eyre-id))
   ?:  &(=('GET' meth) ?=([%api %report ~] suffix))       (own (serve-report eyre-id args))
@@ -3463,6 +3465,31 @@
   ?:  =('' stripe-subscription.u.a)  (send-err eyre-id 409 'no subscription')
   =/  op=json
     (pairs:enjs:format ~[['op' s+'clear-subscription'] ['ship' s+(scot %p u.who)]])
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+(scot %p u.who)] ['ok' b+&]]))
+::  +serve-set-subscription: the owner attaches a subscription Stripe
+::  holds that the ship never heard of: a session whose webhook and
+::  return page both missed, or one made in the Dashboard. The ids are
+::  Stripe's; renews is left for the next invoice to say.
+::
+++  serve-set-subscription
+  |=  [eyre-id=@ta seg=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ;<  aj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'account.json'))
+  ?~  (de-account:arm aj)  (send-err eyre-id 404 'no such account')
+  =/  sub=@t  (gs:arm jon 'subscription')
+  ?:  =('' sub)  (send-err eyre-id 400 'subscription: required')
+  =/  op=json
+    %-  pairs:enjs:format
+    :~  ['op' s+'set-subscription']
+        ['ship' s+(scot %p u.who)]
+        ['customer' s+(gs:arm jon 'customer')]
+        ['subscription' s+sub]
+        ['plan' s+(gs:arm jon 'plan')]
+    ==
   ;<  ~  bind:m  (poke-writer 1 op)
   (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+(scot %p u.who)] ['ok' b+&]]))
 ::  +serve-drop-account: a hard delete, the gate's broom. The owner

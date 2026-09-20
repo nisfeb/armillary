@@ -57,6 +57,14 @@ The account is then reconciled: a lease is recapped to the balance that is left,
 
 `charge.dispute.closed` only writes its status into the audit ring as `stripe.dispute`. A dispute won is credited back by the owner, by hand, because only the owner can see that the money really came back.
 
+## Managed Payments
+
+A Stripe account made after 2026 has Managed Payments on by default: Stripe is the merchant of record for digital goods, and handles sales tax and VAT in some eighty countries, fraud, disputes and transaction-level customer support, for a higher fee per transaction. Prepaid inference credit is a fully automated digital product sold direct, which is what Managed Payments accepts. Two things follow in the code: every line item carries the product tax code, and a session never sends `customer_update`, since Managed Payments collects the name and billing address itself. With it on, the tax and dispute items in the release checklist are Stripe's. It is one Dashboard toggle to turn off, in which case the ship's own dispute handling and Stripe Tax apply.
+
+## Verified against the sandbox
+
+On 2026-09-20 the card rail ran against the Nisfeb sandbox for the first time: a ten dollar top-up through hosted Checkout, credited from the return page; a Talon Pro subscription whose first invoice was delivered as a signed `invoice.paid` and credited twelve dollars; a renewal a month later on a Stripe test clock, credited again with the new invoice id and the renewal date set; and a replay of the same event, verified and refused as already recorded. Three defects the local stub could not show were found and fixed: the tax code, a 500 byte cap on the checkout url (a real one is about 600), and the 2025-03 invoice shape, where the subscription and the price moved under `parent` and `pricing`.
+
 ## The settings
 
 | field | what it is |
