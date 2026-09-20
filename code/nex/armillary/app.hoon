@@ -261,6 +261,7 @@
   ?:  =('store-key' op)      (do-store-key jon)
   ?:  =('forget-key' op)     (do-forget-key jon)
   ?:  =('store-view' op)     (do-store-view jon)
+  ?:  =('store-lease' op)    (do-store-lease jon)
   ?:  =('note-op' op)        (do-note-op jon)
   ?:  =('drop-op' op)        (do-drop-op jon)
   (refuse op 'unknown op' '')
@@ -1341,8 +1342,13 @@
   =/  doc=json
     ?:  =('' why.p.got)  [%o (~(del by lm) 'error')]
     [%o (~(put by lm) 'error' s+why.p.got)]
-  ?:  =(cur doc)  (pure:m |)
-  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'lease.json') [[/ %json] doc])
+  ::  an error repeated is still an answer to the op that just ran, so
+  ::  the view is rewritten and its rev moves; the customer's route
+  ::  waits on that rev and would otherwise wait for nothing
+  ?:  &(=(cur doc) =('' why.p.got))  (pure:m |)
+  ;<  ~  bind:m
+    ?:  =(cur doc)  (pure:(fiber:fiber:nexus ,~) ~)
+    (over:io (rf 0 (acct-dir who) %'lease.json') [[/ %json] doc])
   ;<  ~  bind:m  (do-write-view who)
   (pure:m &)
 ::  ==  housekeeping, on the vendor
@@ -1501,6 +1507,22 @@
     ?.  ?=([%o *] p.got)  p.got
     [%o (~(put by p.p.got) 'fetched' (en-time:arm now))]
   ;<  ~  bind:m  (over:io (rf 0 / %'view.json') [[/ %json] doc])
+  (pure:m &)
+::  +do-store-lease: the lease object out of the vendor's view, kept as
+::  it came. This is the one place on a customer ship that holds a
+::  provider key, and GET /api/inference is the only route that reads
+::  it out. No audit row: a peek every five minutes would flush the
+::  ring, and there is nothing here to log but a secret.
+::
+++  do-store-lease
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-store-lease:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'store-lease' p.got '')
+  ;<  cur=json  bind:m  (read-json (rf 0 / %'lease.json'))
+  ?:  =(cur p.got)  (pure:m |)
+  ;<  ~  bind:m  (over:io (rf 0 / %'lease.json') [[/ %json] p.got])
   (pure:m &)
 ::  +do-note-op: an op queued for the vendor, by nonce. The client fiber
 ::  sends what is here and drops a nonce once it shows in the view.
@@ -2411,6 +2433,10 @@
     (poke-writer 0 (pairs:enjs:format ~[['op' s+'store-view'] ['view' jon]]))
   =/  v=(unit view:arm)  (de-view:arm jon)
   ?~  v  (pure:m ~)
+  ::  the lease travels in the view and is kept on its own, so the one
+  ::  route a client reads does not have to dig through a whole account
+  ;<  ~  bind:m
+    (poke-writer 0 (pairs:enjs:format ~[['op' s+'store-lease'] ['lease' lease.u.v]]))
   ;<  cj=json  bind:m  (read-json (rf 0 / %'client.json'))
   =/  ops=json  (gj:arm cj 'ops')
   =/  om=(map @t json)  ?:(?=([%o *] ops) p.ops ~)
@@ -2710,9 +2736,8 @@
   ?:  &(=('DELETE' meth) ?=([%api %keys @ ~] suffix))    (own (serve-my-revoke eyre-id s2))
   ?:  &(=('POST' meth) ?=([%api %checkout ~] suffix))    (own (serve-my-checkout eyre-id jon))
   ?:  &(=('GET' meth) ?=([%api %inference ~] suffix))    (own (serve-inference eyre-id))
-  ::  leases are phase 5 and the subscription is phase 3
-  ?:  &(=('POST' meth) ?=([%api %lease ~] suffix))       (own (send-err eyre-id 501 'not yet'))
-  ?:  &(=('DELETE' meth) ?=([%api %lease ~] suffix))     (own (send-err eyre-id 501 'not yet'))
+  ?:  &(=('POST' meth) ?=([%api %lease ~] suffix))       (own (serve-take-lease eyre-id))
+  ?:  &(=('DELETE' meth) ?=([%api %lease ~] suffix))     (own (serve-give-lease eyre-id))
   ?:  &(=('POST' meth) ?=([%api %'cancel-subscription' ~] suffix))
     (own (serve-my-cancel eyre-id))
   (send-err eyre-id 404 'no such route')
@@ -3742,6 +3767,19 @@
   |=  eyre-id=@ta
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ::  a lease beats the proxy while it can spend. A disabled one falls
+  ::  back to the proxy, which answers 402 with a line a person can
+  ::  read, so a client keeps its one code path.
+  ;<  lj=json  bind:m  (read-json (rf 1 / %'lease.json'))
+  =/  leased=@t  (gs:arm lj 'key')
+  ?:  &(!=('' leased) !(gb:arm lj 'disabled'))
+    %^  send-json  eyre-id  200
+    %-  inference-json:arm
+    :*  'lease'
+        (gs:arm lj 'base_url')
+        leased
+        (strings:arm (ga:arm lj 'models'))
+    ==
   ;<  held=(list held-key:arm)  bind:m  (held-keys 1)
   ?~  held  (send-err eyre-id 404 'no key yet')
   =/  newest=held-key:arm
@@ -3756,6 +3794,60 @@
     (turn p.u.cat |=(j=json ^-(@t (gs:arm j 'id'))))
   =/  key=@t  (rap 3 id.newest '.' secret.newest ~)
   (send-json eyre-id 200 (inference-json:arm 'proxy' base key models))
+::  +serve-take-lease: ask the vendor for a lease and wait for the
+::  answer to show in the view. The ship's own view carries the key,
+::  and the caller here is this ship's owner or a client on the
+::  owner's cookie, so the route answers it.
+::
+++  serve-take-lease
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vendor=(unit @p)  bind:m  (vendor-of 1)
+  ?~  vendor  (send-err eyre-id 409 'vendor: not set')
+  ;<  before=json  bind:m  (read-json (rf 1 / %'view.json'))
+  ;<  n=@t  bind:m  fresh-nonce
+  ;<  ~  bind:m  (queue-at n (en-inbox:arm [%lease ~]))
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  ;<  doc=json  bind:m  (await-lease (gn:arm before 'rev') 30)
+  =/  lease=json  (gj:arm doc 'lease')
+  =/  why=@t  (gs:arm doc 'lease_error')
+  ?:  ?=([%o *] lease)  (send-json eyre-id 200 lease)
+  ?:  =('not offered' why)  (send-err eyre-id 404 'no lease for this account')
+  ?:  =('' why)
+    %^  send-json  eyre-id  202
+    (pairs:enjs:format ~[['pending' b+&] ['nonce' s+n]])
+  (send-err eyre-id 502 why)
+::  +await-lease: the view moved, or thirty seconds went by. Every
+::  answer to a lease op rewrites the view, so a rev that moved is an
+::  answer even when the answer is a refusal.
+::
+++  await-lease
+  |=  [was=@ud left=@ud]
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ;<  doc=json  bind:m  (read-json (rf 1 / %'view.json'))
+  ?.  =(was (gn:arm doc 'rev'))  (pure:m doc)
+  ?:  =(0 left)  (pure:m doc)
+  ;<  ~  bind:m  (nudge left)
+  ;<  ~  bind:m  (nap ~s1)
+  (await-lease was (dec left))
+::  +serve-give-lease: give the lease back. This ship forgets the key
+::  at once, so a key that is gone here is gone here even if the vendor
+::  is down; the vendor deletes it upstream when the op lands.
+::
+++  serve-give-lease
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vendor=(unit @p)  bind:m  (vendor-of 1)
+  ?~  vendor  (send-err eyre-id 409 'vendor: not set')
+  ;<  n=@t  bind:m  fresh-nonce
+  ;<  ~  bind:m  (queue-at n (en-inbox:arm [%drop-lease ~]))
+  ;<  ~  bind:m
+    (poke-writer 1 (pairs:enjs:format ~[['op' s+'store-lease'] ['lease' ~]]))
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  (send-json eyre-id 200 (pairs:enjs:format ~[['ok' b+&]]))
 ::  ==  the stub checkout, public
 ::
 ::  +safe-nonce: a nonce as it may appear in a URL and in HTML. Only

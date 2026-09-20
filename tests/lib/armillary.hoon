@@ -736,4 +736,11 @@
     (expect-eq !>(`@ud`0) !>((lent fresh.got)))
     (expect-eq !>(`@ud`0) !>((lent stale.got)))
   ==
+++  test-de-op-store-lease
+  ;:  weld
+    (expect !>((taken (de-op-store-lease:arm (jo '{"lease":{"key":"k"}}')))))
+    (expect !>((taken (de-op-store-lease:arm (jo '{"lease":null}')))))
+    (expect !>((taken (de-op-store-lease:arm (jo '{}')))))
+    (expect !>((refused (de-op-store-lease:arm (jo '{"lease":"k"}')))))
+  ==
 --

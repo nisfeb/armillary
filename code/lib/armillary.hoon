@@ -1717,6 +1717,16 @@
   =/  id=@t  (gs jon 'id')
   ?:  |(=('' id) (gth (met 3 id) max-id))  [%| 'id: 1 to 64 bytes']
   [%& id]
+::  +de-op-store-lease: the lease object out of the view, kept
+::  verbatim. A null lease clears what is held, which is what a drop
+::  and a vendor that took the lease back both look like.
+::
+++  de-op-store-lease
+  |=  jon=json
+  ^-  (each json @t)
+  =/  l=json  (gj jon 'lease')
+  ?:  ?=([%o *] l)  [%& l]
+  ?~(l [%& [%o ~]] [%| 'lease: an object or null is required'])
 ::  +de-op-store-view: the peeked view, stored verbatim. The customer
 ::  keeps what the vendor said rather than a shape of its own.
 ::

@@ -479,7 +479,25 @@
     out += checkoutRows(d && d.checkouts);
     return out + '<div class="card"><h2>Ledger</h2>' + ledger((d && d.ledger) || []) + '</div>';
   }
-  function myKeys(keys, cfg, minted) {
+  // the customer's own half of a lease. The key is not shown here: the
+  // inference config box below is where a client reads it.
+  function myLease(d) {
+    var l = d && d.lease;
+    var err = (d && d.lease_error) || '';
+    var out = '<div class="card"><h2>Lease</h2>' +
+      '<p class="muted">A lease is a real provider key capped at your balance, so a client calls the provider directly: streaming, tools and the provider\'s own latency.</p>';
+    if (err) out += '<p class="neg">' + esc(err) + '</p>';
+    if (!l) {
+      return out + '<p class="muted">No lease.</p>' +
+        '<button data-take-lease="1">Take a lease</button></div>';
+    }
+    return out + '<p>On <code>' + esc(l.base_url) + '</code>' +
+      (l.disabled ? ' &middot; <span class="neg">disabled, top up to spend again</span>' : '') + '</p>' +
+      '<p>Spent $' + esc(dollars(l.usage)) + ' against a $' + esc(dollars(l.limit)) + ' cap</p>' +
+      '<button data-take-lease="1">Refresh</button> ' +
+      '<button class="danger" data-drop-my-lease="1">Drop</button></div>';
+  }
+  function myKeys(keys, cfg, minted, acct) {
     var out = '<h1>Keys</h1><div class="card">';
     if (minted) {
       out += '<div class="secret"><p>Copy this now. The vendor keeps only a salted hash of it.</p>' +
@@ -502,10 +520,12 @@
     out += '<div class="inline"><div class="field"><label for="my-k-name">New key name</label>' +
       '<input id="my-k-name" value=""></div>' +
       '<div class="field"><label>&nbsp;</label><button data-my-mint="1">Mint a key</button></div></div></div>';
+    out += myLease(acct);
     out += '<div class="card"><h2>Inference config</h2>';
     if (!cfg) out += '<p class="muted">No key yet, so there is nothing for a client to run on.</p>';
     else {
       out += '<p class="muted">This is what <code>GET /api/inference</code> answers.</p>' +
+        '<p class="muted">Mode <code>' + esc(cfg.mode || '') + '</code>.</p>' +
         '<pre id="inference">' + esc(JSON.stringify(cfg, null, 2)) + '</pre>' +
         '<button data-copy-inference="1">Copy</button>';
     }
@@ -560,7 +580,7 @@
     payments: payments, planRows: planRows, planButtons: planButtons,
     leaseCard: leaseCard, leaseSetting: leaseSetting,
     subscriptionLine: subscriptionLine,
-    myAccount: myAccount, myKeys: myKeys, buyCatalog: buyCatalog,
+    myAccount: myAccount, myKeys: myKeys, myLease: myLease, buyCatalog: buyCatalog,
     route: route, sseEvent: sseEvent,
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = render; }
@@ -672,7 +692,10 @@
     } else if (r.name === 'keys') {
       p = api('/keys').then(function (keys) {
         return api('/inference').catch(function () { return null; })
-          .then(function (cfg) { draw(myKeys(keys || [], cfg, custMinted)); });
+          .then(function (cfg) {
+            return api('/account').catch(function () { return null; })
+              .then(function (acct) { draw(myKeys(keys || [], cfg, custMinted, acct)); });
+          });
       });
     } else if (r.name === 'catalog' && isBuyer && !isVendor) {
       p = api('/catalog').then(function (rows) { draw(buyCatalog(rows || [], buyFilter)); });
@@ -851,6 +874,15 @@
       if (!confirm('Revoke "' + d.name + '"? Its next request is refused.')) return;
       api('/keys/' + seg(d.dropKey), { method: 'DELETE' })
         .then(later).catch(function (e) { say(e.message, true); });
+    } else if (d.takeLease) {
+      say('asking the vendor for a lease');
+      post('/lease').then(function () { say('lease in hand'); later(); })
+        .catch(function (e) { say(e.message, true); refresh(); });
+    } else if (d.dropMyLease) {
+      if (!confirm('Drop the lease? The provider key is deleted and clients fall back to the proxy.')) return;
+      api('/lease', { method: 'DELETE' })
+        .then(function () { say('dropped'); later(); })
+        .catch(function (e) { say(e.message, true); });
     } else if (d.saveStripe) {
       // a blank secret keeps what the ship holds, which is what an
       // untouched field sends
