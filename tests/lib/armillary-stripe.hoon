@@ -41,10 +41,22 @@
 ++  no-url  'https://ex.com/apps/armillary/pay/return?ship=~feb&cancelled=1'
 ::  ==  the builders
 ::
+++  test-customer-request
+  =/  req=request:http  (customer-request:ast base key '~feb')
+  =/  want=(list [@t @t])
+    :~  ['metadata[ship]' '~feb']
+        ['description' 'Armillary ~feb']
+    ==
+  ;:  weld
+    (expect-eq !>(%'POST') !>(method.req))
+    (expect-eq !>('http://127.0.0.1:3399/v1/customers') !>(url.req))
+    (expect-eq !>(`(unit @t)`[~ 'Bearer sk_test_gate']) !>((get-header:http 'authorization' header-list.req)))
+    (expect-eq !>(want) !>((pairs-of body.req)))
+  ==
 ++  test-topup-request
   =/  req=request:http
     %-  topup-request:ast
-    [base key '~feb' 1.000 'Armillary credit' ok-url no-url 1.789.855.500]
+    [base key '~feb' '' 1.000 'Armillary credit' ok-url no-url 1.789.855.500]
   =/  want=(list [@t @t])
     :~  ['mode' 'payment']
         ['metadata[ship]' '~feb']
@@ -66,9 +78,31 @@
     !>((get-header:http 'content-type' header-list.req))
     (expect-eq !>(want) !>((pairs-of body.req)))
   ==
+::  +test-topup-request-customer: the same call for a ship that already
+::  has a Customer. Checkout may then write back the name it collects.
+::
+++  test-topup-request-customer
+  =/  req=request:http
+    %-  topup-request:ast
+    [base key '~feb' 'cus_9' 1.000 'Armillary credit' ok-url no-url 1.789.855.500]
+  =/  want=(list [@t @t])
+    :~  ['mode' 'payment']
+        ['metadata[ship]' '~feb']
+        ['customer' 'cus_9']
+        ['customer_update[name]' 'auto']
+        :-  'success_url'
+        'https://ex.com/apps/armillary/pay/return?ship=~feb&sid={CHECKOUT_SESSION_ID}'
+        ['cancel_url' no-url]
+        ['expires_at' '1789855500']
+        ['line_items[0][price_data][currency]' 'usd']
+        ['line_items[0][price_data][product_data][name]' 'Armillary credit']
+        ['line_items[0][price_data][unit_amount]' '1000']
+        ['line_items[0][quantity]' '1']
+    ==
+  (expect-eq !>(want) !>((pairs-of body.req)))
 ++  test-subscription-request
   =/  req=request:http
-    (subscription-request:ast base key '~feb' 'price_1' 'pro' ok-url no-url)
+    (subscription-request:ast base key '~feb' '' 'price_1' 'pro' ok-url no-url)
   =/  want=(list [@t @t])
     :~  ['mode' 'subscription']
         ['line_items[0][price]' 'price_1']
@@ -85,6 +119,22 @@
     (expect-eq !>('http://127.0.0.1:3399/v1/checkout/sessions') !>(url.req))
     (expect-eq !>(want) !>((pairs-of body.req)))
   ==
+++  test-subscription-request-customer
+  =/  req=request:http
+    (subscription-request:ast base key '~feb' 'cus_9' 'price_1' 'pro' ok-url no-url)
+  =/  want=(list [@t @t])
+    :~  ['mode' 'subscription']
+        ['line_items[0][price]' 'price_1']
+        ['line_items[0][quantity]' '1']
+        ['metadata[ship]' '~feb']
+        ['customer' 'cus_9']
+        ['subscription_data[metadata][ship]' '~feb']
+        ['subscription_data[metadata][plan]' 'pro']
+        :-  'success_url'
+        'https://ex.com/apps/armillary/pay/return?ship=~feb&sid={CHECKOUT_SESSION_ID}'
+        ['cancel_url' no-url]
+    ==
+  (expect-eq !>(want) !>((pairs-of body.req)))
 ++  test-session-request
   =/  req=request:http  (session-request:ast base key 'cs_1')
   ;:  weld

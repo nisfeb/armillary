@@ -1354,6 +1354,18 @@
   =/  plan=@t  (gs jon 'plan')
   ?:  (gth (met 3 plan) max-id)  [%| 'plan: at most 64 bytes']
   [%& [p.who cus sub plan (gt jon 'renews')]]
+::  +de-op-stripe-customer: the one Stripe Customer this ship has. It
+::  is written the first time a live checkout is opened and never
+::  again, so every session and every invoice hangs off one buyer.
+::
+++  de-op-stripe-customer
+  |=  jon=json
+  ^-  (each [ship=@p customer=@t] @t)
+  =/  who  (ship-field jon)
+  ?:  ?=(%| -.who)  [%| p.who]
+  =/  cus=@t  (gs jon 'customer')
+  ?:  |(=('' cus) (gth (met 3 cus) max-name))  [%| 'customer: 1 to 200 bytes']
+  [%& [p.who cus]]
 ::  +de-op-clear-subscription: the account keeps its ledger and loses
 ::  its subscription
 ::

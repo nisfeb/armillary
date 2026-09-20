@@ -36,6 +36,7 @@ STORE = {
     'products': {},
     'prices': {},
     'subscriptions': {},
+    'customers': {},
     'hooks': [],
     'n': 0,
 }
@@ -88,7 +89,7 @@ def pay(sid):
         s['payment_status'] = 'paid'
         s['payment_intent'] = nid('pi')
         if s['mode'] == 'subscription':
-            s['customer'] = nid('cus')
+            s['customer'] = s.get('customer') or nid('cus')
             s['subscription'] = nid('sub')
             STORE['subscriptions'][s['subscription']] = {
                 'id': s['subscription'],
@@ -209,6 +210,14 @@ class Handler(BaseHTTPRequestHandler):
         f = form(raw)
         if path == '/v1/checkout/sessions':
             return self.session(f)
+        if path == '/v1/customers':
+            cid = nid('cus')
+            STORE['customers'][cid] = {
+                'id': cid,
+                'description': f.get('description', ''),
+                'metadata': {'ship': f.get('metadata[ship]', '')},
+            }
+            return self.send(200, STORE['customers'][cid])
         if path == '/v1/products':
             pid = nid('prod')
             STORE['products'][pid] = {'id': pid, 'name': f.get('name', '')}
@@ -250,7 +259,7 @@ class Handler(BaseHTTPRequestHandler):
             'amount_total': total,
             'amount_subtotal': total,
             'metadata': {'ship': f.get('metadata[ship]', '')},
-            'customer': None,
+            'customer': f.get('customer') or None,
             'subscription': None,
             'payment_intent': None,
             'price': price_id,

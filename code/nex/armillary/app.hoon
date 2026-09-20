@@ -235,6 +235,7 @@
   ?:  =('set-plan' op)       (do-set-plan jon)
   ?:  =('drop-plan' op)      (do-drop-plan jon)
   ?:  =('set-subscription' op)    (do-set-subscription jon)
+  ?:  =('set-stripe-customer' op)  (do-set-stripe-customer jon)
   ?:  =('clear-subscription' op)  (do-clear-subscription jon)
   ?:  =('open-account' op)   (do-open-account jon)
   ?:  =('credit' op)         (do-credit jon)
@@ -704,6 +705,29 @@
     (over:io (rf 0 (acct-dir ship.c) %'account.json') [[/ %json] (en-account:arm row)])
   ;<  ~  bind:m  (do-write-view ship.c)
   ;<  ~  bind:m  (note 'set-subscription' & plan who --0)
+  (pure:m &)
+::  +do-set-stripe-customer: the Stripe Customer this ship gets once and
+::  keeps. A row that already holds one is left alone, so a second
+::  create can never split a ship across two buyers.
+::
+++  do-set-stripe-customer
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-stripe-customer:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-stripe-customer' p.got '')
+  =/  c  p.got
+  =/  who=@t  (scot %p ship.c)
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir ship.c) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (refuse 'set-stripe-customer' 'ship: no such account' who)
+  ?.  =('' stripe-customer.u.a)
+    (note-then-no 'set-stripe-customer' 'already set' who)
+  =/  row=account:arm  u.a(stripe-customer customer.c)
+  ;<  ~  bind:m
+    (over:io (rf 0 (acct-dir ship.c) %'account.json') [[/ %json] (en-account:arm row)])
+  ;<  ~  bind:m  (do-write-view ship.c)
+  ;<  ~  bind:m  (note 'set-stripe-customer' & customer.c who --0)
   (pure:m &)
 ::  +do-clear-subscription: Stripe says the subscription is gone, or the
 ::  owner says so. The ledger and the balance are untouched.
@@ -2138,6 +2162,11 @@
     ''
   ?.  =('' bad)
     (refuse-checkout src nonce 'stripe' plan amount expires 'refused' bad)
+  ::  one Customer per ship, made on the first live checkout and kept
+  ::  on the account row from then on
+  ;<  cus=[ok=? id=@t why=@t]  bind:m  (stripe-customer-of src s)
+  ?.  ok.cus
+    (refuse-checkout src nonce 'stripe' plan amount expires 'refused' why.cus)
   =/  base=@t  (public-of s)
   =/  success=@t
     (rap 3 base '/apps/armillary/pay/return?ship=' (url-encode:ahttp who) ~)
@@ -2149,6 +2178,7 @@
       :*  stripe-url.s
           stripe-key.s
           who
+          id.cus
           (div amount 10.000)
           'Armillary credit'
           success
@@ -2162,6 +2192,7 @@
       :*  stripe-url.s
           stripe-key.s
           who
+          id.cus
           (div price.u.row 10.000)
           'Armillary credit'
           success
@@ -2177,12 +2208,41 @@
     :*  stripe-url.s
         stripe-key.s
         who
+        id.cus
         stripe-price.u.row
         plan
         success
         cancel
     ==
   (finish-checkout src nonce plan price.u.row expires req)
+::  +stripe-customer-of: the account's Stripe Customer, made on Stripe
+::  when the row has none yet. A create that fails refuses the checkout
+::  the way any other Stripe failure does: a session opened without the
+::  Customer would strand the ship on a second buyer.
+::
+++  stripe-customer-of
+  |=  [src=@p s=settings:arm]
+  =/  m  (fiber:fiber:nexus ,[ok=? id=@t why=@t])
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir src) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?:  ?&(?=(^ a) !=('' stripe-customer.u.a))
+    (pure:m [& stripe-customer.u.a ''])
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (customer-request:astripe stripe-url.s stripe-key.s who))
+  ?.  (two-xx status.res)
+    (pure:m [| '' (stripe-why status.res body.res)])
+  =/  got=(unit @t)  (read-id:astripe body.res)
+  ?~  got  (pure:m [| '' 'stripe answered no customer'])
+  ;<  ~  bind:m
+    %+  poke-writer  0
+    %-  pairs:enjs:format
+    :~  ['op' s+'set-stripe-customer']
+        ['ship' s+who]
+        ['customer' s+u.got]
+    ==
+  (pure:m [& u.got ''])
 ::  +btcpay-checkout: the live bitcoin rail. One BTCPay invoice offers
 ::  both on chain and Lightning, so there is one call here and not two.
 ::  Every 400-class refusal is a row with status refused and a note

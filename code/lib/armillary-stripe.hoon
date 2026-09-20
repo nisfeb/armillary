@@ -179,13 +179,31 @@
   |=  success=@t
   ^-  @t
   (rap 3 (url-encode success) '%26sid={CHECKOUT_SESSION_ID}' ~)
+::  +customer-request: the one Stripe Customer a ship ever has. Every
+::  session that ship opens hangs off it, so Stripe shows one buyer with
+::  a history rather than a new stranger per payment, and the Billing
+::  Portal has something to open.
+::
+++  customer-request
+  |=  [base=@t key=@t ship=@t]
+  ^-  request:http
+  =/  kvs=(list [@t @t])
+    :~  ['metadata[ship]' (url-encode ship)]
+        ['description' (url-encode (rap 3 'Armillary ' ship ~))]
+    ==
+  [%'POST' (at base '/v1/customers') (heads key) `(form-enc kvs)]
 ::  +topup-request: a one-off payment for a fixed number of cents. The
 ::  ship is in the metadata, which is what makes the payment an account.
+::
+::    A blank customer sends no customer at all, which is what a vendor
+::    whose Customer create failed falls back to. With one, Checkout is
+::    also allowed to write back the name it collects.
 ::
 ++  topup-request
   |=  $:  base=@t
           key=@t
           ship=@t
+          customer=@t
           amount-cents=@ud
           label=@t
           success=@t
@@ -193,16 +211,25 @@
           expires=@ud
       ==
   ^-  request:http
+  =/  extra=(list [@t @t])
+    ?:  =('' customer)  ~
+    :~  ['customer' (url-encode customer)]
+        ['customer_update[name]' (url-encode 'auto')]
+    ==
   =/  kvs=(list [@t @t])
-    :~  ['mode' (url-encode 'payment')]
-        ['metadata[ship]' (url-encode ship)]
-        ['success_url' (return-url success)]
-        ['cancel_url' (url-encode cancel)]
-        ['expires_at' (num expires)]
-        ['line_items[0][price_data][currency]' 'usd']
-        ['line_items[0][price_data][product_data][name]' (url-encode label)]
-        ['line_items[0][price_data][unit_amount]' (num amount-cents)]
-        ['line_items[0][quantity]' '1']
+    ;:  weld
+      :~  ['mode' (url-encode 'payment')]
+          ['metadata[ship]' (url-encode ship)]
+      ==
+      extra
+      :~  ['success_url' (return-url success)]
+          ['cancel_url' (url-encode cancel)]
+          ['expires_at' (num expires)]
+          ['line_items[0][price_data][currency]' 'usd']
+          ['line_items[0][price_data][product_data][name]' (url-encode label)]
+          ['line_items[0][price_data][unit_amount]' (num amount-cents)]
+          ['line_items[0][quantity]' '1']
+      ==
     ==
   [%'POST' (at base '/v1/checkout/sessions') (heads key) `(form-enc kvs)]
 ::  +subscription-request: a recurring charge on a price the owner made
@@ -213,21 +240,28 @@
   |=  $:  base=@t
           key=@t
           ship=@t
+          customer=@t
           price=@t
           plan=@t
           success=@t
           cancel=@t
       ==
   ^-  request:http
+  =/  extra=(list [@t @t])
+    ?:(=('' customer) ~ ~[['customer' (url-encode customer)]])
   =/  kvs=(list [@t @t])
-    :~  ['mode' (url-encode 'subscription')]
-        ['line_items[0][price]' (url-encode price)]
-        ['line_items[0][quantity]' '1']
-        ['metadata[ship]' (url-encode ship)]
-        ['subscription_data[metadata][ship]' (url-encode ship)]
-        ['subscription_data[metadata][plan]' (url-encode plan)]
-        ['success_url' (return-url success)]
-        ['cancel_url' (url-encode cancel)]
+    ;:  weld
+      :~  ['mode' (url-encode 'subscription')]
+          ['line_items[0][price]' (url-encode price)]
+          ['line_items[0][quantity]' '1']
+          ['metadata[ship]' (url-encode ship)]
+      ==
+      extra
+      :~  ['subscription_data[metadata][ship]' (url-encode ship)]
+          ['subscription_data[metadata][plan]' (url-encode plan)]
+          ['success_url' (return-url success)]
+          ['cancel_url' (url-encode cancel)]
+      ==
     ==
   [%'POST' (at base '/v1/checkout/sessions') (heads key) `(form-enc kvs)]
 ::  +session-request: read a session back. This is the verification: the
