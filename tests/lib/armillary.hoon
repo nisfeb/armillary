@@ -300,7 +300,16 @@
     (expect-eq !>(`@ud`5.000.000) !>(?:(?=(%& -.got) min-topup.p.got 0)))
     (expect-eq !>('https://api.stripe.com') !>(?:(?=(%& -.got) stripe-url.p.got '')))
     (expect-eq !>('') !>(?:(?=(%& -.got) stripe-key.p.got 'x')))
+    (expect-eq !>('') !>(?:(?=(%& -.got) lease-provider.p.got 'x')))
   ==
+::  the provider whose provisioning key mints leases is a plain id, so
+::  it round-trips unmasked while the keys beside it do not
+::
+++  test-de-settings-lease-provider
+  =/  doc=@t  '{"markup_pct":130,"mode":"stub","lease_provider":"open"}'
+  =/  got  (de-settings:arm (jo doc))
+  =/  back=json  ?:(?=(%& -.got) (en-settings:arm p.got) ~)
+  (expect-eq !>('open') !>((gs:arm back 'lease_provider')))
 ::  a blank stripe_url is the real Stripe, so a settings document written
 ::  before phase 3 still points somewhere
 ::
@@ -530,6 +539,7 @@
       ~[(jo '{"id":"abc","name":"phone"}')]
       ~[['n1' 'abc' 'phone' 'sss']]
       ~
+      'not offered'
       (jo '{"n2":{"url":"http://x/pay","status":"pending"}}')
       ~[(jo '{"kind":"credit","amount":1000000}')]
       'https://vendor.example'
@@ -610,5 +620,62 @@
     (expect !>((taken (de-op-note-op:arm (jo '{"nonce":"n1","payload":{"op":"hello"}}')))))
     (expect !>((refused (de-op-note-op:arm (jo '{"nonce":"n1"}')))))
     (expect !>((taken (de-op-drop-op:arm (jo '{"nonce":"n1"}')))))
+  ==
+::  ==  the lease
+::
+++  a-lease
+  ^-  lease:arm
+  ['open' 'h7' 'sk-or-v1-abc' 750.000 2.000.000 | t0 t0]
+++  test-lease-roundtrip
+  =/  back=(unit lease:arm)  (de-lease:arm (en-lease:arm a-lease))
+  ;:  weld
+    (expect-eq !>(`(unit lease:arm)`[~ a-lease]) !>(back))
+    (expect-eq !>(`(unit lease:arm)`~) !>((de-lease:arm (jo '{"key":"x"}'))))
+    (expect-eq !>(`(unit lease:arm)`~) !>((de-lease:arm (jo '{}'))))
+  ==
+++  test-lease-owner-hides-the-key
+  =/  owner=json  (en-lease-owner:arm a-lease)
+  =/  text=@t    (en:json:html owner)
+  ;:  weld
+    (expect-eq !>('h7') !>((gs:arm owner 'hash')))
+    (expect-eq !>(`@ud`750.000) !>((gn:arm owner 'usage_seen')))
+    (expect !>(=(~ (find "sk-or-v1-abc" (trip text)))))
+  ==
+++  test-lease-view
+  =/  v=json  (en-lease-view:arm a-lease 'https://openrouter.ai/api/v1' ~['a/b'])
+  ;:  weld
+    (expect-eq !>('openrouter') !>((gs:arm v 'provider')))
+    (expect-eq !>('https://openrouter.ai/api/v1') !>((gs:arm v 'base_url')))
+    (expect-eq !>('sk-or-v1-abc') !>((gs:arm v 'key')))
+    (expect-eq !>(`@ud`750.000) !>((gn:arm v 'usage')))
+    (expect-eq !>(`(list @t)`~['a/b']) !>((strings:arm (ga:arm v 'models'))))
+  ==
+++  test-de-op-lease
+  =/  full=@t
+    '{"ship":"~wex","lease":{"hash":"h7","key":"k","provider":"open","checked":"2026-09-19T22:05:00Z"}}'
+  ;:  weld
+    (expect !>((taken (de-op-lease:arm (jo full)))))
+    (expect !>((refused (de-op-lease:arm (jo '{"ship":"~wex","lease":{}}')))))
+    (expect !>((taken (de-op-drop-lease:arm (jo '{"ship":"~wex"}')))))
+    (expect !>((refused (de-op-drop-lease:arm (jo '{}')))))
+  ==
+++  test-de-op-touch-lease
+  =/  both=@t
+    '{"ship":"~wex","usage_seen":10,"limit":20,"disabled":true,"checked":"2026-09-19T22:05:00Z"}'
+  =/  bare=@t  '{"ship":"~wex","usage_seen":10,"checked":"2026-09-19T22:05:00Z"}'
+  =/  got  (de-op-touch-lease:arm (jo both))
+  =/  thin  (de-op-touch-lease:arm (jo bare))
+  ;:  weld
+    (expect-eq !>(`(unit @ud)`[~ 20]) !>(?:(?=(%& -.got) limit.p.got ~)))
+    (expect-eq !>(`(unit ?)`[~ &]) !>(?:(?=(%& -.got) disabled.p.got ~)))
+    (expect-eq !>(`(unit @ud)`~) !>(?:(?=(%& -.thin) limit.p.thin `99)))
+    (expect-eq !>(`(unit ?)`~) !>(?:(?=(%& -.thin) disabled.p.thin `&)))
+    (expect !>((refused (de-op-touch-lease:arm (jo '{"ship":"~wex"}')))))
+  ==
+++  test-de-op-lease-error
+  ;:  weld
+    (expect !>((taken (de-op-lease-error:arm (jo '{"ship":"~wex","why":"not offered"}')))))
+    (expect !>((taken (de-op-lease-error:arm (jo '{"ship":"~wex","why":""}')))))
+    (expect !>((refused (de-op-lease-error:arm (jo '{"why":"x"}')))))
   ==
 --

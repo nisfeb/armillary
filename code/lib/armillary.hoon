@@ -808,6 +808,7 @@
       btcpay-store=@t
       btcpay-key=@t
       btcpay-webhook-secret=@t
+      lease-provider=@t
   ==
 ::  +stripe-base: where Stripe's API lives. A blank stripe_url is the
 ::  real one; the gate points it at the stub instead.
@@ -840,6 +841,7 @@
       ['btcpay_store' s+'']
       ['btcpay_key' s+'']
       ['btcpay_webhook_secret' s+'']
+      ['lease_provider' s+'']
   ==
 ++  de-settings
   |=  jon=json
@@ -871,6 +873,7 @@
       bst
       (gs jon 'btcpay_key')
       (gs jon 'btcpay_webhook_secret')
+      (gs jon 'lease_provider')
   ==
 ++  en-settings
   |=  s=settings
@@ -888,6 +891,7 @@
       ['btcpay_store' s+btcpay-store.s]
       ['btcpay_key' s+btcpay-key.s]
       ['btcpay_webhook_secret' s+btcpay-webhook-secret.s]
+      ['lease_provider' s+lease-provider.s]
   ==
 ::  ==  plans
 ::
@@ -1286,6 +1290,7 @@
       keys=(list json)
       keys-pending=(list [nonce=@t id=@t name=@t secret=@t])
       lease=json
+      lease-error=@t
       checkouts=json
       ledger=(list json)
       public-url=@t
@@ -1313,6 +1318,7 @@
           ['secret' s+secret]
       ==
       ['lease' lease.v]
+      ['lease_error' s+lease-error.v]
       ['checkouts' checkouts.v]
       ['ledger' a+ledger.v]
       ['public_url' s+public-url.v]
@@ -1342,6 +1348,7 @@
       (ga jon 'keys')
       pend
       (gj jon 'lease')
+      (gs jon 'lease_error')
       (gj jon 'checkouts')
       (ga jon 'ledger')
       (gs jon 'public_url')
@@ -1358,6 +1365,92 @@
     (~(gas in *(set @t)) (turn keys-pending.v |=([n=@t *] n)))
   ?.  ?=([%o *] checkouts.v)  out
   (~(gas in out) ~(tap in ~(key by p.checkouts.v)))
+::  ==  the lease
+::
+::  +$  lease: an OpenRouter runtime key minted for one customer, with a
+::  cap that tracks what its balance still buys.
+::
+::    key is the plaintext OpenRouter key. It is a secret: it lives in
+::    lease.json, in that one ship's own view, and nowhere else. No
+::    owner read route answers it and no audit row carries it.
+::
++$  lease
+  $:  provider=@t
+      hash=@t
+      key=@t
+      usage-seen=@ud
+      limit=@ud
+      disabled=?
+      made=@da
+      checked=@da
+  ==
+::  +en-lease: the stored shape, the key inside
+::
+++  en-lease
+  |=  l=lease
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['provider' s+provider.l]
+      ['hash' s+hash.l]
+      ['key' s+key.l]
+      ['usage_seen' (en-num usage-seen.l)]
+      ['limit' (en-num limit.l)]
+      ['disabled' b+disabled.l]
+      ['made' (en-time made.l)]
+      ['checked' (en-time checked.l)]
+  ==
+::  +en-lease-owner: the same row as the owner's page reads it: the
+::  hash and the figures, never the key
+::
+++  en-lease-owner
+  |=  l=lease
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['provider' s+provider.l]
+      ['hash' s+hash.l]
+      ['usage_seen' (en-num usage-seen.l)]
+      ['limit' (en-num limit.l)]
+      ['disabled' b+disabled.l]
+      ['made' (en-time made.l)]
+      ['checked' (en-time checked.l)]
+  ==
+::  +de-lease: a stored lease, or ~ when there is none. A document
+::  without a hash is not a lease, which is what lease.json holds
+::  before the first one and after a drop.
+::
+++  de-lease
+  |=  jon=json
+  ^-  (unit lease)
+  ?.  ?=([%o *] jon)  ~
+  =/  hash=@t  (gs jon 'hash')
+  ?:  =('' hash)  ~
+  :-  ~
+  :*  (gs jon 'provider')
+      hash
+      (gs jon 'key')
+      (gn jon 'usage_seen')
+      (gn jon 'limit')
+      (gb jon 'disabled')
+      (fall (gt jon 'made') *@da)
+      (fall (gt jon 'checked') *@da)
+  ==
+::  +en-lease-view: the lease as its own ship reads it, which is the
+::  whole of what a client runs on. The models list is advice: an
+::  OpenRouter key can spend on any model, capped by the balance.
+::
+++  en-lease-view
+  |=  [l=lease base=@t models=(list @t)]
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['provider' s+'openrouter']
+      ['base_url' s+base]
+      ['key' s+key.l]
+      ['hash' s+hash.l]
+      ['limit' (en-num limit.l)]
+      ['usage' (en-num usage-seen.l)]
+      ['disabled' b+disabled.l]
+      ['models' a+(turn models |=(t=@t ^-(json s+t)))]
+  ==
 ::  ==  the customer's own keys
 ::
 ::  +$  held-key: an inference key this ship fetched. The secret is here
@@ -1468,6 +1561,51 @@
       status
       (gs jon 'note')
   ==
+::  ==  the lease's writer ops
+::
+::  +de-op-lease: the whole row, from the fiber that minted it
+::
+++  de-op-lease
+  |=  jon=json
+  ^-  (each [ship=@p =lease] @t)
+  =/  who  (ship-field jon)
+  ?:  ?=(%| -.who)  [%| p.who]
+  =/  l=(unit lease)  (de-lease (gj jon 'lease'))
+  ?~  l  [%| 'lease: a hash is required']
+  [%& [p.who u.l]]
+::  +de-op-drop-lease: the lease goes, by ship
+::
+++  de-op-drop-lease
+  |=  jon=json
+  ^-  (each @p @t)
+  (ship-field jon)
+::  +de-op-touch-lease: what a reconcile learned. The key and the
+::  provider are not here: a touch never rewrites either. A limit or a
+::  disabled that is absent is left as it was, which is what a failed
+::  patch needs.
+::
+++  de-op-touch-lease
+  |=  jon=json
+  ^-  (each [ship=@p usage-seen=@ud limit=(unit @ud) disabled=(unit ?) checked=@da] @t)
+  =/  who  (ship-field jon)
+  ?:  ?=(%| -.who)  [%| p.who]
+  =/  when=(unit @da)  (gt jon 'checked')
+  ?~  when  [%| 'checked: an ISO 8601 UTC time is required']
+  =/  lim=(unit @ud)  ?.((has-key jon 'limit') ~ `(gn jon 'limit'))
+  =/  dis=(unit ?)  ?.((has-key jon 'disabled') ~ `(gb jon 'disabled'))
+  [%& [p.who (gn jon 'usage_seen') lim dis u.when]]
+::  +de-op-lease-error: why the last lease op did not work. The
+::  customer reads it in its own view and nowhere else; a blank why
+::  clears it.
+::
+++  de-op-lease-error
+  |=  jon=json
+  ^-  (each [ship=@p why=@t] @t)
+  =/  who  (ship-field jon)
+  ?:  ?=(%| -.who)  [%| p.who]
+  =/  why=@t  (gs jon 'why')
+  ?:  (gth (met 3 why) max-url)  [%| 'why: at most 500 bytes']
+  [%& [p.who why]]
 ::  ==  the channel's writer ops, on the customer
 ::
 ::  +de-op-vendor: the vendor ship, or ~ to stop being anyone's customer

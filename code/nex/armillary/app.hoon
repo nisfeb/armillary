@@ -37,6 +37,7 @@
 /<  ahttp   /lib/armillary-http.hoon
 /<  astripe  /lib/armillary-stripe.hoon
 /<  abtc     /lib/armillary-btcpay.hoon
+/<  aopen    /lib/armillary-openrouter.hoon
 /&  icon  icon.svg
 /&  page-html  armillary.html
 /&  page-css   armillary.css
@@ -242,6 +243,10 @@
   ?:  =('set-pending' op)    (do-set-pending jon)
   ?:  =('drop-pending' op)   (do-drop-pending jon)
   ?:  =('set-checkout' op)   (do-set-checkout jon)
+  ?:  =('set-lease' op)      (do-set-lease jon)
+  ?:  =('drop-lease' op)     (do-drop-lease jon)
+  ?:  =('touch-lease' op)    (do-touch-lease jon)
+  ?:  =('lease-error' op)    (do-set-lease-error jon)
   ?:  =('set-vendor' op)     (do-set-vendor jon)
   ?:  =('store-key' op)      (do-store-key jon)
   ?:  =('forget-key' op)     (do-forget-key jon)
@@ -1106,7 +1111,7 @@
   ;<  old=json  bind:m  (read-json (rf 0 (acct-dir who) %'view.json'))
   ;<  sj=json  bind:m  (read-json (rf 0 / %'settings.json'))
   ;<  now=@da  bind:m  get-time:io
-  =/  lease=json  ?:(=([%o ~] lj) ~ lj)
+  ;<  lease=json  bind:m  (lease-view (de-lease:arm lj))
   ::  the customer's own view says whether it has a subscription and
   ::  when it renews, and never the Stripe ids: those are the vendor's
   =/  subs=json
@@ -1119,6 +1124,7 @@
         key-rows
         pend-rows
         lease
+        (gs:arm lj 'error')
         cj
         newest
         (public-url-of sj)
@@ -1126,6 +1132,23 @@
         now
     ==
   (over:io (rf 0 (acct-dir who) %'view.json') [[/ %json] (en-view:arm v)])
+::  +lease-view: the lease as its own ship reads it, or null. The base
+::  url and the model list come from the provider that minted the key,
+::  so a client has everything it needs in one object.
+::
+++  lease-view
+  |=  held=(unit lease:arm)
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ?~  held  (pure:m ~)
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 0)
+  =/  p=(unit provider:arm)  (~(get by pm) provider.u.held)
+  =/  base=@t  ?~(p '' base-url.u.p)
+  ;<  cat=(list model-row:arm)  bind:m  (catalog-of 0)
+  =/  mine=(list model-row:arm)
+    %+  skim  cat
+    |=(r=model-row:arm &(enabled.r =(provider.u.held provider.r)))
+  (pure:m (en-lease-view:arm u.held base (turn mine |=(r=model-row:arm id.r))))
 ::  +do-set-pending: a minted key waiting for its ship to fetch it. The
 ::  secret lives in pending.json and in the view, and nowhere else.
 ::
@@ -1213,6 +1236,98 @@
     [[/ %json] [%o (~(put by cm) nonce.c row)]]
   ;<  ~  bind:m  (do-write-view ship.c)
   ;<  ~  bind:m  (note 'set-checkout' & status.c who --0)
+  (pure:m &)
+::  ==  the lease, on the vendor
+::
+::  +do-set-lease: the row a mint answered, written whole. The
+::  plaintext key lands in lease.json and in that ship's own view, and
+::  nowhere else.
+::
+++  do-set-lease
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-lease:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-lease' p.got '')
+  =/  who=@p  ship.p.got
+  =/  txt=@t  (scot %p who)
+  ;<  a=(unit account:arm)  bind:m  (live-account who)
+  ?~  a  (refuse 'set-lease' 'ship: no open account' txt)
+  ;<  ~  bind:m
+    %+  over:io  (rf 0 (acct-dir who) %'lease.json')
+    [[/ %json] (en-lease:arm lease.p.got)]
+  ;<  ~  bind:m  (do-write-view who)
+  ::  the audit row names the hash: the key is never here
+  ;<  ~  bind:m  (note 'set-lease' & hash.lease.p.got txt --0)
+  (pure:m &)
+::  +do-drop-lease: the row goes. Deleting the key upstream is the
+::  caller's half, since the writer cannot fetch.
+::
+++  do-drop-lease
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-drop-lease:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'drop-lease' p.got '')
+  =/  who=@p  p.got
+  =/  txt=@t  (scot %p who)
+  ;<  cur=json  bind:m  (read-json (rf 0 (acct-dir who) %'lease.json'))
+  ?:  =([%o ~] cur)  (note-then-no 'drop-lease' 'no lease' txt)
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'lease.json') [[/ %json] [%o ~]])
+  ;<  ~  bind:m  (do-write-view who)
+  ;<  ~  bind:m  (note 'drop-lease' & '' txt --0)
+  (pure:m &)
+::  +do-touch-lease: what a reconcile learned. A limit or a disabled
+::  the caller left out is kept as it was, which is what a patch that
+::  failed needs: the row must not claim a cap upstream never took.
+::
+++  do-touch-lease
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-touch-lease:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'touch-lease' p.got '')
+  =/  c  p.got
+  =/  txt=@t  (scot %p ship.c)
+  ;<  cur=json  bind:m  (read-json (rf 0 (acct-dir ship.c) %'lease.json'))
+  =/  held=(unit lease:arm)  (de-lease:arm cur)
+  ?~  held  (note-then-no 'touch-lease' 'no lease' txt)
+  =/  row=lease:arm
+    %=  u.held
+      usage-seen  usage-seen.c
+      limit       ?~(limit.c limit.u.held u.limit.c)
+      disabled    ?~(disabled.c disabled.u.held u.disabled.c)
+      checked     checked.c
+    ==
+  =/  doc=json  (en-lease:arm row)
+  ?:  =(cur doc)  (pure:m |)
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir ship.c) %'lease.json') [[/ %json] doc])
+  ::  no audit row: a tick touches every leased account every ten
+  ::  minutes and one row a pass would flush the ring
+  ;<  ~  bind:m  (do-write-view ship.c)
+  (pure:m &)
+::  +do-set-lease-error: why the last lease op did not work, kept
+::  beside the lease so the customer reads it in its own view. A blank
+::  why clears it, which every success does.
+::
+++  do-set-lease-error
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-lease-error:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'lease-error' p.got '')
+  =/  who=@p  ship.p.got
+  =/  txt=@t  (scot %p who)
+  ;<  ex=?  bind:m  (peek-exists:io (rf 0 (acct-dir who) %'account.json'))
+  ?.  ex  (refuse 'lease-error' 'ship: no such account' txt)
+  ;<  cur=json  bind:m  (read-json (rf 0 (acct-dir who) %'lease.json'))
+  =/  lm=(map @t json)  ?:(?=([%o *] cur) p.cur ~)
+  =/  doc=json
+    ?:  =('' why.p.got)  [%o (~(del by lm) 'error')]
+    [%o (~(put by lm) 'error' s+why.p.got)]
+  ?:  =(cur doc)  (pure:m |)
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'lease.json') [[/ %json] doc])
+  ;<  ~  bind:m  (do-write-view who)
   (pure:m &)
 ::  ==  the writer's ops on the customer side
 ::
@@ -1383,6 +1498,256 @@
   ;<  vw=view:nexus  bind:m  (peek:io (rv up /accounts) ~)
   ?.  ?=([%ball *] vw)  (pure:m ~)
   (pure:m (accounts-in ball.vw))
+::  ==  leases: a real provider key, capped at the balance
+::
+::    The vendor mints an OpenRouter runtime key for one customer, caps
+::    it at what that customer's balance buys at our markup, and
+::    reconciles what was spent against OpenRouter's own usage figure.
+::    No tokens cross either ship on this path.
+::
+::  +answered: what an upstream said, as a line a customer may read.
+::  OpenRouter never echoes a key back and nothing here adds one.
+::
+++  answered
+  |=  status=@ud
+  ^-  @t
+  =/  code=tape  (a-co:co status)
+  (rap 3 'openrouter answered ' (crip code) ~)
+::  +lease-road: where a provider's key management API lives, and the
+::  provisioning key to reach it with. ~ when the provider is gone or
+::  carries no provisioning key, since then no lease can be minted.
+::
+++  lease-road
+  |=  [up=@ud id=@t]
+  =/  m  (fiber:fiber:nexus ,(unit [base=@t key=@t]))
+  ^-  form:m
+  ?:  =('' id)  (pure:m ~)
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of up)
+  =/  p=(unit provider:arm)  (~(get by pm) id)
+  ?~  p  (pure:m ~)
+  ?:  =('' provisioning-key.u.p)  (pure:m ~)
+  (pure:m `[(keys-base:aopen base-url.u.p) provisioning-key.u.p])
+::  +lease-of: the row on an account, and the road its provider sits
+::  on. The lease names the provider that minted it; a row written
+::  before that field existed falls back to the settings.
+::
+++  lease-of
+  |=  [up=@ud who=@p]
+  =/  m  (fiber:fiber:nexus ,(unit [=lease:arm base=@t key=@t]))
+  ^-  form:m
+  ;<  lj=json  bind:m  (read-json (rf up (acct-dir who) %'lease.json'))
+  =/  held=(unit lease:arm)  (de-lease:arm lj)
+  ?~  held  (pure:m ~)
+  ;<  s=settings:arm  bind:m  (settings-of up)
+  =/  pid=@t  ?:(=('' provider.u.held) lease-provider.s provider.u.held)
+  ;<  road=(unit [base=@t key=@t])  bind:m  (lease-road up pid)
+  ?~  road  (pure:m ~)
+  (pure:m `[u.held base.u.road key.u.road])
+::  +lease-error: why the last lease op did not work, into that ship's
+::  own view. A blank why clears it.
+::
+++  lease-error
+  |=  [up=@ud who=@p why=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  poke-writer  up
+  %-  pairs:enjs:format
+  :~  ['op' s+'lease-error']
+      ['ship' s+(scot %p who)]
+      ['why' s+why]
+  ==
+::  +touch-lease: the figures a reconcile learned, all four of them
+::
+++  touch-lease
+  |=  [up=@ud who=@p usage=@ud limit=@ud off=? now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  poke-writer  up
+  %-  pairs:enjs:format
+  :~  ['op' s+'touch-lease']
+      ['ship' s+(scot %p who)]
+      ['usage_seen' (en-num:arm usage)]
+      ['limit' (en-num:arm limit)]
+      ['disabled' b+off]
+      ['checked' (en-time:arm now)]
+  ==
+::  +touch-seen: the same, with only what we know: a patch that failed
+::  leaves the cap as it is upstream, so the row must not move it
+::
+++  touch-seen
+  |=  [up=@ud who=@p usage=@ud now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  poke-writer  up
+  %-  pairs:enjs:format
+  :~  ['op' s+'touch-lease']
+      ['ship' s+(scot %p who)]
+      ['usage_seen' (en-num:arm usage)]
+      ['checked' (en-time:arm now)]
+  ==
+::  +reconcile: the one arm every lease path uses. Read what the key
+::  spent, charge the difference at our markup, then move the cap to
+::  whatever the balance still buys.
+::
+::    The balance after the debit is worked out here rather than read
+::    back: the writer applies a poke after this fiber has moved on, so
+::    reading it again would see the balance as it was.
+::
+++  reconcile
+  |=  [up=@ud who=@p]
+  =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
+  ^-  form:m
+  =/  txt=@t  (scot %p who)
+  ;<  got=(unit [=lease:arm base=@t key=@t])  bind:m  (lease-of up who)
+  ?~  got
+    ;<  lj=json  bind:m  (read-json (rf up (acct-dir who) %'lease.json'))
+    ?~  (de-lease:arm lj)  (pure:m [& 'no lease'])
+    (pure:m [| 'lease_provider: no provisioning key'])
+  =/  l=lease:arm  lease.u.got
+  =/  base=@t  base.u.got
+  =/  pkey=@t  key.u.got
+  ;<  aj=json  bind:m  (read-json (rf up (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (pure:m [| 'ship: no such account'])
+  ::  a closed account keeps its ledger and loses its key: nothing more
+  ::  can be spent on it here or anywhere
+  ?:  closed.u.a
+    ;<  *  bind:m  (fetch (delete-request:aopen base pkey hash.l))
+    ;<  ~  bind:m  (poke-writer up (ship-op 'drop-lease' who))
+    (pure:m [& 'account closed'])
+  ;<  s=settings:arm  bind:m  (settings-of up)
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (get-request:aopen base pkey hash.l))
+  ?.  (two-xx status.res)  (pure:m [| (answered status.res)])
+  =/  read  (read-key:aopen body.res)
+  ?~  read  (pure:m [| 'openrouter answered no key'])
+  =/  usage=@ud  usage.u.read
+  =/  owed=@ud  (debit-for:aopen usage usage-seen.l markup.s)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m
+    ?:  =(0 owed)  (pure:(fiber:fiber:nexus ,~) ~)
+    =/  stamp=tape  (a-co:co (unix-secs:arm now))
+    %+  poke-writer  up
+    %-  pairs:enjs:format
+    :~  ['op' s+'debit']
+        ['ship' s+txt]
+        ['amount' (en-num:arm owed)]
+        ['cost' (en-num:arm (sub usage usage-seen.l))]
+        ['model' s+'openrouter']
+        ['in' (en-num:arm 0)]
+        ['out' (en-num:arm 0)]
+        ['mode' s+'lease']
+        ['ref' s+(crip (weld "lease-" stamp))]
+    ==
+  =/  bal=@sd  (dif:si balance.u.a (sun:si owed))
+  =/  spent=?  ?|(!(syn:si bal) =(--0 bal))
+  =/  cap=@ud  (limit-for:aopen usage bal markup.s)
+  ?.  |(!=(cap limit.l) !=(spent disabled.l))
+    ;<  ~  bind:m  (touch-lease up who usage cap spent now)
+    (pure:m [& ''])
+  ;<  pres=[status=@ud body=@t]  bind:m
+    (fetch (patch-request:aopen base pkey hash.l `cap `spent))
+  ?.  (two-xx status.pres)
+    ;<  ~  bind:m  (touch-seen up who usage now)
+    (pure:m [| (answered status.pres)])
+  ;<  ~  bind:m  (touch-lease up who usage cap spent now)
+  (pure:m [& ''])
+::  +kill-upstream: the provider forgets the key. A 404 counts as gone:
+::  a key nobody can find is a key nobody can spend.
+::
+++  kill-upstream
+  |=  [road=(unit [base=@t key=@t]) hash=@t]
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ?~  road  (pure:m 'lease_provider: no provisioning key')
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (delete-request:aopen base.u.road key.u.road hash))
+  ?:  |((two-xx status.res) =(404 status.res))  (pure:m '')
+  (pure:m (answered status.res))
+::  +kill-lease: the key goes upstream and the row goes here. The row
+::  goes whatever the provider said, since the customer asked for it
+::  to; the reason comes back for the ring.
+::
+++  kill-lease
+  |=  [up=@ud who=@p]
+  =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
+  ^-  form:m
+  ;<  lj=json  bind:m  (read-json (rf up (acct-dir who) %'lease.json'))
+  =/  held=(unit lease:arm)  (de-lease:arm lj)
+  ?~  held  (pure:m [& 'no lease'])
+  ;<  s=settings:arm  bind:m  (settings-of up)
+  =/  pid=@t  ?:(=('' provider.u.held) lease-provider.s provider.u.held)
+  ;<  road=(unit [base=@t key=@t])  bind:m  (lease-road up pid)
+  ;<  why=@t  bind:m  (kill-upstream road hash.u.held)
+  ;<  ~  bind:m  (poke-writer up (ship-op 'drop-lease' who))
+  (pure:m [=('' why) why])
+::  +inbox-lease: the customer asks for a lease. A first ask mints the
+::  key; a later one reconciles what is there and answers the same key.
+::
+++  inbox-lease
+  |=  src=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  s=settings:arm  bind:m  (settings-of 0)
+  ?:  =('' lease-provider.s)
+    ;<  ~  bind:m  (lease-error 0 src 'not offered')
+    (note-inbox 'lease' | 'not offered' who)
+  ;<  lj=json  bind:m  (read-json (rf 0 (acct-dir src) %'lease.json'))
+  ?^  (de-lease:arm lj)
+    ;<  got=[ok=? why=@t]  bind:m  (reconcile 0 src)
+    ;<  ~  bind:m  (lease-error 0 src ?:(ok.got '' why.got))
+    (note-inbox 'lease' ok.got why.got who)
+  ;<  road=(unit [base=@t key=@t])  bind:m  (lease-road 0 lease-provider.s)
+  ?~  road
+    =/  why=@t  'lease_provider: no provisioning key'
+    ;<  ~  bind:m  (lease-error 0 src why)
+    (note-inbox 'lease' | why who)
+  ;<  a=(unit account:arm)  bind:m  (live-account-at 0 src)
+  ?~  a  (note-inbox 'lease' | 'no open account' who)
+  ::  a fresh key has spent nothing, so the cap is the whole of what
+  ::  the balance buys at our markup
+  =/  cap=@ud  (limit-for:aopen 0 balance.u.a markup.s)
+  =/  name=@t  (rap 3 'armillary/' who ~)
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (create-request:aopen base.u.road key.u.road name cap))
+  ?.  (two-xx status.res)
+    ;<  ~  bind:m  (lease-error 0 src (answered status.res))
+    (note-inbox 'lease' | (answered status.res) who)
+  =/  made  (read-created:aopen body.res)
+  ?~  made
+    ;<  ~  bind:m  (lease-error 0 src 'openrouter answered no key')
+    (note-inbox 'lease' | 'openrouter answered no key' who)
+  ;<  now=@da  bind:m  get-time:io
+  =/  l=lease:arm
+    :*  lease-provider.s
+        hash.u.made
+        key.u.made
+        usage.u.made
+        limit.u.made
+        disabled.u.made
+        now
+        now
+    ==
+  ;<  ~  bind:m
+    %+  poke-writer  0
+    %-  pairs:enjs:format
+    :~  ['op' s+'set-lease']
+        ['ship' s+who]
+        ['lease' (en-lease:arm l)]
+    ==
+  ::  the note names the op and the ship: the ring never sees a key
+  (note-inbox 'lease' & '' who)
+::  +inbox-drop-lease: the customer gives the key back
+::
+++  inbox-drop-lease
+  |=  src=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  got=[ok=? why=@t]  bind:m  (kill-lease 0 src)
+  ;<  ~  bind:m  (lease-error 0 src '')
+  (note-inbox 'drop-lease' ok.got why.got who)
 ::  ==  the inbox: what other ships ask of this vendor
 ::
 ::  +ship-op, +ship-id-op: a writer op naming one ship, and one naming a
@@ -1452,8 +1817,8 @@
       %mint-key  (inbox-mint src name.o nonce.o)
       %checkout  (inbox-checkout src rail.o plan.o amount.o nonce.o)
       %cancel-subscription   (inbox-cancel src)
-      %lease                 (note-inbox 'lease' | 'not yet' who)
-      %drop-lease            (note-inbox 'drop-lease' | 'not yet' who)
+      %lease                 (inbox-lease src)
+      %drop-lease            (inbox-drop-lease src)
   ==
 ::  +inbox-cancel: the customer asks Stripe to stop renewing. The row on
 ::  the account stays until customer.subscription.deleted arrives, so
@@ -2170,6 +2535,10 @@
     (own (serve-refund eyre-id s2 jon))
   ?:  &(=('POST' meth) ?=([%api %accounts @ %close ~] suffix))
     (own (serve-close eyre-id s2))
+  ?:  &(=('POST' meth) ?=([%api %accounts @ %reconcile ~] suffix))
+    (own (serve-reconcile eyre-id s2))
+  ?:  &(=('DELETE' meth) ?=([%api %accounts @ %lease ~] suffix))
+    (own (serve-owner-drop-lease eyre-id s2))
   ?:  &(=('POST' meth) ?=([%api %accounts @ %'clear-subscription' ~] suffix))
     (own (serve-clear-subscription eyre-id s2))
   ?:  &(=('GET' meth) ?=([%api %log ~] suffix))          (own (serve-log eyre-id))
@@ -2230,7 +2599,7 @@
   ;<  jon=json  bind:m  (read-json (rf up / %'settings.json'))
   =/  got  (de-settings:arm jon)
   ?:  ?=(%| -.got)
-    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm '' '' '' ''])
+    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm '' '' '' '' ''])
   (pure:m p.got)
 ::  +two-xx: did the upstream say yes
 ::
@@ -2601,9 +2970,17 @@
         ['made' s+(gs:arm j 'made')]
     ==
   ;<  cj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'checkouts.json'))
+  ::  the owner sees the hash and the figures. The plaintext key is in
+  ::  lease.json and in that ship's own view, and no read route here
+  ::  answers it.
+  ;<  lj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'lease.json'))
+  =/  held=(unit lease:arm)  (de-lease:arm lj)
+  =/  lease=json  ?~(held ~ (en-lease-owner:arm u.held))
   %^  send-json  eyre-id  200
   %-  pairs:enjs:format
   :~  ['account' (en-account:arm u.a)]
+      ['lease' lease]
+      ['lease_error' s+(gs:arm lj 'error')]
       ['plan' s+plan.u.a]
       ::  the owner's own read, so the Stripe ids are in it
       ['subscription' (en-subscription:arm stripe-subscription.u.a renews.u.a &)]
@@ -2742,10 +3119,49 @@
   ;<  aj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'account.json'))
   =/  a=(unit account:arm)  (de-account:arm aj)
   ?~  a  (send-err eyre-id 404 'no such account')
+  ::  the writer cannot fetch, so the key upstream goes from here first
+  ;<  *  bind:m  (kill-lease 1 u.who)
   =/  op=json
     (pairs:enjs:format ~[['op' s+'close-account'] ['ship' s+(scot %p u.who)]])
   ;<  ~  bind:m  (poke-writer 1 op)
   (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+(scot %p u.who)] ['closed' b+&]]))
+::  +serve-reconcile: the owner's Reconcile now button. Answers what
+::  the reconcile made of it, whichever way it went.
+::
+++  serve-reconcile
+  |=  [eyre-id=@ta seg=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ;<  ex=?  bind:m  (peek-exists:io (rf 1 (acct-dir u.who) %'account.json'))
+  ?.  ex  (send-err eyre-id 404 'no such account')
+  ;<  got=[ok=? why=@t]  bind:m  (reconcile 1 u.who)
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['ship' s+(scot %p u.who)]
+      ['ok' b+ok.got]
+      ['why' s+why.got]
+  ==
+::  +serve-owner-drop-lease: the owner's Drop lease button. The key
+::  goes upstream and the row goes here.
+::
+++  serve-owner-drop-lease
+  |=  [eyre-id=@ta seg=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ;<  ex=?  bind:m  (peek-exists:io (rf 1 (acct-dir u.who) %'account.json'))
+  ?.  ex  (send-err eyre-id 404 'no such account')
+  ;<  got=[ok=? why=@t]  bind:m  (kill-lease 1 u.who)
+  ;<  ~  bind:m  (lease-error 1 u.who '')
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['ship' s+(scot %p u.who)]
+      ['ok' b+ok.got]
+      ['why' s+why.got]
+  ==
 ::  +serve-clear-subscription: the owner's Clear button, for a
 ::  subscription Stripe says is gone and never told us about
 ::
@@ -2774,6 +3190,8 @@
   ?~  who  (send-err eyre-id 400 'ship: not an @p')
   ;<  ex=?  bind:m  (peek-exists:io (rv 1 (acct-dir u.who)))
   ?.  ex  (send-err eyre-id 404 'no such account')
+  ::  a hard delete takes the key upstream with it, the way a close does
+  ;<  *  bind:m  (kill-lease 1 u.who)
   =/  op=json
     (pairs:enjs:format ~[['op' s+'drop-account'] ['ship' s+(scot %p u.who)]])
   ;<  ~  bind:m  (poke-writer 1 op)

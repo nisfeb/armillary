@@ -210,6 +210,7 @@
         '<div class="field"><label>&nbsp;</label><button data-mint="1">Mint a key</button></div></div>';
     }
     out += '</div>';
+    out += leaseCard(d);
     // the same renderer the customer reads, so the owner sees each
     // checkout's rail and where it got to
     out += checkoutRows(d && d.checkouts);
@@ -230,6 +231,22 @@
       out += '</tbody></table>';
     }
     return out + '</div>';
+  }
+
+  // the owner's half of a lease: the hash and the figures, never the
+  // key. The key lives on the vendor and in that ship's own view.
+  function leaseCard(d) {
+    var l = d && d.lease;
+    var err = (d && d.lease_error) || '';
+    var out = '<div class="card"><h2>Lease</h2>';
+    if (err) out += '<p class="neg">' + esc(err) + '</p>';
+    if (!l) return out + '<p class="muted">No lease.</p></div>';
+    return out + '<p>Key <code>' + esc(l.hash) + '</code> on <code>' + esc(l.provider) + '</code>' +
+      (l.disabled ? ' &middot; <span class="neg">disabled</span>' : '') + '</p>' +
+      '<p>Spent $' + esc(dollars(l.usage_seen)) + ' against a $' + esc(dollars(l.limit)) +
+      ' cap, read ' + fmtTime(l.checked) + '</p>' +
+      '<button data-reconcile="1">Reconcile now</button> ' +
+      '<button class="danger" data-drop-lease="1">Drop lease</button></div>';
   }
 
   // ---- payments, the vendor's half ----
@@ -275,7 +292,25 @@
       '</div><button data-plan-save="' + esc(open.id) + '">' + (p ? 'Save' : 'Add') + '</button>' +
       (p ? '<button data-plan-cancel="1">Cancel</button>' : '') + '</div>';
   }
-  function payments(st, plans, log, editing) {
+  // which provider's provisioning key mints leases. Only an OpenRouter
+  // provider can: no other kind has a per-customer capped key.
+  function leaseSetting(s, provs) {
+    var rows = (provs || []).filter(function (p) { return p.kind === 'openrouter'; });
+    var out = '<div class="card"><h2>Leases</h2>' +
+      '<p class="muted">A lease is a real provider key capped at the customer\'s balance, so a client calls the provider directly. Pick the OpenRouter provider whose provisioning key mints them; none means this vendor offers no leases.</p>';
+    if (!rows.length) {
+      return out + '<p class="muted">No OpenRouter provider yet. Add one with a provisioning key under Providers.</p></div>';
+    }
+    out += '<div class="inline"><div class="field"><label for="ls-prov">Lease provider</label>' +
+      '<select id="ls-prov"><option value=""' + (s.lease_provider ? '' : ' selected') + '>none</option>';
+    rows.forEach(function (p) {
+      out += '<option value="' + esc(p.id) + '"' +
+        (s.lease_provider === p.id ? ' selected' : '') + '>' + esc(p.name || p.id) + '</option>';
+    });
+    return out + '</select></div><div class="field"><label>&nbsp;</label>' +
+      '<button data-save-lease="1">Save</button></div></div></div>';
+  }
+  function payments(st, plans, log, editing, provs) {
     var s = st || {};
     var pub = s.public_url || '';
     var hook = (pub || 'your public URL') + '/apps/armillary/hooks/stripe';
@@ -322,6 +357,7 @@
       '</div>';
     var cur = editing ? (plans.filter(function (p) { return p.id === editing; })[0] || null) : null;
     out += planForm(cur);
+    out += leaseSetting(s, provs);
     out += ringCard('Recent Stripe outcomes', 'stripe.', log);
     out += ringCard('Recent BTCPay outcomes', 'btcpay.', log);
     return out;
@@ -522,6 +558,7 @@
     esc: esc, dollars: dollars, micro: micro, margin: margin,
     providers: providers, catalog: catalog, accounts: accounts, account: account,
     payments: payments, planRows: planRows, planButtons: planButtons,
+    leaseCard: leaseCard, leaseSetting: leaseSetting,
     subscriptionLine: subscriptionLine,
     myAccount: myAccount, myKeys: myKeys, buyCatalog: buyCatalog,
     route: route, sseEvent: sseEvent,
@@ -569,6 +606,7 @@
       btcpay_store: was.btcpay_store || '',
       btcpay_key: '',
       btcpay_webhook_secret: '',
+      lease_provider: was.lease_provider || '',
     };
     Object.keys(extra).forEach(function (k) { body[k] = extra[k]; });
     return post('/settings', body, 'PUT');
@@ -623,7 +661,9 @@
         st0 = st;
         return api('/plans').then(function (pl) {
           return api('/log').catch(function () { return []; }).then(function (lg) {
-            draw(payments(st, pl || [], lg || [], planEditing));
+            return api('/providers').catch(function () { return []; }).then(function (pv) {
+              draw(payments(st, pl || [], lg || [], planEditing, pv || []));
+            });
           });
         });
       });
@@ -825,6 +865,23 @@
         btcpay_webhook_secret: document.getElementById('bt-hook').value.trim(),
       }).then(function () { say('saved'); later(); })
         .catch(function (e) { say(e.message, true); });
+    } else if (d.saveLease) {
+      var lp = document.getElementById('ls-prov');
+      saveSettings({ lease_provider: lp ? lp.value : '' })
+        .then(function () { say('saved'); later(); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.reconcile) {
+      var rs = route(location.hash).ship;
+      say('reading the key upstream');
+      post('/accounts/' + seg(rs) + '/reconcile').then(function (r) {
+        say(r.ok ? ('reconciled' + (r.why ? ': ' + r.why : '')) : r.why, !r.ok);
+        later();
+      }).catch(function (e) { say(e.message, true); });
+    } else if (d.dropLease) {
+      var ds = route(location.hash).ship;
+      if (!confirm('Drop the lease on ' + ds + '? The provider key is deleted.')) return;
+      api('/accounts/' + seg(ds) + '/lease', { method: 'DELETE' })
+        .then(later).catch(function (e) { say(e.message, true); });
     } else if (d.planEdit) {
       planEditing = d.planEdit; refresh();
     } else if (d.planCancel) {
