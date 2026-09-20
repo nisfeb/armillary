@@ -86,6 +86,7 @@ def pay(sid):
         return None
     if s['payment_status'] != 'paid':
         s['payment_status'] = 'paid'
+        s['payment_intent'] = nid('pi')
         if s['mode'] == 'subscription':
             s['customer'] = nid('cus')
             s['subscription'] = nid('sub')
@@ -247,9 +248,11 @@ class Handler(BaseHTTPRequestHandler):
             'mode': mode,
             'payment_status': 'unpaid',
             'amount_total': total,
+            'amount_subtotal': total,
             'metadata': {'ship': f.get('metadata[ship]', '')},
             'customer': None,
             'subscription': None,
+            'payment_intent': None,
             'price': price_id,
             'plan': f.get('subscription_data[metadata][plan]', ''),
             'success_url': f.get('success_url', ''),

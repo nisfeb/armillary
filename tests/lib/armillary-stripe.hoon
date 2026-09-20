@@ -128,7 +128,8 @@
 ::
 ++  paid-payment
   '''
-  {"id":"cs_1","mode":"payment","payment_status":"paid","amount_total":1000,
+  {"id":"cs_1","mode":"payment","payment_status":"paid","amount_total":1080,
+   "amount_subtotal":1000,"payment_intent":"pi_1",
    "metadata":{"ship":"~feb"},"customer":null,"subscription":null,
    "url":"http://stub/pay/cs_1"}
   '''
@@ -151,7 +152,11 @@
     (expect-eq !>('cs_1') !>(id.u.got))
     (expect-eq !>('payment') !>(mode.u.got))
     (expect !>(paid.u.got))
-    (expect-eq !>(`@ud`1.000) !>(total.u.got))
+    (expect-eq !>(`@ud`1.080) !>(total.u.got))
+    ::  the credit follows the subtotal, so tax on the sale is not
+    ::  credited to the customer
+    (expect-eq !>(`@ud`1.000) !>(subtotal.u.got))
+    (expect-eq !>('pi_1') !>(intent.u.got))
     (expect-eq !>('~feb') !>(ship.u.got))
     (expect-eq !>('') !>(customer.u.got))
     (expect-eq !>('') !>(subscription.u.got))
@@ -171,6 +176,8 @@
   ?~  got  (expect !>(|))
   ;:  weld
     (expect !>(!paid.u.got))
+    ::  a session that has not been paid has no PaymentIntent yet
+    (expect-eq !>('') !>(intent.u.got))
     (expect-eq !>(`(unit @t)`~) !>((read-id:ast 'not json at all')))
   ==
 ++  paid-invoice

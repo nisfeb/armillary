@@ -1723,12 +1723,14 @@
 ::  +de-op-checkout: one checkout row on an account, keyed by its nonce
 ::
 ::    sid is the rail's own id for the session, which the return page
-::    and the webhook both look a row up by. note says why a refused row
-::    was refused, since the customer only ever sees the view.
+::    and the webhook both look a row up by. intent is Stripe's
+::    PaymentIntent id, which is how a dispute months later finds the
+::    row it belongs to. note says why a refused row was refused, since
+::    the customer only ever sees the view.
 ::
 ++  de-op-checkout
   |=  jon=json
-  ^-  (each [ship=@p nonce=@t rail=@t plan=@t amount=@ud url=@t sid=@t expires=@da status=@t note=@t] @t)
+  ^-  (each [ship=@p nonce=@t rail=@t plan=@t amount=@ud url=@t sid=@t intent=@t expires=@da status=@t note=@t] @t)
   =/  who  (ship-field jon)
   ?:  ?=(%| -.who)  [%| p.who]
   =/  nonce=@t  (gs jon 'nonce')
@@ -1739,6 +1741,8 @@
   ?:  (gth (met 3 url) max-url)  [%| 'url: at most 500 bytes']
   =/  sid=@t  (gs jon 'sid')
   ?:  (gth (met 3 sid) max-name)  [%| 'sid: at most 200 bytes']
+  =/  intent=@t  (gs jon 'intent')
+  ?:  (gth (met 3 intent) max-name)  [%| 'intent: at most 200 bytes']
   :-  %&
   :*  p.who
       nonce
@@ -1747,6 +1751,7 @@
       (gn jon 'amount')
       url
       sid
+      intent
       (fall (gt jon 'expires') *@da)
       status
       (gs jon 'note')

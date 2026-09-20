@@ -238,12 +238,28 @@
   ^-  request:http
   =/  url=@t  (at base (rap 3 '/v1/checkout/sessions/' (url-encode sid) ~))
   [%'GET' url (auth-only key) ~]
-::  +read-session: a checkout session as the vendor needs it. customer
-::  and subscription are null on a one-off payment, and read as ''.
+::  +read-session: a checkout session as the vendor needs it. customer,
+::  subscription and payment_intent are null on a session that has not
+::  reached them yet, and read as ''.
+::
+::    subtotal is what the goods came to before tax. It is what a
+::    credit is worth: tax collected on a sale is not the customer's
+::    balance, it is the state's. total is kept for the record.
 ::
 ++  read-session
   |=  body=@t
-  ^-  (unit [id=@t mode=@t paid=? total=@ud ship=@t customer=@t subscription=@t url=@t])
+  ^-  %-  unit
+      $:  id=@t
+          mode=@t
+          paid=?
+          total=@ud
+          subtotal=@ud
+          ship=@t
+          customer=@t
+          subscription=@t
+          intent=@t
+          url=@t
+      ==
   =/  jon=json  (de-body body)
   ?.  ?=([%o *] jon)  ~
   =/  id=@t  (gs jon 'id')
@@ -253,9 +269,11 @@
       (gs jon 'mode')
       =('paid' (gs jon 'payment_status'))
       (gn jon 'amount_total')
+      (gn jon 'amount_subtotal')
       (gs (gj jon 'metadata') 'ship')
       (gs jon 'customer')
       (gs jon 'subscription')
+      (gs jon 'payment_intent')
       (gs jon 'url')
   ==
 ::  ==  invoices

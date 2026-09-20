@@ -1243,6 +1243,7 @@
         ['amount' (en-num:arm amount.c)]
         ['url' s+url.c]
         ['sid' s+sid.c]
+        ['intent' s+intent.c]
         ['expires' (en-time:arm expires.c)]
         ['status' s+status.c]
         ['note' s+note.c]
@@ -4059,10 +4060,14 @@
 ::  they would be dropped.
 ::
 ++  mark-checkout
-  |=  [who=@p nonce=@t row=json status=@t]
+  |=  [who=@p nonce=@t row=json status=@t intent=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ?:  =(status (gs:arm row 'status'))  (pure:m ~)
+  ::  a blank intent keeps the stored one: only a Stripe session that
+  ::  reached a PaymentIntent has one to give
+  =/  pi=@t  ?:(=('' intent) (gs:arm row 'intent') intent)
+  ?:  ?&(=(status (gs:arm row 'status')) =(pi (gs:arm row 'intent')))
+    (pure:m ~)
   %+  poke-writer  1
   %-  pairs:enjs:format
   :~  ['op' s+'set-checkout']
@@ -4073,17 +4078,19 @@
       ['amount' (gj:arm row 'amount')]
       ['url' s+(gs:arm row 'url')]
       ['sid' s+(gs:arm row 'sid')]
+      ['intent' s+pi]
       ['expires' s+(gs:arm row 'expires')]
       ['status' s+status]
       ['note' s+'']
   ==
-::  +mark-paid: the money arrived
+::  +mark-paid: the money arrived. The PaymentIntent lands on the row
+::  here, since a dispute months later is found by nothing else.
 ::
 ++  mark-paid
-  |=  [who=@p nonce=@t row=json]
+  |=  [who=@p nonce=@t row=json intent=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (mark-checkout who nonce row 'paid')
+  (mark-checkout who nonce row 'paid' intent)
 ::  +credit-session: read a Checkout Session back from Stripe and credit
 ::  what it says was paid. A cent is ten thousand microdollars.
 ::
@@ -4112,7 +4119,7 @@
     %-  pairs:enjs:format
     :~  ['op' s+'credit']
         ['ship' s+(scot %p u.who)]
-        ['amount' (en-num:arm (mul total.u.got 10.000))]
+        ['amount' (en-num:arm (mul subtotal.u.got 10.000))]
         ['rail' s+'stripe']
         ['ref' s+id.u.got]
         ['note' s+'stripe checkout']
@@ -4129,7 +4136,7 @@
         ['subscription' s+subscription.u.got]
         ['plan' s+(gs:arm row.u.hit 'plan')]
     ==
-  ;<  ~  bind:m  (mark-paid u.who nonce.u.hit row.u.hit)
+  ;<  ~  bind:m  (mark-paid u.who nonce.u.hit row.u.hit intent.u.got)
   (pure:m [& ?:(already 'already recorded' '')])
 ::  +credit-invoice: a subscription renewed. The plan says what to
 ::  credit, and the invoice says when the next period ends.
@@ -4280,13 +4287,13 @@
   ::  seen on chain and not yet confirmed: the row says so and nothing
   ::  is credited until the store's confirmation count is met
   ?:  =('Processing' st)
-    ;<  ~  bind:m  (mark-checkout u.who nonce.u.hit row.u.hit 'processing')
+    ;<  ~  bind:m  (mark-checkout u.who nonce.u.hit row.u.hit 'processing' '')
     (pure:m [& 'processing'])
   ?:  =('Expired' st)
-    ;<  ~  bind:m  (mark-checkout u.who nonce.u.hit row.u.hit 'expired')
+    ;<  ~  bind:m  (mark-checkout u.who nonce.u.hit row.u.hit 'expired' '')
     (pure:m [& 'expired'])
   ?:  =('Invalid' st)
-    ;<  ~  bind:m  (mark-checkout u.who nonce.u.hit row.u.hit 'invalid')
+    ;<  ~  bind:m  (mark-checkout u.who nonce.u.hit row.u.hit 'invalid' '')
     (pure:m [& 'invalid'])
   ?.  (settled:abtc st)  (pure:m [| 'not settled yet'])
   =/  micro=(unit @ud)  (micro-of:abtc amount.u.got)
@@ -4304,7 +4311,7 @@
         ['ref' s+id.u.got]
         ['note' s+'btcpay invoice']
     ==
-  ;<  ~  bind:m  (mark-paid u.who nonce.u.hit row.u.hit)
+  ;<  ~  bind:m  (mark-paid u.who nonce.u.hit row.u.hit '')
   (pure:m [& ?:(already 'already recorded' '')])
 ::  +serve-btcpay-hook: the webhook, public and without a cookie. A bad
 ::  or missing signature is a 401; after that every case answers 200,
