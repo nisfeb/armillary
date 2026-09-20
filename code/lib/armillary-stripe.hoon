@@ -337,6 +337,29 @@
       (gs (gj first 'price') 'id')
       (gn (gj first 'period') 'end')
   ==
+::  ==  disputes
+::
+::  +dispute-request: read a dispute back. The webhook body says only
+::  which dispute; the amount, the PaymentIntent and the status come
+::  from Stripe itself.
+::
+++  dispute-request
+  |=  [base=@t key=@t id=@t]
+  ^-  request:http
+  =/  url=@t  (at base (rap 3 '/v1/disputes/' (url-encode id) ~))
+  [%'GET' url (auth-only key) ~]
+::  +read-dispute: one dispute as the vendor needs it. amount is in
+::  cents, as everything on Stripe is, and status is Stripe's own word
+::  for where the dispute stands.
+::
+++  read-dispute
+  |=  body=@t
+  ^-  (unit [id=@t intent=@t amount=@ud status=@t])
+  =/  jon=json  (de-body body)
+  ?.  ?=([%o *] jon)  ~
+  =/  id=@t  (gs jon 'id')
+  ?:  =('' id)  ~
+  `[id (gs jon 'payment_intent') (gn jon 'amount') (gs jon 'status')]
 ::  ==  events
 ::
 ::  +event-of: the only two things a webhook body is trusted for. The

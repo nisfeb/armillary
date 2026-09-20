@@ -163,6 +163,9 @@
       '<div class="card"><h2>Balance</h2><p style="font-size:1.6rem;margin:.2rem 0">' + signed(a.balance) + '</p>' +
       '<p class="muted">' + (fresh ? 'No account yet. Minting a key opens one.'
         : 'Opened ' + fmtTime(a.made) + (a.closed ? ' &middot; closed' : '')) + '</p>' +
+      // one Stripe Customer per ship, whether or not it ever subscribed
+      (a.stripe_customer
+        ? '<p class="muted">Stripe customer <code>' + esc(a.stripe_customer) + '</code></p>' : '') +
       '<div class="inline">' +
       '<div class="field"><label for="c-amount">Credit, dollars</label><input id="c-amount" value=""></div>' +
       '<div class="field"><label for="c-note">Note</label><input id="c-note" value=""></div>' +
@@ -180,8 +183,7 @@
       out += '<div class="card"><h2>Subscription</h2><p>Plan <code>' +
         esc((d && d.plan) || '') + '</code>' +
         (sub.renews ? ', renews ' + fmtTime(sub.renews).slice(0, 10) : '') + '</p>' +
-        '<p class="muted">Stripe <code>' + esc(sub.id || '') + '</code>, customer <code>' +
-        esc(a.stripe_customer || '') + '</code></p>' +
+        '<p class="muted">Stripe <code>' + esc(sub.id || '') + '</code></p>' +
         '<button class="danger" data-clear-sub="1">Clear</button></div>';
     }
     out += '<div class="card"><h2>Keys</h2>';

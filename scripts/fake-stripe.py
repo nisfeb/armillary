@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """fake-stripe.py PORT SECRET SHIP_URL
 A stand-in for the parts of Stripe armillary talks to: Checkout
-Sessions, Invoices, Products, Prices and Subscriptions, plus the pages
-that pretend to be a person paying. No dependencies and no disk: the
-store is a dict that dies with the process.
+Sessions, Customers, Invoices, Products, Prices, Subscriptions and
+Disputes, plus the pages that pretend to be a person paying. No
+dependencies and no disk: the store is a dict that dies with the
+process.
+
+The stub routes: /stub/pay/<session> pays one, /stub/fail/<session>
+fails a late settlement, /stub/dispute/<session> opens one dispute on
+its payment and redelivers the same event on every later call,
+/stub/renew/<sub> invents the next invoice, /stub/delete/<sub> reports
+a subscription gone, and /stub/state dumps the store.
 
 SECRET signs the webhooks it posts to SHIP_URL, the way Stripe signs
 real ones; pass "-" to post them unsigned. SHIP_URL is the ship's own
@@ -37,6 +44,7 @@ STORE = {
     'prices': {},
     'subscriptions': {},
     'customers': {},
+    'disputes': {},
     'hooks': [],
     'n': 0,
 }
@@ -112,6 +120,44 @@ def fire(sid):
                 post_hook('invoice.paid', {'id': iid})
 
 
+def fail(sid):
+    """a payment method that settles later and then did not"""
+    s = STORE['sessions'].get(sid)
+    if not s:
+        return None
+    s['payment_status'] = 'unpaid'
+    threading.Thread(target=post_hook,
+                     args=('checkout.session.async_payment_failed', {'id': sid}),
+                     daemon=True).start()
+    return s
+
+
+def dispute(sid):
+    """the buyer's bank takes the charge back. One dispute per session,
+    so posting again is a redelivery of the same event and not a second
+    dispute"""
+    s = STORE['sessions'].get(sid)
+    if not s or not s.get('payment_intent'):
+        return None
+    for d in STORE['disputes'].values():
+        if d['payment_intent'] == s['payment_intent']:
+            found = d
+            break
+    else:
+        did = nid('dp')
+        found = STORE['disputes'][did] = {
+            'id': did,
+            'payment_intent': s['payment_intent'],
+            'amount': s['amount_total'],
+            'currency': 'usd',
+            'status': 'needs_response',
+        }
+    threading.Thread(target=post_hook,
+                     args=('charge.dispute.created', {'id': found['id']}),
+                     daemon=True).start()
+    return found
+
+
 def make_invoice(sub_id):
     sub = STORE['subscriptions'][sub_id]
     iid = nid('in')
@@ -180,6 +226,11 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             inv = STORE['invoices'].get(path[len('/v1/invoices/'):])
             return self.send(200, inv) if inv else self.miss()
+        if path.startswith('/v1/disputes/'):
+            if not self.bearer_ok():
+                return None
+            d = STORE['disputes'].get(path[len('/v1/disputes/'):])
+            return self.send(200, d) if d else self.miss()
         return self.miss()
 
     # ---- POST ----
@@ -189,6 +240,12 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/stub/pay/'):
             s = pay(path[len('/stub/pay/'):])
             return self.send(200, s) if s else self.miss()
+        if path.startswith('/stub/fail/'):
+            s = fail(path[len('/stub/fail/'):])
+            return self.send(200, s) if s else self.miss()
+        if path.startswith('/stub/dispute/'):
+            d = dispute(path[len('/stub/dispute/'):])
+            return self.send(200, d) if d else self.miss()
         if path.startswith('/stub/renew/'):
             sub_id = path[len('/stub/renew/'):]
             if sub_id not in STORE['subscriptions']:

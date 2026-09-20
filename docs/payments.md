@@ -31,18 +31,31 @@ In live mode the `stripe-signature` header is checked always: HMAC-SHA256 over `
 
 Stub mode is the one place a blank signing secret is allowed, because the stub runs on the same machine and nothing else can reach the endpoint.
 
-Four event types do anything:
+Seven event types do anything:
 
 | event | what happens |
 |---|---|
-| `checkout.session.completed` | read the session, credit `amount_total` cents times 10.000, mark the checkout row paid, and on a subscription session store the Stripe customer and subscription ids |
+| `checkout.session.completed` | read the session, credit `amount_subtotal` cents times 10.000, keep its PaymentIntent on the checkout row, mark the row paid, and on a subscription session store the Stripe customer and subscription ids |
 | `checkout.session.async_payment_succeeded` | the same, for a payment method that settles later |
+| `checkout.session.async_payment_failed` | mark the checkout row `failed`. Nothing was credited, so nothing comes off |
 | `invoice.paid` | read the invoice, find the account by its Stripe customer id, credit the plan's `credit`, and set `renews` from the invoice's period end |
 | `customer.subscription.deleted` | find the account holding that subscription id and clear its subscription |
+| `charge.dispute.created` | read the dispute, find the ship by its PaymentIntent, and take the money back off the ledger |
+| `charge.dispute.closed` | note the dispute's final status in the ring and change nothing |
+
+The credit follows `amount_subtotal`, not `amount_total`. Tax collected on a sale is the state's money, not the customer's balance, so a session that one day carries tax credits the goods and nothing else.
 
 Everything else answers 200 and does nothing. So does a failed read: Stripe retries a non-2xx, and a retry storm against an upstream that is already unhappy helps nobody. The outcome goes into the audit ring as `stripe.webhook`, and the Payments view shows the last ten.
 
 A session with no checkout row on the named ship is refused `unknown session`. The row is written before the url is ever answered, so a session this ship never made cannot credit it.
+
+## Disputes
+
+A customer can tell its bank the charge was not its own. The money leaves us whatever we do next, so `charge.dispute.created` takes the credit back at once: the dispute is read from Stripe, its PaymentIntent finds the checkout row that kept it, and a `refund` row of the dispute's amount goes on that ship's ledger with `rail` `stripe`, `ref` `dispute-<id>` and `note` `dispute <status>`. The refund op dedupes on its ref, so a second delivery of the same event writes nothing. A dispute that names a payment no row here holds is `unknown payment`.
+
+The account is then reconciled: a lease is recapped to the balance that is left, and disabled when there is none. The balance may go below zero, and it stays there until a top-up covers it. That is the point. The credit was already spent, the money has been taken back, and the proxy and the lease both refuse with a 402 saying the balance is empty.
+
+`charge.dispute.closed` only writes its status into the audit ring as `stripe.dispute`. A dispute won is credited back by the owner, by hand, because only the owner can see that the money really came back.
 
 ## The settings
 
@@ -73,7 +86,7 @@ Without a public URL the return page still proves the whole flow: it verifies th
 
 ## Proving it
 
-`scripts/fake-stripe.py PORT SECRET SHIP_URL` stands in for Stripe: Checkout Sessions, Invoices, Products, Prices, Subscriptions, and the pages that pretend to be a person paying. `POST /stub/pay/<session>` pays one, `POST /stub/renew/<sub>` invents the next invoice, `POST /stub/delete/<sub>` reports the subscription gone, and `GET /stub/state` dumps the store. It signs its webhooks with SECRET, or posts them unsigned when SECRET is `-`.
+`scripts/fake-stripe.py PORT SECRET SHIP_URL` stands in for Stripe: Checkout Sessions, Customers, Invoices, Products, Prices, Subscriptions, Disputes, and the pages that pretend to be a person paying. `POST /stub/pay/<session>` pays one, `POST /stub/fail/<session>` fails a late settlement, `POST /stub/dispute/<session>` opens one dispute on its payment and redelivers the event on every later call, `POST /stub/renew/<sub>` invents the next invoice, `POST /stub/delete/<sub>` reports the subscription gone, and `GET /stub/state` dumps the store. It signs its webhooks with SECRET, or posts them unsigned when SECRET is `-`.
 
 `api-matrix.py` and `ship-matrix.py` both run against it. `live-matrix.py` is the one run by hand, against Stripe test mode with a key from `STRIPE_TEST_KEY`; it prints the checkout url for a person to pay with `4242 4242 4242 4242` and then polls the customer's balance.
 

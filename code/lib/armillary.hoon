@@ -1284,14 +1284,18 @@
 ::
 ++  de-op-refund
   |=  jon=json
-  ^-  (each [ship=@p amount=@ud ref=@t note=@t] @t)
+  ^-  (each [ship=@p amount=@ud rail=@t ref=@t note=@t] @t)
   =/  who  (ship-field jon)
   ?:  ?=(%| -.who)  [%| p.who]
   =/  amount=@ud  (gn jon 'amount')
   ?:  =(0 amount)  [%| 'amount: a whole number above zero']
   =/  ref=@t  (gs jon 'ref')
   ?:  |(=('' ref) (gth (met 3 ref) max-name))  [%| 'ref: 1 to 200 bytes']
-  [%& [p.who amount ref (gs jon 'note')]]
+  ::  a rail is optional: the owner's own refund names none, a dispute
+  ::  names the rail that took the money back
+  =/  rail=@t  (gs jon 'rail')
+  ?:  (gth (met 3 rail) max-id)  [%| 'rail: at most 64 bytes']
+  [%& [p.who amount rail ref (gs jon 'note')]]
 ::  +de-op-key: the add-key payload, the row already hashed by the
 ::  request fiber that minted it
 ::

@@ -305,7 +305,9 @@
   ^-  form:m
   =/  what=@t  (gs:arm jon 'what')
   ?:  =('' what)  (refuse 'note' 'what: required' '')
-  ;<  ~  bind:m  (note what (gb:arm jon 'ok') (gs:arm jon 'why') (gs:arm jon 'ship') --0)
+  =/  amount=@sd  (gsd:arm jon 'amount')
+  ;<  ~  bind:m
+    (note what (gb:arm jon 'ok') (gs:arm jon 'why') (gs:arm jon 'ship') amount)
   (pure:m &)
 ::  +note-inbox: an outcome of ship traffic, in its own ring of 500, so
 ::  a stranger's pokes never push the owner's audit log out of /tr/log.
@@ -899,7 +901,7 @@
   ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 0 ship.c)
   ?:  (has-ref rows ref.c)  (refuse 'refund' 'ref: already recorded' who)
   ;<  now=@da  bind:m  get-time:io
-  =/  new=row:arm  [%refund amount.c 0 '' 0 0 '' '' ref.c note.c now]
+  =/  new=row:arm  [%refund amount.c 0 '' 0 0 '' rail.c ref.c note.c now]
   ;<  ~  bind:m  (write-row ship.c rows u.a new)
   ;<  ~  bind:m  (do-write-view ship.c)
   ;<  ~  bind:m  (note 'refund' & '' who (new:si | amount.c))
@@ -4119,6 +4121,22 @@
       ['ok' b+ok]
       ['why' s+why]
   ==
+::  +poke-note-money: the same ring row with the ship it moved money on
+::  and how much, which is what a dispute leaves behind
+::
+++  poke-note-money
+  |=  [up=@ud what=@t ok=? why=@t who=@t amount=@sd]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  poke-writer  up
+  %-  pairs:enjs:format
+  :~  ['op' s+'note']
+      ['what' s+what]
+      ['ok' b+ok]
+      ['why' s+why]
+      ['ship' s+who]
+      ['amount' (en-sd:arm amount)]
+  ==
 ::  +checkout-by-sid: the checkout row a session id belongs to. The row
 ::  is written before the url is answered, so a session with no row here
 ::  is one this ship never made.
@@ -4289,6 +4307,112 @@
     ==
   ;<  ~  bind:m  (poke-writer 1 op)
   (pure:m [& ''])
+::  +fail-session: a payment method that settles later and then did
+::  not. Nothing on the ledger moves, since nothing was ever credited:
+::  the row says failed so the customer sees why its url went nowhere.
+::
+++  fail-session
+  |=  sid=@t
+  =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
+  ^-  form:m
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ?:  =('' stripe-key.s)  (pure:m [| 'stripe_key: not set'])
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (session-request:astripe stripe-url.s stripe-key.s sid))
+  ?.  (two-xx status.res)  (pure:m [| (stripe-why status.res body.res)])
+  =/  got  (read-session:astripe body.res)
+  ?~  got  (pure:m [| 'stripe answered no session'])
+  =/  who=(unit @p)  (slaw %p ship.u.got)
+  ?~  who  (pure:m [| 'ship: not an @p'])
+  ;<  cj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'checkouts.json'))
+  =/  hit=(unit [nonce=@t row=json])  (checkout-by-sid cj id.u.got)
+  ?~  hit  (pure:m [| 'unknown session'])
+  ;<  ~  bind:m  (mark-checkout u.who nonce.u.hit row.u.hit 'failed' '')
+  (pure:m [& ''])
+::  +checkout-by-intent: the account and the checkout row a Stripe
+::  PaymentIntent belongs to. A dispute names no ship and no session,
+::  only the payment, so the row that kept the intent is the only way
+::  back to whose money this was.
+::
+++  checkout-by-intent
+  |=  [up=@ud intent=@t]
+  =/  m  (fiber:fiber:nexus ,(unit [who=@p nonce=@t row=json]))
+  ^-  form:m
+  ?:  =('' intent)  (pure:m ~)
+  ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts up)
+  (intent-each up (turn all |=([a=account:arm n=@ud] ship.a)) intent)
+::  +intent-each: the walk, by arm name: a $ with arguments inside a
+::  ;< continuation cannot find the trap
+::
+++  intent-each
+  |=  [up=@ud ships=(list @p) intent=@t]
+  =/  m  (fiber:fiber:nexus ,(unit [who=@p nonce=@t row=json]))
+  ^-  form:m
+  ?~  ships  (pure:m ~)
+  ;<  cj=json  bind:m  (read-json (rf up (acct-dir i.ships) %'checkouts.json'))
+  =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
+  =/  hits=(list [@t json])
+    (skim ~(tap by cm) |=([n=@t j=json] =(intent (gs:arm j 'intent'))))
+  ?^  hits  (pure:m `[i.ships i.hits])
+  (intent-each up t.ships intent)
+::  +take-dispute: the customer told its bank the charge was not its
+::  own. The money is gone from us whatever we do next, so the credit
+::  comes back off the ledger at once and the lease is recapped to the
+::  balance that is left.
+::
+::    A balance below zero blocks the proxy and the lease until a
+::    top-up covers it. That is the intent: the credit was spent, the
+::    money was taken back, and the customer is told so by the 402.
+::
+++  take-dispute
+  |=  id=@t
+  =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
+  ^-  form:m
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ?:  =('' stripe-key.s)  (pure:m [| 'stripe_key: not set'])
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (dispute-request:astripe stripe-url.s stripe-key.s id))
+  ?.  (two-xx status.res)  (pure:m [| (stripe-why status.res body.res)])
+  =/  got  (read-dispute:astripe body.res)
+  ?~  got  (pure:m [| 'stripe answered no dispute'])
+  ;<  hit=(unit [who=@p nonce=@t row=json])  bind:m
+    (checkout-by-intent 1 intent.u.got)
+  ?~  hit  (pure:m [| 'unknown payment'])
+  =/  micro=@ud  (mul amount.u.got 10.000)
+  =/  txt=@t  (scot %p who.u.hit)
+  ::  the refund op dedupes on its ref, so a second delivery of the
+  ::  same dispute writes nothing
+  ;<  ~  bind:m
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'refund']
+        ['ship' s+txt]
+        ['amount' (en-num:arm micro)]
+        ['rail' s+'stripe']
+        ['ref' s+(rap 3 'dispute-' id.u.got ~)]
+        ['note' s+(rap 3 'dispute ' status.u.got ~)]
+    ==
+  ;<  *  bind:m  (reconcile 1 who.u.hit)
+  ;<  ~  bind:m
+    %^  poke-note-money  1  'stripe.dispute'
+    [& (rap 3 id.u.got ' ' status.u.got ~) txt (new:si | micro)]
+  (pure:m [& (rap 3 id.u.got ' ' status.u.got ~)])
+::  +read-dispute-status: where a dispute ended up. Nothing moves on a
+::  close: a dispute we won is credited back by the owner, by hand,
+::  because only the owner knows the money really came back.
+::
+++  read-dispute-status
+  |=  id=@t
+  =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
+  ^-  form:m
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ?:  =('' stripe-key.s)  (pure:m [| 'stripe_key: not set'])
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (dispute-request:astripe stripe-url.s stripe-key.s id))
+  ?.  (two-xx status.res)  (pure:m [| (stripe-why status.res body.res)])
+  =/  got  (read-dispute:astripe body.res)
+  ?~  got  (pure:m [| 'stripe answered no dispute'])
+  (pure:m [& (rap 3 id.u.got ' ' status.u.got ~)])
 ::  +serve-stripe-hook: the webhook, public and without a cookie. Every
 ::  case answers 200, even a failed read: Stripe retries a non-2xx, and
 ::  a retry storm against an upstream that is already unhappy helps
@@ -4326,9 +4450,25 @@
     ;<  got=[ok=? why=@t]  bind:m  (credit-invoice id.u.ev)
     ;<  ~  bind:m  (poke-note 1 'stripe.webhook' ok.got why.got)
     (send-ok eyre-id)
+  ?:  =('checkout.session.async_payment_failed' type)
+    ;<  got=[ok=? why=@t]  bind:m  (fail-session id.u.ev)
+    ;<  ~  bind:m  (poke-note 1 'stripe.webhook' ok.got why.got)
+    (send-ok eyre-id)
   ?:  =('customer.subscription.deleted' type)
     ;<  got=[ok=? why=@t]  bind:m  (drop-subscription id.u.ev)
     ;<  ~  bind:m  (poke-note 1 'stripe.webhook' ok.got why.got)
+    (send-ok eyre-id)
+  ::  a dispute that lands writes its own ring row, with the ship and
+  ::  what came off its balance; only a failure is noted here
+  ?:  =('charge.dispute.created' type)
+    ;<  got=[ok=? why=@t]  bind:m  (take-dispute id.u.ev)
+    ;<  ~  bind:m
+      ?:  ok.got  (pure:(fiber:fiber:nexus ,~) ~)
+      (poke-note 1 'stripe.dispute' | why.got)
+    (send-ok eyre-id)
+  ?:  =('charge.dispute.closed' type)
+    ;<  got=[ok=? why=@t]  bind:m  (read-dispute-status id.u.ev)
+    ;<  ~  bind:m  (poke-note 1 'stripe.dispute' ok.got why.got)
     (send-ok eyre-id)
   (send-ok eyre-id)
 ++  send-ok
