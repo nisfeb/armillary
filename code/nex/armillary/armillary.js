@@ -381,6 +381,62 @@
     return out + '</tbody></table></div>';
   }
 
+  // ---- the report ----
+  // one window of the ledger, in dollars. No charts: a table of eleven
+  // numbers reads faster than any picture of them.
+  function report(d, days) {
+    var r = d || {};
+    var c = r.credits || {};
+    var pick = [7, 30, 90].map(function (n) {
+      return '<button data-days="' + n + '"' +
+        (Number(days) === n ? ' class="on"' : '') + '>' + n + ' days</button>';
+    }).join(' ');
+    var out = '<h1>Report</h1><div class="card"><p>' + pick + '</p>' +
+      '<p class="muted">' + esc(r.accounts || 0) + ' accounts moved money in this window.</p></div>';
+    out += '<div class="card"><h2>Money</h2>' +
+      thead(['What', { name: 'Dollars', num: true }]) +
+      money('Credit by card', c.stripe) +
+      money('Credit by bitcoin', c.btcpay) +
+      money('Credit by the owner', c.owner) +
+      money('Credit through the stub', c.stub) +
+      (Number(c.other || 0) ? money('Credit by another rail', c.other) : '') +
+      money('Refunded', r.refunds) +
+      money('Charged', r.charged) +
+      money('Cost upstream', r.cost) +
+      '<tr>' + cell('What', 'Margin') +
+      cell('Dollars', signed(r.margin), 'num') + '</tr>' +
+      money('Spent on leases', r.lease_spend) +
+      '</tbody></table></div>';
+    out += '<div class="card"><h2>Work</h2>' +
+      thead(['What', { name: 'Count', num: true }]) +
+      count('Proxy requests', r.requests) +
+      count('Tokens in', r.tokens_in) +
+      count('Tokens out', r.tokens_out) +
+      '</tbody></table></div>';
+    out += '<div class="card"><h2>Top models</h2>';
+    var tops = r.top_models || [];
+    if (!tops.length) return out + '<p class="muted">Nothing charged yet.</p></div>';
+    out += thead(['Model', { name: 'Charged', num: true },
+      { name: 'Cost', num: true }, { name: 'Requests', num: true }]);
+    tops.forEach(function (t) {
+      out += '<tr>' +
+        cell('Model', '<code>' + esc(t.model) + '</code>') +
+        cell('Charged', esc(dollars(t.charged)), 'num') +
+        cell('Cost', esc(dollars(t.cost)), 'num') +
+        cell('Requests', esc(t.requests), 'num') +
+        '</tr>';
+    });
+    return out + '</tbody></table></div>';
+  }
+  function money(label, micros) {
+    return '<tr>' + cell('What', esc(label)) +
+      cell('Dollars', esc(dollars(micros)), 'num') + '</tr>';
+  }
+  function count(label, n) {
+    return '<tr>' + cell('What', esc(label)) +
+      cell('Count', esc(Number(n || 0)), 'num') + '</tr>';
+  }
+
   // ---- the customer's own views ----
   // the ledger table is the same one the owner reads, so one renderer
   // serves both sides
@@ -578,7 +634,7 @@
     esc: esc, dollars: dollars, micro: micro, margin: margin,
     providers: providers, catalog: catalog, accounts: accounts, account: account,
     payments: payments, planRows: planRows, planButtons: planButtons,
-    leaseCard: leaseCard, leaseSetting: leaseSetting,
+    leaseCard: leaseCard, leaseSetting: leaseSetting, report: report,
     subscriptionLine: subscriptionLine,
     myAccount: myAccount, myKeys: myKeys, myLease: myLease, buyCatalog: buyCatalog,
     route: route, sseEvent: sseEvent,
@@ -603,6 +659,7 @@
   var custMinted = null;               // a fetched secret shown once
   var planEditing = null;              // the plan id whose form is open
   var st0 = null;                      // the settings the Payments view last read
+  var reportDays = 30;                 // the Report view's window
   var myPlans = [];                    // the vendor's plans, as the customer reads them
 
   function say(msg, bad) { statusEl.textContent = msg; statusEl.className = 'status' + (bad ? ' bad' : ''); }
@@ -689,6 +746,9 @@
           });
         });
       });
+    } else if (r.name === 'report') {
+      p = api('/report?days=' + encodeURIComponent(reportDays))
+        .then(function (d) { draw(report(d, reportDays)); });
     } else if (r.name === 'keys') {
       p = api('/keys').then(function (keys) {
         return api('/inference').catch(function () { return null; })
@@ -874,6 +934,9 @@
       if (!confirm('Revoke "' + d.name + '"? Its next request is refused.')) return;
       api('/keys/' + seg(d.dropKey), { method: 'DELETE' })
         .then(later).catch(function (e) { say(e.message, true); });
+    } else if (d.days) {
+      reportDays = Number(d.days) || 30;
+      refresh();
     } else if (d.takeLease) {
       say('asking the vendor for a lease');
       post('/lease').then(function () { say('lease in hand'); later(); })

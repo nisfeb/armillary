@@ -743,4 +743,65 @@
     (expect !>((taken (de-op-store-lease:arm (jo '{}')))))
     (expect !>((refused (de-op-store-lease:arm (jo '{"lease":"k"}')))))
   ==
+::  ==  the report
+::
+++  report-rows
+  ^-  (list row:arm)
+  :~  [%credit 1.000.000 0 '' 0 0 '' 'stripe' 'cs_1' '' ~2026.9.10]
+      [%credit 500.000 0 '' 0 0 '' 'btcpay' 'inv_1' '' ~2026.9.11]
+      [%credit 200.000 0 '' 0 0 '' 'owner' 'owner-1' '' ~2026.9.12]
+      [%credit 100.000 0 '' 0 0 '' 'stub' 'stub-n1' '' ~2026.9.13]
+      [%debit 137 100 'stub/alpha' 10 5 'proxy' '' 'r1' '' ~2026.9.14]
+      [%debit 200 150 'stub/beta' 20 10 'proxy' '' 'r2' '' ~2026.9.15]
+      [%debit 130.000 100.000 'openrouter' 0 0 'lease' '' 'lease-1' '' ~2026.9.16]
+      [%refund 50.000 0 '' 0 0 '' '' 'ref-1' '' ~2026.9.17]
+      [%credit 9.000.000 0 '' 0 0 '' 'stripe' 'cs_old' '' ~2026.1.1]
+      [%credit 7 0 '' 0 0 '' 'stub' 'compact-2026-01-credit' '3 rows' ~2026.2.1]
+  ==
+++  a-report  (report-add:arm *report:arm report-rows ~2026.9.1)
+++  test-report-credits
+  =/  j=json  (en-report:arm a-report 2 30)
+  =/  c=json  (gj:arm j 'credits')
+  ;:  weld
+    (expect-eq !>(`@ud`1.000.000) !>((gn:arm c 'stripe')))
+    (expect-eq !>(`@ud`500.000) !>((gn:arm c 'btcpay')))
+    (expect-eq !>(`@ud`200.000) !>((gn:arm c 'owner')))
+    (expect-eq !>(`@ud`100.000) !>((gn:arm c 'stub')))
+    (expect-eq !>(`@ud`2) !>((gn:arm j 'accounts')))
+    (expect-eq !>(`@ud`30) !>((gn:arm j 'days')))
+  ==
+++  test-report-charges
+  =/  j=json  (en-report:arm a-report 1 30)
+  ;:  weld
+    (expect-eq !>(`@ud`130.337) !>((gn:arm j 'charged')))
+    (expect-eq !>(`@ud`100.250) !>((gn:arm j 'cost')))
+    (expect-eq !>(`@sd`--30.087) !>((gsd:arm j 'margin')))
+    (expect-eq !>(`@ud`50.000) !>((gn:arm j 'refunds')))
+    (expect-eq !>(`@ud`2) !>((gn:arm j 'requests')))
+    (expect-eq !>(`@ud`30) !>((gn:arm j 'tokens_in')))
+    (expect-eq !>(`@ud`15) !>((gn:arm j 'tokens_out')))
+    (expect-eq !>(`@ud`130.000) !>((gn:arm j 'lease_spend')))
+  ==
+++  test-report-top-models
+  =/  j=json  (en-report:arm a-report 1 30)
+  =/  rows=(list json)  (ga:arm j 'top_models')
+  ;:  weld
+    (expect-eq !>(`@ud`3) !>((lent rows)))
+    (expect-eq !>('openrouter') !>((gs:arm (snag 0 rows) 'model')))
+    (expect-eq !>('stub/beta') !>((gs:arm (snag 1 rows) 'model')))
+    (expect-eq !>(`@ud`0) !>((gn:arm (snag 0 rows) 'requests')))
+    (expect-eq !>(`@ud`1) !>((gn:arm (snag 1 rows) 'requests')))
+    (expect-eq !>(`@ud`150) !>((gn:arm (snag 1 rows) 'cost')))
+  ==
+::  a summary row written by a compaction counts by its kind, and the
+::  rows outside the window count for nothing
+::
+++  test-report-window
+  =/  wide  (report-add:arm *report:arm report-rows ~2026.1.1)
+  =/  j=json  (en-report:arm wide 1 365)
+  =/  c=json  (gj:arm j 'credits')
+  ;:  weld
+    (expect-eq !>(`@ud`10.000.000) !>((gn:arm c 'stripe')))
+    (expect-eq !>(`@ud`100.007) !>((gn:arm c 'stub')))
+  ==
 --

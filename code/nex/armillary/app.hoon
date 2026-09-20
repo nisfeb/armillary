@@ -2728,6 +2728,7 @@
     (own (serve-clear-subscription eyre-id s2))
   ?:  &(=('GET' meth) ?=([%api %log ~] suffix))          (own (serve-log eyre-id))
   ?:  &(=('POST' meth) ?=([%api %tick ~] suffix))        (own (serve-tick eyre-id))
+  ?:  &(=('GET' meth) ?=([%api %report ~] suffix))       (own (serve-report eyre-id args))
   ::  the customer's routes, what Talon calls on its own ship
   ?:  &(=('GET' meth) ?=([%api %account ~] suffix))      (own (serve-my-account eyre-id args))
   ?:  &(=('PUT' meth) ?=([%api %vendor ~] suffix))       (own (serve-set-vendor eyre-id jon))
@@ -3397,6 +3398,35 @@
   ^-  form:m
   ;<  *  bind:m  (poke-soft:io (rf 1 / %'tick.sig') [[/ %json] [%o ~]])
   (send-json eyre-id 200 (pairs:enjs:format ~[['ok' b+&]]))
+::  +serve-report: what the vendor made over a window. Every account's
+::  ledger is walked once; the arithmetic is the lib's, so what the
+::  page shows is what the unit tests check.
+::
+++  serve-report
+  |=  [eyre-id=@ta args=quay:eyre]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  raw=@t  (fall (get-key:kv:html-utils 'days' args) '')
+  =/  asked=@ud  ?:(=('' raw) 30 (fall (rush raw dem) 30))
+  =/  days=@ud  ?:(=(0 asked) 30 asked)
+  ;<  now=@da  bind:m  get-time:io
+  =/  since=@da  (sub now (mul ~d1 days))
+  ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 1)
+  =/  ships=(list @p)  (turn all |=([a=account:arm n=@ud] ship.a))
+  ;<  got=[rep=report:arm n=@ud]  bind:m
+    (report-each ships since *report:arm 0)
+  (send-json eyre-id 200 (en-report:arm rep.got n.got days))
+++  report-each
+  |=  [ships=(list @p) since=@da rep=report:arm n=@ud]
+  =/  m  (fiber:fiber:nexus ,[rep=report:arm n=@ud])
+  ^-  form:m
+  ?~  ships  (pure:m [rep n])
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 1 i.ships)
+  =/  mine=(list row:arm)
+    %+  skim  (turn rows |=([nam=@ta r=row:arm] r))
+    |=(r=row:arm (gte at.r since))
+  =/  next=report:arm  (report-add:arm rep mine since)
+  (report-each t.ships since next ?~(mine n +(n)))
 ::  ==  the inference API
 ::
 ::  +serve-models: the enabled catalog, rows whose provider still

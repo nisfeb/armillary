@@ -786,6 +786,117 @@
   =/  secs=tape  (a-co:co (unix-secs at))
   =/  nth=tape   (a-co:co n)
   `@ta`(crip (weld secs (weld "-" nth)))
+::  ==  the report
+::
+::  +$  report: what a window of ledger rows adds up to. Credits are
+::  split by the rail that brought them in; a summary row written by a
+::  compaction counts by its kind and its amounts and carries no model.
+::
++$  report
+  $:  stripe=@ud
+      btcpay=@ud
+      owner=@ud
+      stub=@ud
+      other=@ud
+      charged=@ud
+      cost=@ud
+      refunds=@ud
+      requests=@ud
+      tokens-in=@ud
+      tokens-out=@ud
+      lease-spend=@ud
+      models=(map @t [charged=@ud cost=@ud requests=@ud])
+  ==
+::  +report-add: one account's rows folded into a running report, so the
+::  caller walks the accounts and the arithmetic stays here
+::
+++  report-add
+  |=  [rep=report rows=(list row) since=@da]
+  ^-  report
+  ?~  rows  rep
+  =/  r=row  i.rows
+  ?:  (lth at.r since)  $(rows t.rows)
+  =/  next=report
+    ?-    kind.r
+        %credit
+      ?:  =('stripe' rail.r)  rep(stripe (add stripe.rep amount.r))
+      ?:  =('btcpay' rail.r)  rep(btcpay (add btcpay.rep amount.r))
+      ?:  =('owner' rail.r)   rep(owner (add owner.rep amount.r))
+      ?:  =('stub' rail.r)    rep(stub (add stub.rep amount.r))
+      rep(other (add other.rep amount.r))
+        %refund
+      rep(refunds (add refunds.rep amount.r))
+        %debit
+      =/  cur=[charged=@ud cost=@ud requests=@ud]
+        (fall (~(get by models.rep) model.r) [0 0 0])
+      =/  proxied=?  =('proxy' mode.r)
+      =/  leased=?   =('lease' mode.r)
+      %=  rep
+        charged      (add charged.rep amount.r)
+        cost         (add cost.rep cost.r)
+        requests     ?:(proxied +(requests.rep) requests.rep)
+        tokens-in    (add tokens-in.rep in.r)
+        tokens-out   (add tokens-out.rep out.r)
+        lease-spend  ?:(leased (add lease-spend.rep amount.r) lease-spend.rep)
+          models
+        ?:  =('' model.r)  models.rep
+        %+  ~(put by models.rep)  model.r
+        :+  (add charged.cur amount.r)
+          (add cost.cur cost.r)
+        ?:(proxied +(requests.cur) requests.cur)
+      ==
+    ==
+  $(rows t.rows, rep next)
+::  +top-models: the ten models by what they charged, the id breaking a
+::  tie so two runs over the same rows print the same order
+::
+++  top-models
+  |=  m=(map @t [charged=@ud cost=@ud requests=@ud])
+  ^-  (list [@t [charged=@ud cost=@ud requests=@ud]])
+  %+  scag  10
+  %+  sort  ~(tap by m)
+  |=  [x=[k=@t v=[charged=@ud cost=@ud requests=@ud]] y=[k=@t v=[charged=@ud cost=@ud requests=@ud]]]
+  ^-  ?
+  ?:  =(charged.v.x charged.v.y)  (aor k.x k.y)
+  (gth charged.v.x charged.v.y)
+::  +en-report: the report as the owner's page reads it. Margin is
+::  signed: a markup below a hundred sells at a loss and says so.
+::
+++  en-report
+  |=  [rep=report accounts=@ud days=@ud]
+  ^-  json
+  =/  margin=@sd  (dif:si (sun:si charged.rep) (sun:si cost.rep))
+  =/  tops=(list json)
+    %+  turn  (top-models models.rep)
+    |=  [id=@t v=[charged=@ud cost=@ud requests=@ud]]
+    ^-  json
+    %-  pairs:enjs:format
+    :~  ['model' s+id]
+        ['charged' (en-num charged.v)]
+        ['cost' (en-num cost.v)]
+        ['requests' (en-num requests.v)]
+    ==
+  %-  pairs:enjs:format
+  :~  ['days' (en-num days)]
+      :-  'credits'
+      %-  pairs:enjs:format
+      :~  ['stripe' (en-num stripe.rep)]
+          ['btcpay' (en-num btcpay.rep)]
+          ['owner' (en-num owner.rep)]
+          ['stub' (en-num stub.rep)]
+          ['other' (en-num other.rep)]
+      ==
+      ['charged' (en-num charged.rep)]
+      ['cost' (en-num cost.rep)]
+      ['margin' (en-sd margin)]
+      ['refunds' (en-num refunds.rep)]
+      ['requests' (en-num requests.rep)]
+      ['tokens_in' (en-num tokens-in.rep)]
+      ['tokens_out' (en-num tokens-out.rep)]
+      ['lease_spend' (en-num lease-spend.rep)]
+      ['accounts' (en-num accounts)]
+      ['top_models' a+tops]
+  ==
 ::  ==  accounts
 ::
 ::    The three Stripe fields are the account's half of a subscription:
