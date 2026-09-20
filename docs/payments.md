@@ -57,6 +57,10 @@ The account is then reconciled: a lease is recapped to the balance that is left,
 
 `charge.dispute.closed` only writes its status into the audit ring as `stripe.dispute`. A dispute won is credited back by the owner, by hand, because only the owner can see that the money really came back.
 
+## Only a ship that spoke over ames can pay
+
+Every payment credits an @p, and an @p is only ever taken from an ames poke. The inbox fiber stamps `seen` on the account on every op it takes, and the writer sets it from nothing else. Each credit path checks the stamp before it writes: a Stripe session or invoice, a BTCPay invoice, or the owner attaching a subscription for a ship that never poked the inbox is refused with `ship: never spoke to us over ames`, whatever the object says. The owner cannot open an account either: a mint for a ship with no account answers 404 until that ship says hello. The reasoning is fraud: a card session's metadata can name any ship, but only the ship itself can produce a signed ames packet, so the balance can only ever land with the @p that asked for it.
+
 ## Managed Payments
 
 A Stripe account made after 2026 has Managed Payments on by default: Stripe is the merchant of record for digital goods, and handles sales tax and VAT in some eighty countries, fraud, disputes and transaction-level customer support, for a higher fee per transaction. Prepaid inference credit is a fully automated digital product sold direct, which is what Managed Payments accepts. Two things follow in the code: every line item carries the product tax code, and a session never sends `customer_update`, since Managed Payments collects the name and billing address itself. With it on, the tax and dispute items in the release checklist are Stripe's. It is one Dashboard toggle to turn off, in which case the ship's own dispute handling and Stripe Tax apply.

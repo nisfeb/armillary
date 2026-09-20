@@ -275,8 +275,17 @@ check('the listing carries OpenRouter pricing strings',
       alpha)
 
 print('accounts and keys')
+# the owner does not open accounts: a ship's account exists because
+# that ship spoke to the vendor over ames. A cold mint is refused.
+code, d = curl('POST', API + '/accounts/~nec/keys', {'name': 'cold'})
+check('a mint for a ship that never said hello is 404', code == 404 and 'hello' in str(d), (code, d))
+# the account under test is the host's own, opened by its hello over the
+# vendor route, which is the one ames path a single ship can take
+curl('PUT', API + '/vendor', {'ship': SELF})
+settle(); settle()
+SHIP = SELF
 code, k1 = curl('POST', API + '/accounts/' + SHIP + '/keys', {'name': 'one'})
-check('a mint opens the account and answers a secret', code == 200 and '.' in dictish(k1).get('secret', ''), (code, k1))
+check('a mint on an account the ship opened answers a secret', code == 200 and '.' in dictish(k1).get('secret', ''), (code, k1))
 settle()
 code, k2 = curl('POST', API + '/accounts/' + SHIP + '/keys', {'name': 'two'})
 check('a second key is minted', code == 200 and dictish(k2).get('secret'), (code, k2))
@@ -484,7 +493,11 @@ settle()
 
 print('stripe: a subscription holds its plan')
 # the only way onto an account is the channel, so the ship is briefly
-# its own customer, which is what the single-ship shape is for
+# its own customer, which is what the single-ship shape is for. The
+# account was closed above, and a closed account is not reopened by a
+# hello, so it is dropped first and the hello makes a fresh one.
+curl('DELETE', API + '/accounts/' + SELF)
+settle()
 code, d = curl('PUT', API + '/vendor', {'ship': SELF})
 check('the ship is its own customer for this check', code == 200, (code, d))
 settle(3)

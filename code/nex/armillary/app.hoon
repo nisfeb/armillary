@@ -244,6 +244,7 @@
   ?:  =('add-key' op)        (do-add-key jon)
   ?:  =('drop-key' op)       (do-drop-key jon)
   ?:  =('touch-key' op)      (do-touch-key jon)
+  ?:  =('seen' op)           (do-seen jon)
   ?:  =('close-account' op)  (do-close-account jon)
   ?:  =('drop-account' op)   (do-drop-account jon)
   ?:  =('rebuild' op)        do-rebuild
@@ -1015,6 +1016,37 @@
   ;<  ~  bind:m
     (over:io (rf 0 (acct-dir who) %'keys.json') [[/ %json] [%o (~(put by km) id.p.got next)]])
   (pure:m |)
+::  +do-seen: the ship spoke to us over ames just now. The stamp is the
+::  one fact every credit path checks: money is taken only for an @p
+::  that has poked the inbox, since ames signs the source and nothing
+::  else does. Not a change to the view, so the beacon stays still.
+::
+++  do-seen
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-account:arm jon)
+  ?:  ?=(%| -.got)  (pure:m |)
+  =/  who=@p  p.got
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (pure:m |)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m
+    (over:io (rf 0 (acct-dir who) %'account.json') [[/ %json] (en-account:arm u.a(seen `now))])
+  (pure:m |)
+::  +seen-over-ames: money is taken only for an @p that has poked the
+::  inbox. The stamp is set by the inbox fiber from the ames source and
+::  by nothing else, so a Stripe or BTCPay object naming a ship that
+::  never spoke to us credits nothing, whatever it says.
+::
+++  seen-over-ames
+  |=  [up=@ud who=@p]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  aj=json  bind:m  (read-json (rf up (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  (pure:m ?&(?=(^ a) ?=(^ seen.u.a)))
 ::  +do-close-account: every key revoked, the ledger kept. The account
 ::  stays readable; nothing more can be spent on it.
 ::
@@ -1971,6 +2003,9 @@
   ;<  ~  bind:m
     ?:  |(ex ?=(%hello -.o))  (pure:(fiber:fiber:nexus ,~) ~)
     (poke-writer 0 (ship-op 'open-account' src))
+  ::  every op is a signed word from the ship, so it is seen now; the
+  ::  writer applies open-account first, then this stamp
+  ;<  ~  bind:m  (poke-writer 0 (ship-op 'seen' src))
   (do-inbox-op src o)
 ::  +do-inbox-op: the op, decoded, turned into writer pokes. This fiber
 ::  writes no account state of its own and waits for nothing.
@@ -1983,6 +2018,7 @@
   ?-    -.o
       %hello
     ;<  ~  bind:m  (poke-writer 0 (ship-op 'open-account' src))
+    ;<  ~  bind:m  (poke-writer 0 (ship-op 'seen' src))
     (note-inbox 'hello' & '' who)
       %refresh
     ;<  ~  bind:m  (poke-writer 0 (ship-op 'write-view' src))
@@ -3293,10 +3329,9 @@
   ;<  aj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'account.json'))
   =/  a=(unit account:arm)  (de-account:arm aj)
   ?:  ?&(?=(^ a) closed.u.a)  (send-err eyre-id 409 'account: closed')
-  ;<  ~  bind:m
-    ?^  a  (pure:(fiber:fiber:nexus ,~) ~)
-    %+  poke-writer  1
-    (pairs:enjs:format ~[['op' s+'open-account'] ['ship' s+(scot %p u.who)]])
+  ::  the owner does not open accounts: an account exists because its
+  ::  ship said hello over ames, which is what makes it that ship's
+  ?~  a  (send-err eyre-id 404 'no account: the ship must say hello over ames first')
   ;<  keys=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'keys.json'))
   =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
   ?:  (gte ~(wyt by km) max-keys:arm)  (send-err eyre-id 409 'keys: over 20')
@@ -3479,7 +3514,9 @@
   =/  who=(unit @p)  (ship-of seg)
   ?~  who  (send-err eyre-id 400 'ship: not an @p')
   ;<  aj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'account.json'))
-  ?~  (de-account:arm aj)  (send-err eyre-id 404 'no such account')
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (send-err eyre-id 404 'no such account')
+  ?~  seen.u.a  (send-err eyre-id 409 'ship: never spoke to us over ames')
   =/  sub=@t  (gs:arm jon 'subscription')
   ?:  =('' sub)  (send-err eyre-id 400 'subscription: required')
   =/  op=json
@@ -4230,6 +4267,8 @@
   ?.  paid.u.got  (pure:m [| 'not paid yet'])
   =/  who=(unit @p)  (slaw %p ship.u.got)
   ?~  who  (pure:m [| 'ship: not an @p'])
+  ;<  ok=?  bind:m  (seen-over-ames 1 u.who)
+  ?.  ok  (pure:m [| 'ship: never spoke to us over ames'])
   ;<  cj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'checkouts.json'))
   =/  hit=(unit [nonce=@t row=json])  (checkout-by-sid cj id.u.got)
   ?~  hit  (pure:m [| 'unknown session'])
@@ -4284,6 +4323,7 @@
     =(stripe-customer.a customer.u.got)
   ?~  hits  (pure:m [| 'no account on that customer'])
   =/  a=account:arm  account.i.hits
+  ?~  seen.a  (pure:m [| 'ship: never spoke to us over ames'])
   ;<  plans=(list plan:arm)  bind:m  (plans-of 1)
   =/  byp=(unit plan:arm)  (plan-by-price:arm plans price.u.got)
   =/  p=(unit plan:arm)  ?^(byp byp (find-plan:arm plans plan.a))
@@ -4530,6 +4570,8 @@
   ?~  got  (pure:m [| 'btcpay answered no invoice'])
   =/  who=(unit @p)  (slaw %p ship.u.got)
   ?~  who  (pure:m [| 'ship: not an @p'])
+  ;<  ok=?  bind:m  (seen-over-ames 1 u.who)
+  ?.  ok  (pure:m [| 'ship: never spoke to us over ames'])
   ;<  cj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'checkouts.json'))
   =/  hit=(unit [nonce=@t row=json])  (checkout-by-sid cj id.u.got)
   ?~  hit  (pure:m [| 'unknown invoice'])
