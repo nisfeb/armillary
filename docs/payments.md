@@ -27,7 +27,9 @@ Whichever arrives first credits; the second finds the ref recorded and does noth
 
 The body of a webhook is read for exactly two things: the event `type` and `data.object.id`. Everything else, the amount, the ship, whether it was paid, comes from reading that object back from Stripe with the vendor's own key. A forged body can at worst name a real session, which then reads back as whatever it really is.
 
-When `stripe_webhook_secret` is set, the `stripe-signature` header is checked first: HMAC-SHA256 over `<t>.<raw body>` with the signing secret, compared against the `v1` element, with a five minute tolerance and a byte comparison that does not stop at the first difference. A bad or missing signature is 400 and nothing else happens. With no signing secret set, reading the object back is the only trust, which is register's stance.
+In live mode the `stripe-signature` header is checked always: HMAC-SHA256 over `<t>.<raw body>` with the signing secret, compared against the `v1` element, with a five minute tolerance and a byte comparison that does not stop at the first difference. A bad or missing signature is 400 and nothing else happens. A live endpoint with no signing secret configured is 400 as well, with `signature: no signing secret configured`, and the settings route refuses to go live with a key and no secret in the first place. Reading the object back is defense in depth on top of that, not the only trust.
+
+Stub mode is the one place a blank signing secret is allowed, because the stub runs on the same machine and nothing else can reach the endpoint.
 
 Four event types do anything:
 
@@ -47,7 +49,7 @@ A session with no checkout row on the named ship is refused `unknown session`. T
 | field | what it is |
 |---|---|
 | `stripe_key` | the secret key. Masked on every read; a blank field on save keeps what is stored, an explicit `null` clears it |
-| `stripe_webhook_secret` | the endpoint's signing secret, the same rules |
+| `stripe_webhook_secret` | the endpoint's signing secret, the same rules. Live mode refuses to save without it once a key is set |
 | `stripe_url` | the API base, `https://api.stripe.com` unless the gate points it at `scripts/fake-stripe.py` |
 | `public_url` | where a customer's browser reaches this ship, which is what the return url and the webhook url are built from |
 | `min_topup` | the smallest custom amount, five dollars by default |

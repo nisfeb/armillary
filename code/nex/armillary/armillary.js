@@ -320,7 +320,8 @@
       '<div class="field"><label for="st-key">Secret key</label>' +
       '<input id="st-key" type="password" placeholder="leave blank to keep"></div>' +
       '<div class="field"><label for="st-hook">Webhook signing secret</label>' +
-      '<input id="st-hook" type="password" placeholder="leave blank to keep"></div>' +
+      '<input id="st-hook" type="password" placeholder="leave blank to keep">' +
+      '<span class="muted">Live mode will not save without it.</span></div>' +
       '<div class="field"><label for="st-pub">Public URL</label>' +
       '<input id="st-pub" value="' + esc(pub) + '" placeholder="https://your.ship"></div>' +
       '<div class="field"><label>Mode</label>' +

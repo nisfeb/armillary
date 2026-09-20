@@ -530,7 +530,10 @@
   ::  keeps what is stored, an explicit null clears it. The page reads
   ::  them masked, so a save that sent the mask back would otherwise
   ::  store the mask.
-  =/  doc=json  (en-settings:arm (kept-secrets p.got (gj:arm jon 'settings') cur))
+  =/  kept=settings:arm  (kept-secrets p.got (gj:arm jon 'settings') cur)
+  ?.  =('' (live-gap kept))
+    (refuse 'set-settings' (live-gap kept) '')
+  =/  doc=json  (en-settings:arm kept)
   ?:  =(cur doc)  (note-then-no 'set-settings' 'unchanged' '')
   ;<  ~  bind:m  (over:io (rf 0 / %'settings.json') [[/ %json] doc])
   ;<  ~  bind:m  (note 'set-settings' & '' '' --0)
@@ -554,6 +557,19 @@
     btcpay-key             bkey
     btcpay-webhook-secret  bhook
   ==
+::  +live-gap: what a settings row still needs before it may go live,
+::  or blank when it is ready. Live mode with a key and no signing
+::  secret would take real money on a webhook nobody signed, so it is
+::  refused rather than warned about. Stub mode is local and needs
+::  neither.
+::
+++  live-gap
+  |=  s=settings:arm
+  ^-  @t
+  ?.  ?=(%live mode.s)  ''
+  ?:  =('' stripe-key.s)  ''
+  ?.  =('' stripe-webhook-secret.s)  ''
+  'stripe_webhook_secret: required in live mode'
 ::  +keep-secret: a blank incoming secret keeps the stored one, an
 ::  explicit null clears it, anything else replaces it
 ::
@@ -2791,10 +2807,11 @@
   =/  got  (de-settings:arm jon)
   ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
   ;<  cur=json  bind:m  (read-json (rf 1 / %'settings.json'))
+  =/  kept=settings:arm  (kept-secrets p.got jon cur)
+  ?.  =('' (live-gap kept))  (send-err eyre-id 400 (live-gap kept))
   =/  op=json
     (pairs:enjs:format ~[['op' s+'set-settings'] ['settings' jon]])
   ;<  ~  bind:m  (poke-writer 1 op)
-  =/  kept=settings:arm  (kept-secrets p.got jon cur)
   (send-json eyre-id 200 (mask-doc:arm (en-settings:arm kept)))
 ::  +settings-of: the settings as a row. A document that will not decode
 ::  reads as the starter, so a request never crashes on it.
@@ -4224,6 +4241,12 @@
   ;<  s=settings:arm  bind:m  (settings-of 1)
   ;<  now=@da  bind:m  get-time:io
   =/  sig=@t  (fall (get-header:http 'stripe-signature' heads) '')
+  ::  live mode checks the signature always. A stub secret may be blank
+  ::  because the stub is on this machine and nothing else can reach it.
+  ?:  ?&(?=(%live mode.s) =('' stripe-webhook-secret.s))
+    =/  why=@t  'signature: no signing secret configured'
+    ;<  ~  bind:m  (poke-note 1 'stripe.webhook' | why)
+    (send-err eyre-id 400 why)
   =/  checked=?
     ?:  =('' stripe-webhook-secret.s)  &
     (verify-signature:astripe stripe-webhook-secret.s sig raw (unix-secs:arm now))
