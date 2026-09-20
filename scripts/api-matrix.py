@@ -434,6 +434,18 @@ code, d = curl('GET', API + '/settings')
 check('a blank secret keeps the stored one',
       dictish(d).get('stripe_key', '').endswith('gate')
       and dictish(d).get('stripe_webhook_secret', '').endswith('gate'), d)
+code, d = settings(stripe_key=STRIPE_KEY, stripe_webhook_secret=None, stripe_url=SSTUB,
+                   public_url=HOST, mode='live')
+check('live mode with a key and no signing secret is 400 naming the field',
+      code == 400 and 'stripe_webhook_secret' in err_of(d), (code, d))
+settle()
+code, d = curl('GET', API + '/settings')
+check('and the refused save changed nothing',
+      dictish(d).get('stripe_webhook_secret', '').endswith('gate'), d)
+code, d = settings(stripe_key=STRIPE_KEY, stripe_webhook_secret=WHSEC, stripe_url=SSTUB,
+                   public_url=HOST, mode='live')
+check('with the signing secret beside it live mode saves', code == 200, (code, d))
+settle()
 
 print('stripe: the plans')
 PLAN = {'id': 'pro', 'name': 'Pro', 'kind': 'subscription',
@@ -516,6 +528,19 @@ code, d = hook('checkout.session.completed', 'cs_does_not_exist')
 check('a completed event naming an unknown session is 200', code == 200, (code, d))
 settle(2)
 check('and credits nothing', len(ledger()) == len(before), (len(before), len(ledger())))
+
+print('stripe: a live endpoint with no signing secret')
+code, d = settings(stripe_key=None, stripe_webhook_secret=None, stripe_url=SSTUB,
+                   public_url=HOST, mode='live')
+check('live mode with no key and no secret saves', code == 200, (code, d))
+settle()
+code, d = hook('checkout.session.completed', 'cs_nope', sig='')
+check('the webhook in live mode with no signing secret is 400',
+      code == 400 and err_of(d) == 'signature: no signing secret configured', (code, d))
+code, d = settings(stripe_key=STRIPE_KEY, stripe_webhook_secret=WHSEC, stripe_url=SSTUB,
+                   public_url=HOST, mode='live')
+check('the Stripe settings go back', code == 200, (code, d))
+settle()
 
 print('stripe: the return page')
 code, text = page(RETURN + '?ship=' + SHIP + '&cancelled=1')

@@ -246,6 +246,28 @@
     (expect-eq !>('price_1') !>(price.u.got))
     (expect-eq !>(`@ud`1.792.447.500) !>(period-end.u.got))
   ==
+++  a-dispute
+  '''
+  {"id":"dp_1","payment_intent":"pi_7","amount":1000,"currency":"usd",
+   "status":"needs_response"}
+  '''
+++  test-read-dispute
+  =/  got  (read-dispute:ast a-dispute)
+  ?~  got  (expect !>(|))
+  ;:  weld
+    (expect-eq !>('dp_1') !>(id.u.got))
+    (expect-eq !>('pi_7') !>(intent.u.got))
+    (expect-eq !>(`@ud`1.000) !>(amount.u.got))
+    (expect-eq !>('needs_response') !>(status.u.got))
+    (expect-eq !>(`(unit [id=@t intent=@t amount=@ud status=@t])`~) !>((read-dispute:ast 'junk')))
+  ==
+++  test-dispute-request
+  =/  req=request:http  (dispute-request:ast base key 'dp_1')
+  ;:  weld
+    (expect-eq !>(%'GET') !>(method.req))
+    (expect-eq !>('http://127.0.0.1:3399/v1/disputes/dp_1') !>(url.req))
+    (expect-eq !>(`(unit @t)`[~ 'Bearer sk_test_gate']) !>((get-header:http 'authorization' header-list.req)))
+  ==
 ++  test-event-of
   =/  ev=@t
     '{"type":"checkout.session.completed","data":{"object":{"id":"cs_1"}}}'

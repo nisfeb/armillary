@@ -380,6 +380,30 @@ code, text = page(HOST + '/apps/armillary/pay/return?ship=' + CUST + '&sid=' + S
 check('the return page for a paid session says it was received',
       code == 200 and 'received' in text.lower(), (code, text[:200]))
 
+code, acct = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR)
+CUSTOMER = dictish(dictish(acct).get('account')).get('stripe_customer', '')
+check('the ship has one Stripe customer on its account row',
+      CUSTOMER.startswith('cus_'), dictish(acct).get('account'))
+code, st = curl('GET', SSTUB + '/stub/state')
+srec = dictish(dictish(st).get('sessions', {})).get(SID, {})
+check('and the session was opened on it', srec.get('customer') == CUSTOMER, srec)
+
+print('a late settlement that fails')
+BALF = dictish(fresh(PEER, PJAR)).get('balance', 0)
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': 6000000},
+                jar=PJAR, timeout=180)
+furl = dictish(co).get('url', '')
+fnonce = dictish(co).get('nonce', '')
+check('a second top-up checkout opens', code == 200 and '/stub/pay/' in furl, (code, co))
+code, d = stub_post(SSTUB + '/stub/fail/' + furl.rsplit('/', 1)[-1])
+check('the stub reports the payment failed', code == 200, (code, str(d)[:120]))
+view = wait_view(PEER, PJAR, lambda v: dictish(
+    dictish(v.get('checkouts')).get(fnonce)).get('status') == 'failed', tries=15)
+check('the checkout row says failed',
+      dictish(dictish(view.get('checkouts')).get(fnonce)).get('status') == 'failed',
+      dictish(view.get('checkouts')).get(fnonce))
+check('and nothing was credited', view.get('balance') == BALF, (BALF, view.get('balance')))
+
 print('a subscription')
 code, d = curl('POST', api(HOST) + '/plans', PLAN, jar=JAR)
 check('the vendor writes a subscription plan', code in (200, 409), (code, d))
@@ -408,6 +432,13 @@ check('the session and the first invoice both credited',
 code, acct = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR)
 SUB = dictish(dictish(acct).get('subscription')).get('id', '')
 check('the owner sees the Stripe subscription id', SUB.startswith('sub_'), dictish(acct).get('subscription'))
+check('and the ship still has the one customer it started with',
+      dictish(dictish(acct).get('account')).get('stripe_customer') == CUSTOMER,
+      dictish(acct).get('account'))
+code, st = curl('GET', SSTUB + '/stub/state')
+srec = dictish(dictish(st).get('sessions', {})).get(suburl.rsplit('/', 1)[-1], {})
+check('the subscription session carried the same customer',
+      srec.get('customer') == CUSTOMER, srec)
 
 before = set(refs_of(HOST, JAR, CUST))
 code, d = stub_post(SSTUB + '/stub/renew/' + SUB)
@@ -636,6 +667,59 @@ check('and the provider has the higher cap',
 code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
 check('the inference config is lease mode again',
       dictish(inf).get('mode') == 'lease', inf)
+
+print('a disputed payment')
+code, d = settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
+                   public_url=HOST, mode='live', lease_provider='stub')
+check('the vendor goes live again for the dispute', code == 200, (code, d))
+settle(2)
+BEFORE_D = dictish(fresh(PEER, PJAR)).get('balance', 0)
+code, dp = stub_post(SSTUB + '/stub/dispute/' + SID)
+DP = dictish(dp).get('id', '')
+check('the stub opens a dispute on the first top-up',
+      code == 200 and DP.startswith('dp_'), (code, dp))
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BEFORE_D - CARD, tries=15)
+check('the disputed credit comes back off the balance',
+      view.get('balance') == BEFORE_D - CARD, (BEFORE_D - CARD, view.get('balance')))
+check('and the balance is below zero, which is the point',
+      view.get('balance', 0) < 0, view.get('balance'))
+refunds = [r for r in ledger_of(HOST, JAR, CUST) if r.get('ref') == 'dispute-' + DP]
+check('a refund row names the dispute and the rail',
+      len(refunds) == 1 and refunds[0].get('rail') == 'stripe'
+      and refunds[0].get('amount') == CARD, refunds)
+code, d = stub_post(SSTUB + '/stub/dispute/' + SID)
+check('a second delivery is the same dispute', dictish(d).get('id') == DP, d)
+settle(8)
+again = [r for r in ledger_of(HOST, JAR, CUST) if r.get('ref') == 'dispute-' + DP]
+check('and it changes nothing',
+      len(again) == 1 and dictish(fresh(PEER, PJAR)).get('balance') == BEFORE_D - CARD,
+      (len(again), dictish(fresh(PEER, PJAR)).get('balance')))
+tick()
+view = wait_view(PEER, PJAR, lambda v: dictish(v.get('lease')).get('disabled') is True, tries=10)
+check('the lease reads disabled after the tick',
+      dictish(view.get('lease')).get('disabled') is True, view.get('lease'))
+code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
+check('and the inference config says proxy', dictish(inf).get('mode') == 'proxy', inf)
+code, d = curl('POST', v1(HOST) + '/chat/completions',
+               {'model': 'stub/alpha', 'messages': message('hi')}, bearer=PSECRET, timeout=120)
+check('a completion is 402 while the balance is under water',
+      code == 402 and 'balance' in err_of(d), (code, str(d)[:200]))
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': 20000000},
+                jar=PJAR, timeout=180)
+purl = dictish(co).get('url', '')
+check('a top-up checkout opens on the card rail',
+      code == 200 and '/stub/pay/' in purl, (code, co))
+code, d = stub_post(purl)
+check('paying it answers the record', code == 200, (code, str(d)[:120]))
+view = wait_view(PEER, PJAR, lambda v: v.get('balance', 0) > 0, tries=15)
+check('the top-up puts the balance back above zero',
+      view.get('balance', 0) > 0, view.get('balance'))
+code, d = curl('POST', v1(HOST) + '/chat/completions',
+               {'model': 'stub/alpha', 'messages': message('hi')}, bearer=PSECRET, timeout=120)
+check('and a completion is 200 again', code == 200, (code, str(d)[:200]))
+settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
+         lease_provider='stub')
+settle(2)
 
 print('giving the lease back')
 code, d = curl('DELETE', api(PEER) + '/lease', jar=PJAR, timeout=120)
