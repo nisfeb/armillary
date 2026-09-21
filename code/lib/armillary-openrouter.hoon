@@ -196,6 +196,31 @@
 ::  +read-key: the same figures on a read. usage is credits spent in
 ::  USD, which is what the reconcile turns into a debit.
 ::
+::  +read-key-full: everything OpenRouter says about a key, for the
+::  owner's live view: the running usage windows and what the provider
+::  itself thinks remains, beside the figures the ship keeps.
+::
+++  read-key-full
+  |=  body=@t
+  ^-  (unit [hash=@t name=@t usage=@ud daily=@ud weekly=@ud monthly=@ud limit=@ud remaining=(unit @ud) disabled=? created=@t updated=@t])
+  =/  jon=json  (de-body body)
+  ?.  ?=([%o *] jon)  ~
+  =/  d=json  (gj jon 'data')
+  =/  hash=@t  (gs d 'hash')
+  ?:  =('' hash)  ~
+  :-  ~
+  :*  hash
+      (gs d 'name')
+      (fall (micro-of (gj d 'usage')) 0)
+      (fall (micro-of (gj d 'usage_daily')) 0)
+      (fall (micro-of (gj d 'usage_weekly')) 0)
+      (fall (micro-of (gj d 'usage_monthly')) 0)
+      (fall (micro-of (gj d 'limit')) 0)
+      (micro-of (gj d 'limit_remaining'))
+      (gb d 'disabled')
+      (gs d 'created_at')
+      (gs d 'updated_at')
+  ==
 ++  read-key
   |=  body=@t
   ^-  (unit [hash=@t usage=@ud limit=@ud disabled=?])

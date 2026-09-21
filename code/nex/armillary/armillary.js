@@ -138,12 +138,15 @@
       '<div class="field"><label for="acct-search">Search</label>' +
       '<input id="acct-search" type="search" value="' + esc(search || '') + '" placeholder="a ship"></div></div>';
     if (!kept.length) return out + open_form + '<p class="muted">No accounts yet. One opens when you mint a key.</p>';
-    out += '<div class="card">' + thead(['Ship', { name: 'Balance', num: true }, { name: 'Keys', num: true }, 'Last seen', 'State']);
+    out += '<div class="card">' + thead(['Ship', { name: 'Balance', num: true }, { name: 'Keys', num: true }, 'Lease', 'Last seen', 'State']);
     kept.forEach(function (a) {
+      var ls = a.lease_state || 'none';
+      var lcls = ls === 'disabled' || ls === 'stale' ? 'neg' : (ls === 'active' ? 'pos' : 'muted');
       out += '<tr' + (a.closed ? ' class="closed"' : '') + '>' +
         cell('Ship', '<a href="#accounts/' + esc(a.ship) + '">' + esc(a.ship) + '</a>') +
         cell('Balance', signed(a.balance), 'num') +
         cell('Keys', esc(a.keys), 'num') +
+        cell('Lease', '<span class="' + lcls + '">' + esc(ls) + '</span>') +
         cell('Seen', fmtTime(a.seen)) +
         cell('State', a.closed ? 'closed' : 'open') +
         '</tr>';
@@ -237,18 +240,63 @@
 
   // the owner's half of a lease: the hash and the figures, never the
   // key. The key lives on the vendor and in that ship's own view.
+  // the live read of a lease's key from the provider, kept per ship
+  // until the next read; drawn beside the ship's own figures
+  var liveLease = {};
+  function ageWord(iso) {
+    if (!iso) return '';
+    var ms = Date.now() - Date.parse(iso);
+    if (isNaN(ms)) return '';
+    var m = Math.round(ms / 60000);
+    return m < 1 ? 'just now' : (m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago');
+  }
   function leaseCard(d) {
     var l = d && d.lease;
     var err = (d && d.lease_error) || '';
     var out = '<div class="card"><h2>Lease</h2>';
     if (err) out += '<p class="neg">' + esc(err) + '</p>';
     if (!l) return out + '<p class="muted">No lease.</p></div>';
-    return out + '<p>Key <code>' + esc(l.hash) + '</code> on <code>' + esc(l.provider) + '</code>' +
-      (l.disabled ? ' &middot; <span class="neg">disabled</span>' : '') + '</p>' +
-      '<p>Spent $' + esc(dollars(l.usage_seen)) + ' against a $' + esc(dollars(l.limit)) +
-      ' cap, read ' + fmtTime(l.checked) + '</p>' +
+    var pct = (d && d.markup_pct) || 130;
+    var stale = l.checked && (Date.now() - Date.parse(l.checked)) > 20 * 60000;
+    var state = l.disabled ? '<span class="neg">disabled</span>' : (stale ? '<span class="neg">stale</span>' : '<span class="pos">active</span>');
+    var left = Math.max(0, (l.limit || 0) - (l.usage_seen || 0));
+    out += '<p>' + state + ' &middot; key <code>' + esc(l.hash) + '</code> on <code>' + esc(l.provider) + '</code>' +
+      ' &middot; made ' + fmtTime(l.made) + '</p>';
+    out += '<table><thead><tr><th></th><th class="num">Provider dollars</th><th class="num">Customer dollars</th></tr></thead><tbody>' +
+      '<tr><td>Spent, as billed</td><td class="num">$' + esc(dollars(l.usage_seen)) + '</td><td class="num">$' + esc(dollars(Math.ceil((l.usage_seen || 0) * pct / 100))) + '</td></tr>' +
+      '<tr><td>Cap</td><td class="num">$' + esc(dollars(l.limit)) + '</td><td class="num">$' + esc(dollars(Math.ceil((l.limit || 0) * pct / 100))) + '</td></tr>' +
+      '<tr><td>Left under the cap</td><td class="num">$' + esc(dollars(left)) + '</td><td class="num">$' + esc(dollars(Math.ceil(left * pct / 100))) + '</td></tr>' +
+      '</tbody></table>';
+    out += '<p class="muted">Last reconciled ' + fmtTime(l.checked) + (l.checked ? ' (' + esc(ageWord(l.checked)) + ')' : '') +
+      '. The tick reads the key every ten minutes; the cap follows the balance at ' + esc(String(pct)) + ' percent.</p>';
+    var lv = liveLease[d.ship];
+    if (lv && lv.error) out += '<p class="neg">' + esc(lv.error) + '</p>';
+    else if (lv) {
+      var o = lv.openrouter || {};
+      var drift = lv.unbilled || 0;
+      out += '<h3>From the provider, read ' + esc(ageWord(lv.at)) + '</h3>' +
+        '<table><tbody>' +
+        '<tr><td>Usage now</td><td class="num">$' + esc(dollars(o.usage)) + '</td></tr>' +
+        '<tr><td>Today / this week / this month</td><td class="num">$' + esc(dollars(o.usage_daily)) + ' / $' + esc(dollars(o.usage_weekly)) + ' / $' + esc(dollars(o.usage_monthly)) + '</td></tr>' +
+        '<tr><td>Cap on the key</td><td class="num">$' + esc(dollars(o.limit)) + '</td></tr>' +
+        '<tr><td>Provider says remaining</td><td class="num">' + (o.limit_remaining == null ? '<span class="muted">no cap</span>' : '$' + esc(dollars(o.limit_remaining))) + '</td></tr>' +
+        '<tr><td>Disabled at the provider</td><td class="num">' + (o.disabled ? '<span class="neg">yes</span>' : 'no') + '</td></tr>' +
+        '<tr><td>Not yet billed</td><td class="num">' + (drift > 0 ? '<span class="neg">$' + esc(dollars(drift)) + ' (bills $' + esc(dollars(Math.ceil(drift * pct / 100))) + ' at the next reconcile)</span>' : '$0.00') + '</td></tr>' +
+        '<tr><td>Key made / last changed</td><td class="num">' + fmtTime(o.created_at) + ' / ' + fmtTime(o.updated_at) + '</td></tr>' +
+        '</tbody></table>';
+    }
+    var debits = ((d && d.ledger) || []).filter(function (r) { return r.kind === 'debit' && r.mode === 'lease'; });
+    if (debits.length) {
+      out += '<h3>Lease charges, newest first</h3>' + thead(['When', { name: 'Charged', num: true }, { name: 'Provider cost', num: true }, 'Ref']);
+      debits.slice(0, 20).forEach(function (r) {
+        out += '<tr>' + cell('When', fmtTime(r.at)) + cell('Charged', '$' + esc(dollars(r.amount)), 'num') +
+          cell('Cost', '$' + esc(dollars(r.cost)), 'num') + cell('Ref', '<code>' + esc(r.ref) + '</code>') + '</tr>';
+      });
+      out += '</tbody></table>';
+    }
+    return out + '<p><button data-lease-live="1">Read from the provider now</button> ' +
       '<button data-reconcile="1">Reconcile now</button> ' +
-      '<button class="danger" data-drop-lease="1">Drop lease</button></div>';
+      '<button class="danger" data-drop-lease="1">Drop lease</button></p></div>';
   }
 
   // ---- payments, the vendor's half ----
@@ -975,6 +1023,13 @@
       saveSettings({ lease_provider: lp ? lp.value : '' })
         .then(function () { say('saved'); later(); })
         .catch(function (e) { say(e.message, true); });
+    } else if (d.leaseLive) {
+      var ls2 = route(location.hash).ship;
+      say('reading the key from the provider');
+      api('/accounts/' + seg(ls2) + '/lease/live').then(function (r) {
+        r.at = new Date().toISOString();
+        liveLease[ls2] = r; say('read'); refresh();
+      }).catch(function (e) { liveLease[ls2] = { error: e.message, at: new Date().toISOString() }; say(e.message, true); refresh(); });
     } else if (d.reconcile) {
       var rs = route(location.hash).ship;
       say('reading the key upstream');

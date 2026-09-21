@@ -963,6 +963,17 @@
   (pairs:enjs:format ?.(with-id rows (snoc rows ['id' s+sub])))
 ::  +en-account-summary: one line of the accounts list
 ::
+::  +lease-state: one word for the list. none, active, disabled, or
+::  stale when the tick has not read the key in over twenty minutes,
+::  which means the ten minute reconcile missed twice.
+::
+++  lease-state
+  |=  [l=(unit lease) now=@da]
+  ^-  @t
+  ?~  l  'none'
+  ?:  disabled.u.l  'disabled'
+  ?:  (gth now (add checked.u.l ~m20))  'stale'
+  'active'
 ++  en-account-summary
   |=  [a=account keys=@ud]
   ^-  json

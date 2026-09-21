@@ -2855,6 +2855,8 @@
     (own (serve-refund eyre-id s2 jon))
   ?:  &(=('POST' meth) ?=([%api %accounts @ %close ~] suffix))
     (own (serve-close eyre-id s2))
+  ?:  &(=('GET' meth) ?=([%api %accounts @ %lease %live ~] suffix))
+    (own (serve-lease-live eyre-id s2))
   ?:  &(=('POST' meth) ?=([%api %accounts @ %reconcile ~] suffix))
     (own (serve-reconcile eyre-id s2))
   ?:  &(=('DELETE' meth) ?=([%api %accounts @ %lease ~] suffix))
@@ -3243,12 +3245,23 @@
     =/  hay=tape  (trip (scot %p ship.a))
     =/  needle=tape  (trip q)
     !=(~ (find needle hay))
-  =/  rows=(list json)
-    %+  turn  kept
-    |=  [a=account:arm keys=@ud]
-    ^-  json
-    (en-account-summary:arm a keys)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  rows=(list json)  bind:m  (summaries-with-lease kept now)
   (send-json eyre-id 200 a+rows)
+::  +summaries-with-lease: the list rows, each carrying the lease's
+::  one-word state, read from the account's lease.json
+::
+++  summaries-with-lease
+  |=  [kept=(list [=account:arm keys=@ud]) now=@da]
+  =/  m  (fiber:fiber:nexus ,(list json))
+  ^-  form:m
+  ?~  kept  (pure:m ~)
+  ;<  lj=json  bind:m  (read-json (rf 1 (acct-dir ship.account.i.kept) %'lease.json'))
+  =/  st=@t  (lease-state:arm (de-lease:arm lj) now)
+  =/  row=json  (en-account-summary:arm account.i.kept keys.i.kept)
+  =/  with=json  ?.(?=([%o *] row) row [%o (~(put by p.row) 'lease_state' s+st)])
+  ;<  rest=(list json)  bind:m  (summaries-with-lease t.kept now)
+  (pure:m [with rest])
 ::  +serve-account: one account with its public keys and the newest
 ::  hundred ledger rows
 ::
@@ -3300,9 +3313,12 @@
   ;<  lj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'lease.json'))
   =/  held=(unit lease:arm)  (de-lease:arm lj)
   =/  lease=json  ?~(held ~ (en-lease-owner:arm u.held))
+  ;<  s=settings:arm  bind:m  (settings-of 1)
   %^  send-json  eyre-id  200
   %-  pairs:enjs:format
-  :~  ['account' (en-account:arm u.a)]
+  :~  ['ship' s+(scot %p u.who)]
+      ['markup_pct' (en-num:arm markup.s)]
+      ['account' (en-account:arm u.a)]
       ['lease' lease]
       ['lease_error' s+(gs:arm lj 'error')]
       ['plan' s+plan.u.a]
@@ -3451,6 +3467,56 @@
 ::  +serve-reconcile: the owner's Reconcile now button. Answers what
 ::  the reconcile made of it, whichever way it went.
 ::
+::  +serve-lease-live: the key as OpenRouter sees it this second,
+::  beside the figures the ship keeps, so the owner can see drift and
+::  what the provider itself thinks remains. Read only; the tick and
+::  Reconcile now are what move the ship's figures.
+::
+++  serve-lease-live
+  |=  [eyre-id=@ta seg=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=(unit @p)  (ship-of seg)
+  ?~  who  (send-err eyre-id 400 'ship: not an @p')
+  ;<  got=(unit [=lease:arm base=@t key=@t])  bind:m  (lease-of 1 u.who)
+  ?~  got  (send-err eyre-id 404 'no lease, or no provisioning key on the lease provider')
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (get-request:aopen base.u.got key.u.got hash.lease.u.got))
+  ?.  (two-xx status.res)  (send-err eyre-id 502 (answered status.res))
+  =/  live  (read-key-full:aopen body.res)
+  ?~  live  (send-err eyre-id 502 'openrouter answered no key')
+  =/  l=lease:arm  lease.u.got
+  ;<  now=@da  bind:m  get-time:io
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['ship' s+(scot %p u.who)]
+      ['hash' s+hash.l]
+      ['name' s+name.u.live]
+      ['markup_pct' (en-num:arm markup.s)]
+      ['state' s+(lease-state:arm `l now)]
+      :-  'ship_figures'
+      %-  pairs:enjs:format
+      :~  ['usage_seen' (en-num:arm usage-seen.l)]
+          ['limit' (en-num:arm limit.l)]
+          ['disabled' b+disabled.l]
+          ['made' (en-time:arm made.l)]
+          ['checked' (en-time:arm checked.l)]
+      ==
+      :-  'openrouter'
+      %-  pairs:enjs:format
+      :~  ['usage' (en-num:arm usage.u.live)]
+          ['usage_daily' (en-num:arm daily.u.live)]
+          ['usage_weekly' (en-num:arm weekly.u.live)]
+          ['usage_monthly' (en-num:arm monthly.u.live)]
+          ['limit' (en-num:arm limit.u.live)]
+          ['limit_remaining' ?~(remaining.u.live ~ (en-num:arm u.remaining.u.live))]
+          ['disabled' b+disabled.u.live]
+          ['created_at' s+created.u.live]
+          ['updated_at' s+updated.u.live]
+      ==
+      ['unbilled' (en-num:arm ?:((gth usage.u.live usage-seen.l) (sub usage.u.live usage-seen.l) 0))]
+  ==
 ++  serve-reconcile
   |=  [eyre-id=@ta seg=@ta]
   =/  m  (fiber:fiber:nexus ,~)

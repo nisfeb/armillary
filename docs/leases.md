@@ -6,6 +6,10 @@ No tokens cross either ship on this path. Streaming works, tools work, images wo
 
 In v1 a lease is an OpenRouter runtime key made through the key provisioning API. OpenRouter keys carry a `limit` in dollars, report `usage` in dollars, and can be `disabled`, which is exactly the shape a prepaid balance needs.
 
+## What the owner sees
+
+The Accounts list carries a Lease column: `none`, `active`, `disabled`, or `stale` when the tick has not read the key in over twenty minutes. The account detail's Lease card shows the key's hash and provider, when it was made, the state, and a table of spent, cap and left-under-the-cap in both the provider's dollars and the customer's at the markup, plus when it was last reconciled. "Read from the provider now" fetches the key as the provider sees it this second, through the provisioning key, and shows usage today, this week and this month, the cap, what the provider itself says remains, whether it is disabled there, and any usage not yet billed with what it will bill at the next reconcile. The lease's own charges are listed below, newest first. "Reconcile now" moves the ship's figures; the live read moves nothing.
+
 ## What the owner supplies
 
 One thing: an OpenRouter provisioning key on the OpenRouter provider row, under Providers. Then, on the Payments view, pick that provider under Leases. A blank lease provider means this vendor offers no leases, and every customer asking for one is told so.
