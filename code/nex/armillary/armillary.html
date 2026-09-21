@@ -8,22 +8,23 @@
 </head>
 <body>
 <header>
-  <a class="brand" href="#providers">armillary</a>
-  <nav id="nav-vendor" hidden>
-    <a href="#providers">Providers</a>
-    <a href="#catalog">Catalog</a>
-    <a href="#accounts">Accounts</a>
-    <a href="#payments">Payments</a>
-    <a href="#report">Report</a>
-  </nav>
-  <nav id="nav-customer" hidden>
+  <a class="brand" href="#account">armillary</a>
+  <nav id="nav-customer">
     <a href="#account">Account</a>
     <a href="#keys">Keys</a>
     <a href="#catalog">Catalog</a>
   </nav>
+  <nav id="nav-vendor" hidden>
+    <span class="badge admin">provider</span>
+    <a href="#providers">Providers</a>
+    <a href="#accounts">Accounts</a>
+    <a href="#payments">Payments</a>
+    <a href="#report">Report</a>
+  </nav>
+  <button id="mode" type="button" class="mode" title="The views that run a service other ships buy from. A customer never needs them.">Provider mode</button>
   <span id="status" class="status" role="status" aria-live="polite"></span>
 </header>
-<p id="both" class="muted" hidden>This ship is its own customer.</p>
+<p id="admin-note" class="muted note" hidden>Provider mode: these views run the service this ship sells. A customer of a vendor never needs them.</p>
 <main id="view"><p class="muted">Loading.</p></main>
 <script src="/apps/armillary/armillary.js"></script>
 </body>

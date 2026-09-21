@@ -42,7 +42,7 @@ check('the page names its five vendor views',
       and '#payments' in b and '#report' in b, b[:400])
 check('the page names its three customer views',
       '#account"' in b and '#keys"' in b and '#catalog"' in b, b[:600])
-check('the page carries the note for a ship that is its own customer', 'id="both"' in b, b[:600])
+check('the page carries the provider mode toggle and its note', 'id="mode"' in b and 'id="admin-note"' in b, b[:900])
 code, h, js = get('/apps/armillary/armillary.js')
 check('the script answers as javascript', code == 200 and 'javascript' in h.get('content-type', '') and '/apps/armillary/api' in js, (code, h))
 code, h, b = get('/apps/armillary/armillary.css')

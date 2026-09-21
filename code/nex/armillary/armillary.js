@@ -559,31 +559,77 @@
     return '<p>Subscribed to ' + esc(name) + esc(when) +
       ' <button class="danger" data-cancel-sub="1">Cancel</button></p>';
   }
+  // +usage: what the ledger says about spending. The view carries the
+  // newest fifty rows, so the month figure is exact while a month holds
+  // fewer than fifty charges and a floor after that; the all-time
+  // figures come from the balance instead, which the ship keeps whole.
+  function usage(rows, now) {
+    var t = now || Date.now();
+    var month = t - 30 * 86400000;
+    var u = { month: 0, charges: 0, tokens: 0, models: [], credited: 0, spent: 0, floor: false };
+    var by = Object.create(null);
+    (rows || []).forEach(function (r) {
+      if (r.kind === 'credit') { u.credited += (r.amount || 0); return; }
+      if (r.kind !== 'debit') return;
+      u.spent += (r.amount || 0);
+      var at = Date.parse(r.at || '') || 0;
+      if (at < month) return;
+      u.month += (r.amount || 0);
+      u.charges += 1;
+      u.tokens += (r.in || 0) + (r.out || 0);
+      var m = r.model || (r.mode === 'lease' ? 'lease' : 'other');
+      by[m] = (by[m] || 0) + (r.amount || 0);
+    });
+    u.floor = (rows || []).length >= 50;
+    u.models = Object.keys(by).map(function (m) { return { model: m, amount: by[m] }; })
+      .sort(function (a, b) { return b.amount - a.amount; }).slice(0, 5);
+    return u;
+  }
+  function usageCard(d) {
+    var u = usage((d && d.ledger) || []);
+    var out = '<div class="card"><h2>Usage</h2><div class="stats">' +
+      '<div><span class="n">$' + esc(dollars(u.month)) + (u.floor ? '+' : '') + '</span><span class="l">spent, last 30 days</span></div>' +
+      '<div><span class="n">' + u.charges + (u.floor ? '+' : '') + '</span><span class="l">requests</span></div>' +
+      '<div><span class="n">' + esc(String(u.tokens)) + (u.floor ? '+' : '') + '</span><span class="l">tokens</span></div>' +
+      '</div>';
+    if (u.models.length) {
+      out += thead(['Model', { name: 'Spent', num: true }]);
+      u.models.forEach(function (m) {
+        out += '<tr>' + cell('Model', '<code>' + esc(m.model) + '</code>') +
+          cell('Spent', '$' + esc(dollars(m.amount)), 'num') + '</tr>';
+      });
+      out += '</tbody></table>';
+    } else out += '<p class="muted">No requests in the last 30 days.</p>';
+    if (u.floor) out += '<p class="muted">The ledger below shows the newest fifty rows, so these figures are a floor.</p>';
+    return out + '</div>';
+  }
   function myAccount(d, plans) {
     var vendor = (d && d.vendor) || '';
     var out = '<h1>Account</h1>' +
       '<div class="card"><h2>Vendor</h2><p>' +
       (vendor ? '<code>' + esc(vendor) + '</code>' : '<span class="muted">none set</span>') +
-      (d && d.stale !== undefined ? ' <span class="muted">read ' + esc(d.stale) + 's ago</span>' : '') +
+      (vendor && d.stale !== undefined ? ' <span class="muted">read ' + esc(d.stale) + 's ago</span>' : '') +
       '</p><div class="inline">' +
       '<div class="field"><label for="v-ship">Set vendor</label>' +
       '<input id="v-ship" value="' + esc(vendor) + '" placeholder="~wex"></div>' +
       '<div class="field"><label>&nbsp;</label><button data-set-vendor="1">Save</button>' +
       '<button data-refresh-view="1">Refresh</button></div></div></div>';
-    if (!vendor) return out + '<p class="muted">Name a vendor ship above to open an account on it.</p>';
+    if (!vendor) return out + '<p class="muted">Name a vendor ship above to open an account on it. Talon sets this for you when you add the Armillary provider.</p>' +
+      '<p class="muted">Running a service of your own instead? Switch on Provider mode in the header.</p>';
     out += '<div class="card"><h2>Balance</h2>' +
-      '<p style="font-size:1.6rem;margin:.2rem 0">' + signed(d && d.balance) + '</p>' +
+      '<p style="font-size:1.6rem;margin:.2rem 0">$' + signed(d && d.balance) + '</p>' +
       subscriptionLine(d, plans) +
       '<div class="inline">' +
       planButtons(plans) +
       '<div class="field"><label for="t-amount">Top up, dollars</label><input id="t-amount" value=""></div>' +
       '<div class="field"><label>Rail</label>' +
-      '<label><input type="radio" name="rail" value="stripe" checked> Card</label> ' +
-      '<label><input type="radio" name="rail" value="btcpay"> Bitcoin</label>' +
-      '<span class="muted">Subscriptions are card only.</span></div>' +
+      '<span class="rails"><label><input type="radio" name="rail" value="stripe" checked> Card</label> ' +
+      '<label><input type="radio" name="rail" value="btcpay"> Bitcoin</label></span>' +
+      (plans.some(function (p) { return p.kind === 'subscription'; }) ? '<span class="muted">Subscriptions are card only.</span>' : '') + '</div>' +
       '<div class="field"><label>&nbsp;</label><button data-topup="1">Top up</button></div>' +
       '</div></div>';
     out += checkoutRows(d && d.checkouts);
+    out += usageCard(d);
     return out + '<div class="card"><h2>Ledger</h2>' + ledger((d && d.ledger) || []) + '</div>';
   }
   // the customer's own half of a lease. The key is not shown here: the
@@ -688,6 +734,7 @@
     leaseCard: leaseCard, leaseSetting: leaseSetting, report: report,
     subscriptionLine: subscriptionLine,
     myAccount: myAccount, myKeys: myKeys, myLease: myLease, buyCatalog: buyCatalog,
+    usage: usage, usageCard: usageCard,
     route: route, sseEvent: sseEvent,
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = render; }
@@ -703,9 +750,10 @@
   var catRows = [];                    // the catalog as the page holds it, edited in place
   var catFilter = '';
   var acctSearch = '';
-  // the customer half. isVendor is true when this ship sells, isBuyer
-  // when it buys; both are true on a ship that is its own customer.
-  var isVendor = true, isBuyer = false;
+  // provider mode shows the views that run a service; off, the page is
+  // a customer's balance and usage. The choice is kept in this browser.
+  var providerMode = false;
+  var VENDOR_VIEWS = { providers: 1, accounts: 1, account: 1, payments: 1, report: 1 };
   var buyFilter = '';
   var custMinted = null;               // a fetched secret shown once
   var planEditing = null;              // the plan id whose form is open
@@ -808,7 +856,7 @@
               .then(function (acct) { draw(myKeys(keys || [], cfg, custMinted, acct)); });
           });
       });
-    } else if (r.name === 'catalog' && isBuyer && !isVendor) {
+    } else if (r.name === 'catalog' && !providerMode) {
       p = api('/catalog').then(function (rows) { draw(buyCatalog(rows || [], buyFilter)); });
     } else if (r.name === 'catalog') {
       p = api('/catalog').then(function (rows) { catRows = rows || []; draw(catalog(catRows, catFilter)); });
@@ -1165,28 +1213,42 @@
       await new Promise(function (r) { setTimeout(r, 3000); });
     }
   }
-  // ---- which half of the app this ship is ----
-  // vendor.json decides: empty means this ship sells only, our own ship
-  // means it sells and buys from itself, another ship means it buys.
-  // GET /api/account carries both, so one read settles it.
+  // ---- which mode the page opens in ----
+  // This browser's last choice wins. With no choice yet, a ship with a
+  // provider configured is running a service and opens in provider
+  // mode; every other ship is a customer and opens on its account.
+  function storedMode() {
+    try { return localStorage.getItem('armillary.provider'); } catch (e) { return null; }
+  }
+  function setMode(on) {
+    providerMode = !!on;
+    try { localStorage.setItem('armillary.provider', on ? '1' : '0'); } catch (e) { /* a private window */ }
+    applyMode();
+    refresh();
+  }
+  function applyMode() {
+    document.getElementById('nav-vendor').hidden = !providerMode;
+    document.getElementById('admin-note').hidden = !providerMode;
+    var b = document.getElementById('mode');
+    b.className = 'mode' + (providerMode ? ' on' : '');
+    b.textContent = providerMode ? 'Provider mode: on' : 'Provider mode';
+    var r = route(location.hash);
+    if (!providerMode && VENDOR_VIEWS[r.name]) location.hash = '#account';
+  }
   function boot() {
-    return api('/account').catch(function () { return {}; }).then(function (d) {
-      var vendor = (d && d.vendor) || '';
-      var self = (d && d.self) || '';
-      isBuyer = !!vendor;
-      isVendor = !vendor || vendor === self;
-      document.getElementById('nav-vendor').hidden = !isVendor;
-      document.getElementById('nav-customer').hidden = !isBuyer;
-      document.getElementById('both').hidden = !(isVendor && isBuyer);
-      var r = route(location.hash);
-      // a customer-only ship has no #providers to land on
-      if (!isVendor && (r.name === 'providers' || r.name === 'accounts')) {
-        location.hash = '#account';
-        return;
-      }
-      refresh();
+    var stored = storedMode();
+    var p = stored === null
+      ? api('/providers').catch(function () { return []; }).then(function (rows) { return (rows || []).length > 0; })
+      : Promise.resolve(stored === '1');
+    return p.then(function (on) {
+      providerMode = on;
+      var before = location.hash;
+      applyMode();
+      // a hash change redraws on its own; a kept hash needs the first draw
+      if (location.hash === before) refresh();
     });
   }
+  document.getElementById('mode').addEventListener('click', function () { setMode(!providerMode); });
 
   boot();
   stream();

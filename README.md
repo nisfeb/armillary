@@ -169,7 +169,9 @@ Topping up opens a checkout with the vendor and answers a URL to open in a brows
 
 The Stripe key is a restricted key, `rk_`, with write on Checkout Sessions, Customers, Products, Prices, Subscriptions and the Billing Portal and read on Invoices and Disputes, and live mode will not save without the endpoint's signing secret beside it.
 
-A ship can be its own customer: point `vendor.json` at itself and the page shows both halves with a note saying so. That is what `scripts/ship-matrix.py` runs against with two arguments.
+The page opens as a customer's: Account (the vendor, the balance, top-ups, a usage card of the last thirty days by model, and the ledger), Keys and Catalog. Everything that runs a service, Providers, Accounts, Payments and Report, sits behind the Provider mode toggle in the header, marked as such, and is what a vendor's owner uses; a customer never needs it. A browser that has never chosen opens in provider mode only when the ship has a provider configured. The choice is kept per browser. `node scripts/render-check.js` checks the page's pure render functions with no ship.
+
+A ship can be its own customer: point `vendor.json` at itself and both halves work against the same ship. That is what `scripts/ship-matrix.py` runs against with two arguments.
 
 Live updates come from the instance's change beacon, streamed through grubbery's keep-SSE at `/grubbery/api/keep/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/beacon/rev`. It moves once per write that changed something, and a client that sees it move refetches what it shows. A write answers before the writer applies it, so a read right after one may still be a moment behind.
 

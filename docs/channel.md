@@ -41,7 +41,7 @@ The routes that wait do so for thirty seconds and then answer 202 with the nonce
 
 ## What to know
 
-- A vendor and its customer can be the same ship. `vendor.json` naming our own ship makes a local poke instead of an ames one and a local read instead of a peek, and the page shows both halves with a note. That is what the single-ship gate runs on.
+- A vendor and its customer can be the same ship. `vendor.json` naming our own ship makes a local poke instead of an ames one and a local read instead of a peek, and the page's customer views and provider mode both work against the one ship. That is what the single-ship gate runs on.
 - Comets are accepted. On the groundwire network a comet is paid for before ames will carry its packets, so a comet whose poke lands is already a paid-for identity. A vendor elsewhere sets `refuse_comets` and their ops are noted `comet refused` and dropped.
 - Ship traffic is logged in `/tr/inbox`, a ring of 500 of its own, so nothing a stranger sends can push the owner's audit log out of `/tr/log`. Read it at `GET /grubbery/ball/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/tr/inbox?raw=1`.
 - No secret reaches either ring. The vendor's audit row for a mint names the op and the ship; the customer's names the key id.

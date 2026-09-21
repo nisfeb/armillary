@@ -21,6 +21,13 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 tr.closed td { color: var(--muted); }
 .badge { display: inline-block; padding: 0 .45em; border-radius: 4px; background: var(--line); font-size: .8em; }
 .badge.zdr { background: #e2f3e6; }
+.badge.admin { background: var(--ink); color: #fff; margin-right: .6rem; text-transform: uppercase; letter-spacing: .06em; font-size: .7em; vertical-align: middle; }
+button.mode { font-size: .85em; color: var(--muted); }
+button.mode.on { color: var(--ink); }
+.note { max-width: 1150px; margin: .6rem auto 0; padding: 0 1rem; font-size: .9em; }
+.stats { display: flex; flex-wrap: wrap; gap: .4rem 2rem; margin: .3rem 0 .6rem; }
+.stats .n { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+.stats .l { display: block; color: var(--muted); font-size: .8em; }
 .neg { color: var(--bad); }
 .pos { color: var(--good); }
 button { font: inherit; padding: .25rem .6rem; border: 1px solid var(--line); border-radius: 5px; background: var(--card); color: var(--ink); cursor: pointer; margin-right: .3rem; }
@@ -33,6 +40,9 @@ input.tags { width: 10em; }
 .field { display: inline-block; margin: 0 .8rem .5rem 0; }
 .field label { display: block; color: var(--muted); font-size: .85em; }
 .field input { display: block; }
+.field .rails { display: block; padding: .3rem 0; }
+.field .rails label { display: inline; margin-right: .8rem; font-size: 1em; color: var(--ink); }
+.field .rails input { display: inline; width: auto; }
 .field.wide input { width: 22em; max-width: 100%; }
 .inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .2rem 0; }
 .result { color: var(--muted); font-size: .85em; }

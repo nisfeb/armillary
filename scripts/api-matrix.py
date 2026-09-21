@@ -562,6 +562,11 @@ check('the return page with cancelled=1 is 200 and says cancelled',
 code, text = page(RETURN + '?ship=' + SHIP)
 check('the return page without a sid says pending',
       code == 200 and 'pending' in text.lower(), (code, text[:200]))
+# a sid the stub never issued: the page stays pending and the ring gets
+# its stripe.return entry from this run, not from an earlier one
+code, text = page(RETURN + '?sid=cs_stub_never_issued')
+check('the return page with an unknown sid says pending',
+      code == 200 and 'pending' in text.lower(), (code, text[:200]))
 settings()
 settle()
 
