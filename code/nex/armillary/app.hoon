@@ -2218,7 +2218,7 @@
           who
           id.cus
           (div amount 10.000)
-          'Armillary credit'
+          'Talon inference credit'
           success
           cancel
           secs
@@ -2232,7 +2232,7 @@
           who
           id.cus
           (div price.u.row 10.000)
-          'Armillary credit'
+          'Talon inference credit'
           success
           cancel
           secs

@@ -84,6 +84,10 @@ On 2026-09-21 the bitcoin rail ran against a real BTCPay Server (testnet3, on as
 
 Neither secret ever appears unmasked on a read route, in `/tr/log`, in `/tr/inbox`, or in the account view.
 
+## The product
+
+There is one product: Talon inference credit, bought in dollars and spent on any model from any connected provider at the vendor's markup, 130 percent of the provider's own price by default, metered per token. A customer buys it as a top-up of $5, $10, $50 or any amount from $5, and it appears on the Stripe page, the receipt and the card statement as "Talon inference credit". The catalog on the vendor page lists the models on offer with their prices, filled at the markup on import, and the same rate applies whether a request goes through the vendor's proxy or straight to the provider under a lease. Subscription plans are supported by the code but the product does not use them.
+
 ## Plans
 
 `plans.json` is a map by id. A plan is `id`, `name`, `kind` (`topup` or `subscription`), `price` and `credit` in microdollars, `interval` (`month` or `year`, subscriptions only) and `stripe_price`, which is the Stripe Price id. The Price id is an identifier, not a secret, and the customer's `GET /api/plans` carries it.
