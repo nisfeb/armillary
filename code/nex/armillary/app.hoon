@@ -4314,6 +4314,10 @@
   =/  got  (read-invoice:astripe body.res)
   ?~  got  (pure:m [| 'stripe answered no invoice'])
   ?.  paid.u.got  (pure:m [| 'not paid yet'])
+  ::  Managed Payments raises an invoice for every payment, top-ups
+  ::  included. One with no subscription behind it was credited by its
+  ::  session already and is nothing to do, not a refusal.
+  ?:  =('' subscription.u.got)  (pure:m [& 'not a subscription invoice'])
   ?:  =('' customer.u.got)  (pure:m [| 'no customer on the invoice'])
   ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 1)
   =/  hits=(list [=account:arm keys=@ud])

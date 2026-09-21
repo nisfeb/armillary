@@ -71,6 +71,10 @@ On 2026-09-20 the card rail ran against the Nisfeb sandbox for the first time: a
 
 On 2026-09-21 the bitcoin rail ran against a real BTCPay Server (testnet3, on asimov, `docs/superpowers/plans/2026-09-20-armillary-phase-7-release.md` names it): a five dollar checkout made a real invoice in eleven seconds, sneagan paid it from a testnet wallet, it settled after one block, the return page read the invoice back and credited five dollars with the invoice id as the ref, and a replay answered already recorded. The store wallet was watch-only from an xpub, which is what production should use; a hot wallet is refused for a non-admin key by the server policy. Two things stay unproven until a public ship exists: the webhook delivery and Lightning, which needs the store's LND funded with a channel.
 
+## The first real sale
+
+On 2026-09-21 at 19:00Z the production vendor `~nisfeb` sold its first five dollars of Talon inference credit, to itself, on a real card through the live Stripe account with Managed Payments on. Stripe's webhook reached the ship over the internet and credited the account four seconds after payment; the return page arrived eight seconds later and found the credit already recorded. Managed Payments raises an invoice for every payment, top-ups included, and sends `invoice.paid` for it; an invoice with no subscription behind it is now a quiet no-op rather than a refusal in the ring.
+
 ## The settings
 
 | field | what it is |
