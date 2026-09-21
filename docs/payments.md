@@ -69,6 +69,8 @@ A Stripe account made after 2026 has Managed Payments on by default: Stripe is t
 
 On 2026-09-20 the card rail ran against the Nisfeb sandbox for the first time: a ten dollar top-up through hosted Checkout, credited from the return page; a Talon Pro subscription whose first invoice was delivered as a signed `invoice.paid` and credited twelve dollars; a renewal a month later on a Stripe test clock, credited again with the new invoice id and the renewal date set; and a replay of the same event, verified and refused as already recorded. Three defects the local stub could not show were found and fixed: the tax code, a 500 byte cap on the checkout url (a real one is about 600), and the 2025-03 invoice shape, where the subscription and the price moved under `parent` and `pricing`.
 
+On 2026-09-21 the bitcoin rail ran against a real BTCPay Server (testnet3, on asimov, `docs/superpowers/plans/2026-09-20-armillary-phase-7-release.md` names it): a five dollar checkout made a real invoice in eleven seconds, sneagan paid it from a testnet wallet, it settled after one block, the return page read the invoice back and credited five dollars with the invoice id as the ref, and a replay answered already recorded. The store wallet was watch-only from an xpub, which is what production should use; a hot wallet is refused for a non-admin key by the server policy. Two things stay unproven until a public ship exists: the webhook delivery and Lightning, which needs the store's LND funded with a channel.
+
 ## The settings
 
 | field | what it is |
