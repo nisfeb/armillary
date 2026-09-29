@@ -426,6 +426,35 @@
   =/  url=@t  (at base (rap 3 '/v1/subscriptions/' (url-encode sub) ~))
   =/  kvs=(list [@t @t])  ~[['cancel_at_period_end' 'true']]
   [%'POST' url (heads key) `(form-enc kvs)]
+::  ==  account deletion
+::
+::  +customer-delete-request: the Customer goes, and Stripe cancels its
+::  subscriptions at once. A deleted customer is still readable on
+::  Stripe, so a second delete answers as gone.
+::
+++  customer-delete-request
+  |=  [base=@t key=@t cus=@t]
+  ^-  request:http
+  =/  url=@t  (at base (rap 3 '/v1/customers/' (url-encode cus) ~))
+  [%'DELETE' url (auth-only key) ~]
+::  +session-expire-request: an open Checkout Session closed, so nothing
+::  can be paid on it. A session that is not open answers an error.
+::
+++  session-expire-request
+  |=  [base=@t key=@t sid=@t]
+  ^-  request:http
+  =/  url=@t
+    (at base (rap 3 '/v1/checkout/sessions/' (url-encode sid) '/expire' ~))
+  [%'POST' url (auth-only key) ~]
+::  +refund-request: the whole of a PaymentIntent back to the card. An
+::  intent already refunded answers an error. The key needs Refunds
+::  write.
+::
+++  refund-request
+  |=  [base=@t key=@t intent=@t]
+  ^-  request:http
+  =/  kvs=(list [@t @t])  ~[['payment_intent' (url-encode intent)]]
+  [%'POST' (at base '/v1/refunds') (heads key) `(form-enc kvs)]
 ::  ==  the webhook signature
 ::
 ::  +verify-signature: Stripe signs "<t>.<body>" with the endpoint's

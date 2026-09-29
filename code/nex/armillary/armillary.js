@@ -360,7 +360,7 @@
     return out + '</select></div><div class="field"><label>&nbsp;</label>' +
       '<button data-save-lease="1">Save</button></div></div></div>';
   }
-  function payments(st, plans, log, editing, provs) {
+  function payments(st, plans, log, editing, provs, refunds) {
     var s = st || {};
     var pub = s.public_url || '';
     var hook = (pub || 'your public URL') + '/apps/armillary/hooks/stripe';
@@ -409,9 +409,22 @@
     var cur = editing ? (plans.filter(function (p) { return p.id === editing; })[0] || null) : null;
     out += planForm(cur);
     out += leaseSetting(s, provs);
+    out += refundsCard(refunds || []);
     out += ringCard('Recent Stripe outcomes', 'stripe.', log);
     out += ringCard('Recent BTCPay outcomes', 'btcpay.', log);
     return out;
+  }
+  // bitcoin payments that landed on accounts being deleted: the owner
+  // refunds each from BTCPay and says so here
+  function refundsCard(rows) {
+    if (!rows.length) return '';
+    var out = '<div class="card"><h2>Refunds due</h2>' +
+      '<p class="muted">A payment that landed on an account as it was deleted. Refund it from the invoice on BTCPay Server, then mark it done.</p><table><tr><th>Invoice</th><th>Amount</th><th>When</th><th></th></tr>';
+    rows.forEach(function (r) {
+      out += '<tr><td><code>' + esc(r.id) + '</code></td><td>' + '$' + esc(dollars(r.amount)) + '</td>' +
+        '<td>' + fmtTime(r.at) + '</td><td><button data-refund-done="' + esc(r.id) + '">Done</button></td></tr>';
+    });
+    return out + '</table></div>';
   }
   // the last ten ring rows whose op starts with one rail's name
   function ringCard(title, prefix, log) {
@@ -840,7 +853,9 @@
         return api('/plans').then(function (pl) {
           return api('/log').catch(function () { return []; }).then(function (lg) {
             return api('/providers').catch(function () { return []; }).then(function (pv) {
-              draw(payments(st, pl || [], lg || [], planEditing, pv || []));
+              return api('/refunds-due').catch(function () { return []; }).then(function (rd) {
+                draw(payments(st, pl || [], lg || [], planEditing, pv || [], rd || []));
+              });
             });
           });
         });
@@ -1057,6 +1072,10 @@
         stripe_key: document.getElementById('st-key').value.trim(),
         stripe_webhook_secret: document.getElementById('st-hook').value.trim(),
       }).then(function () { say('saved'); later(); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.refundDone) {
+      post('/refunds-due/done', { id: d.refundDone })
+        .then(function () { say('marked refunded'); refresh(); })
         .catch(function (e) { say(e.message, true); });
     } else if (d.saveBtcpay) {
       saveSettings({

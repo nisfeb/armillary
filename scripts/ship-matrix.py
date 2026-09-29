@@ -2,10 +2,15 @@
 """ship-matrix.py HOST JAR [PEER PJAR]
 The account channel over ames, end to end: a customer ship opens its
 account on a vendor, is minted an inference key through the view only it
-may peek, buys credit through the stub rail, spends it on a completion
-and revokes the key. HOST like http://localhost:8080 with JAR its owner
-cookie jar; with PEER and PJAR the customer is that other ship, with two
-arguments it is HOST itself, which the vendor allows.
+may peek, buys credit through the stub rail, spends it on a completion,
+revokes the key, and at the end deletes its account. HOST like
+http://localhost:8080 with JAR its owner cookie jar; with PEER and PJAR
+the customer is that other ship, with two arguments it is HOST itself,
+which the vendor allows. With VENDOR_DOWN and VENDOR_UP in the
+environment, two shell commands that stop the vendor ship and start it
+again (Ctrl-D in its dojo pane, then its boot line), the deletion is
+also tried with the vendor offline. Suspending %grubbery instead
+segfaulted vere 4.6 on the revive, so the ship is stopped whole.
 
 The stub provider must already be listening on 127.0.0.1:3399 with the
 key "stub-key", fake-stripe.py on 127.0.0.1:3400 and fake-btcpay.py on
@@ -13,12 +18,14 @@ key "stub-key", fake-stripe.py on 127.0.0.1:3400 and fake-btcpay.py on
 url: this script starts none of them. Exits 1 on any failure. Safe to
 rerun: it sweeps the account, the provider and the plans it made, both
 before it starts and after it finishes."""
-import json, subprocess, sys, time
+import json, os, subprocess, sys, time
 
 HOST, JAR = sys.argv[1], sys.argv[2]
 TWO = len(sys.argv) > 4
 PEER = sys.argv[3] if TWO else HOST
 PJAR = sys.argv[4] if TWO else JAR
+VENDOR_DOWN = os.environ.get('VENDOR_DOWN', '')
+VENDOR_UP = os.environ.get('VENDOR_UP', '')
 PORT = '3399'
 STUB = 'http://127.0.0.1:' + PORT
 SPORT = '3400'
@@ -178,6 +185,27 @@ def page(url):
 
 def refs_of(host, jar, ship):
     return [r.get('ref') for r in ledger_of(host, jar, ship)]
+
+
+def listing(host, jar, path):
+    """a ball directory's listing, as the explorer prints it"""
+    return subprocess.run(['curl', '-s', '-m', '30', '-b', jar,
+                           host + '/grubbery/ball' + path + '?info=1'],
+                          capture_output=True, text=True).stdout
+
+
+def vendor_answers():
+    code, d = curl('GET', HOST + '/apps/armillary', timeout=5)
+    return code != 0
+
+
+def vendor_state(want, tries=60):
+    """wait for the vendor's route to answer, or to stop answering"""
+    for _ in range(tries):
+        if vendor_answers() == want:
+            return True
+        settle(3)
+    return vendor_answers() == want
 
 
 def broom():
@@ -795,6 +823,123 @@ log = raw(HOST, JAR, '/tr/log')
 check('the audit ring holds both rails and no secret',
       'stripe.' in log and 'btcpay.' in log and STRIPE_KEY not in log
       and WHSEC not in log and BTC_KEY not in log, log[:200])
+
+print('account deletion')
+# a funded, subscribed, leased account with an open card checkout is
+# deleted from the customer's own ship, and nothing for that ship is
+# left on the vendor: not a directory, not an index entry, not a
+# usergroup, not a ring row. The tombstone the customer read is the
+# one thing that may name it, and it expires.
+ACCTS = '/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/accounts'
+code, d = settings(HOST, JAR, stripe_key=STRIPE_KEY, stripe_webhook_secret=WHSEC,
+                   stripe_url=SSTUB, public_url=HOST, mode='live', lease_provider='stub')
+check('the vendor goes live for the deletion', code == 200, (code, d))
+settle(2)
+curl('POST', api(HOST) + '/plans', PLAN, jar=JAR)
+curl('POST', api(HOST) + '/plans/' + PLAN['id'] + '/stripe', jar=JAR)
+settle()
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'plan': PLAN['id']},
+                jar=PJAR, timeout=180)
+surl = dictish(co).get('url', '')
+check('a subscription checkout opens', code == 200 and '/stub/pay/' in surl, (code, co))
+stub_post(surl)
+view = wait_view(PEER, PJAR, lambda v: dictish(v.get('subscription')).get('active') is True, tries=15)
+check('the account is subscribed and funded',
+      dictish(view.get('subscription')).get('active') is True and view.get('balance', 0) > 0, view)
+code, acct = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR)
+DCUS = dictish(dictish(acct).get('account')).get('stripe_customer', '')
+DSUB = dictish(dictish(acct).get('subscription')).get('id', '')
+check('the vendor holds its Stripe customer and subscription',
+      DCUS.startswith('cus_') and DSUB.startswith('sub_'), (DCUS, DSUB))
+code, lease = curl('POST', api(PEER) + '/lease', jar=PJAR, timeout=120)
+DHASH = dictish(lease).get('hash', '')
+check('the account holds a lease', code == 200 and DHASH != '', (code, lease))
+code, k = curl('POST', api(PEER) + '/keys', {'name': 'phone'}, jar=PJAR, timeout=120)
+check('and an inference key', code == 200, (code, k))
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': 20000000},
+                jar=PJAR, timeout=180)
+OSID = dictish(co).get('url', '').rsplit('/', 1)[-1]
+check('and an open card checkout', code == 200 and OSID.startswith('cs_'), (code, co))
+code, d = curl('POST', api(PEER) + '/delete-account', jar=PJAR, timeout=120)
+check('the customer deletes its account: 200 deleted',
+      code == 200 and dictish(d).get('deleted') is True, (code, d))
+code, d = curl('GET', api(PEER) + '/account', jar=PJAR)
+check('the customer has no vendor', dictish(d).get('vendor') == '', d)
+code, d = curl('GET', api(PEER) + '/inference', jar=PJAR)
+check('and GET /api/inference is 404 no key yet', code == 404 and 'no key yet' in err_of(d), (code, d))
+code, d = curl('GET', api(PEER) + '/keys', jar=PJAR)
+check('and holds no key', d == [], d)
+code, d = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR)
+check('the vendor has no account for the ship', code == 404, (code, d))
+check('the vendor keeps no directory for the ship', CUST not in listing(HOST, JAR, ACCTS),
+      listing(HOST, JAR, ACCTS)[:200])
+check('nor a key-index entry', CUST not in raw(HOST, JAR, '/key-index.json'),
+      raw(HOST, JAR, '/key-index.json')[:200])
+check('nor its usergroup', GROUP not in listing(HOST, JAR, '/sys/ames/usergroups'),
+      listing(HOST, JAR, '/sys/ames/usergroups')[:300])
+check('nor a ring row', CUST not in raw(HOST, JAR, '/tr/log') and CUST not in raw(HOST, JAR, '/tr/inbox'),
+      [r for r in json.loads(raw(HOST, JAR, '/tr/log') or '[]') if r.get('ship') == CUST][:2])
+code, sst = curl('GET', SSTUB + '/stub/state')
+sst = dictish(sst)
+check('Stripe was told to delete the customer',
+      dictish(dictish(sst.get('customers')).get(DCUS)).get('deleted') is True, sst.get('customers'))
+check('and the subscription is gone with it', DSUB not in dictish(sst.get('subscriptions')),
+      sst.get('subscriptions'))
+check('and the open session was expired', dictish(dictish(sst.get('sessions')).get(OSID)).get('status') == 'expired',
+      dictish(sst.get('sessions')).get(OSID))
+gone, rec = stub_key(DHASH)
+check('the provider no longer holds the leased key', gone == 404, (gone, rec))
+code, d = curl('GET', api(PEER) + '/account?fresh=1', jar=PJAR, timeout=120)
+code, d = curl('GET', api(PEER) + '/inference', jar=PJAR)
+settle(3)
+check('a refresh afterwards opens no account', CUST not in listing(HOST, JAR, ACCTS),
+      listing(HOST, JAR, ACCTS)[:200])
+code, d = curl('PUT', api(PEER) + '/vendor', {'ship': VENDOR}, jar=PJAR)
+view = wait_view(PEER, PJAR, lambda v: v.get('ship') == CUST, tries=10)
+check('a hello afterwards opens a fresh empty account',
+      view.get('ship') == CUST and view.get('balance') == 0 and view.get('keys') == []
+      and not dictish(view.get('subscription')).get('active'), view)
+
+if VENDOR_DOWN and VENDOR_UP:
+    print('account deletion: the vendor offline')
+    subprocess.run(VENDOR_DOWN, shell=True)
+    check('the vendor goes offline', vendor_state(False), VENDOR_DOWN)
+    settle(3)
+    code, d = curl('POST', api(PEER) + '/delete-account', jar=PJAR, timeout=120)
+    ONONCE = dictish(d).get('nonce', '')
+    check('with the vendor offline the delete is 202 queued with a nonce',
+          code == 202 and dictish(d).get('queued') is True and ONONCE != '', (code, d))
+    code, d = curl('GET', api(PEER) + '/account', jar=PJAR)
+    check('and the vendor is forgotten all the same', dictish(d).get('vendor') == '', d)
+    ops = json.loads(raw(PEER, PJAR, '/client.json') or '{}').get('ops', {})
+    check('the delete op is queued naming the vendor',
+          dictish(ops.get(ONONCE)).get('vendor') == VENDOR, ops)
+    # the client keeps sending it: the vendor is down, so the poke's ack
+    # never comes, and only the tombstone can say the op landed
+    subprocess.run(VENDOR_UP, shell=True)
+    check('the vendor comes back', vendor_state(True, tries=100), VENDOR_UP)
+    alive = 0
+    for _ in range(30):
+        settle(4)
+        alive, d = curl('GET', api(HOST) + '/settings', jar=JAR, timeout=20)
+        if alive == 200:
+            break
+    check('and answers its owner', alive == 200, alive)
+    gone = 0
+    for _ in range(60):
+        settle(4)
+        gone, d = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR, timeout=20)
+        if gone == 404:
+            break
+    check('the ship delivers the op and the vendor deletes the account', gone == 404, gone)
+    left = {}
+    for _ in range(60):
+        settle(4)
+        ops = json.loads(raw(PEER, PJAR, '/client.json') or '{}').get('ops', {})
+        left = dictish(ops.get(ONONCE))
+        if not left:
+            break
+    check('and the op is answered and dropped', left == {}, left)
 
 broom()
 print()

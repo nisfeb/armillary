@@ -175,6 +175,30 @@
     (expect-eq !>('http://127.0.0.1:3399/v1/subscriptions/sub_1') !>(url.req))
     (expect-eq !>(`(list [@t @t])`~[['cancel_at_period_end' 'true']]) !>((pairs-of body.req)))
   ==
+++  test-customer-delete-request
+  =/  req=request:http  (customer-delete-request:ast base key 'cus_1')
+  ;:  weld
+    (expect-eq !>(%'DELETE') !>(method.req))
+    (expect-eq !>('http://127.0.0.1:3399/v1/customers/cus_1') !>(url.req))
+    %+  expect-eq
+      !>(`(unit @t)`[~ 'Bearer sk_test_gate'])
+    !>((get-header:http 'authorization' header-list.req))
+    (expect-eq !>(`(unit octs)`~) !>(body.req))
+  ==
+++  test-session-expire-request
+  =/  req=request:http  (session-expire-request:ast base key 'cs_1')
+  ;:  weld
+    (expect-eq !>(%'POST') !>(method.req))
+    (expect-eq !>('http://127.0.0.1:3399/v1/checkout/sessions/cs_1/expire') !>(url.req))
+    (expect-eq !>(`(unit octs)`~) !>(body.req))
+  ==
+++  test-refund-request
+  =/  req=request:http  (refund-request:ast base key 'pi_1')
+  ;:  weld
+    (expect-eq !>(%'POST') !>(method.req))
+    (expect-eq !>('http://127.0.0.1:3399/v1/refunds') !>(url.req))
+    (expect-eq !>(`(list [@t @t])`~[['payment_intent' 'pi_1']]) !>((pairs-of body.req)))
+  ==
 ::  ==  the readers
 ::
 ++  paid-payment

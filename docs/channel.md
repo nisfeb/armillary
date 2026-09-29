@@ -21,7 +21,8 @@ Everything a customer ship does that is not inference is a JSON op poked from it
 | `got-key` | `id` | clears that secret from `pending.json` and from the view |
 | `drop-key` | `id` | revokes the key on the poking ship's account |
 | `cancel-subscription` | | asks Stripe to stop the subscription renewing. The row on the account stays until `customer.subscription.deleted` arrives |
-| `lease`, `drop-lease` | | noted as `not yet` in `/tr/inbox` and dropped. Phase 5 |
+| `lease`, `drop-lease` | | mints a provider key capped at the balance, or gives it back. `docs/leases.md` |
+| `delete-account` | `nonce` | settles the account's money, deletes the account and everything that names the ship, and answers a tombstone under the nonce. Opens no account and stamps nothing: a ship with no account is answered as deleted |
 
 ## The view
 
@@ -31,7 +32,24 @@ Everything a customer ship does that is not inference is a JSON op poked from it
 
 ## The nonce rule
 
-Every op that can be repeated carries a nonce the customer chose, and the vendor is idempotent under it: a `mint-key` whose nonce is already in `pending.json` mints nothing, and a `checkout` whose nonce is already in `checkouts.json` answers the row that is there. The customer keeps the op in `client.json` until its nonce shows in the view, and then drops it. An op with no nonce of its own (`hello`, `refresh`, `got-key`, `drop-key`) is dropped as soon as the send is taken, since it can never be seen in the view.
+Every op that can be repeated carries a nonce the customer chose, and the vendor is idempotent under it: a `mint-key` whose nonce is already in `pending.json` mints nothing, and a `checkout` whose nonce is already in `checkouts.json` answers the row that is there. The customer keeps the op in `client.json` until its nonce shows in the view, and then drops it. An op with no nonce of its own (`hello`, `refresh`, `got-key`, `drop-key`) is dropped as soon as the send is taken, since it can never be seen in the view. A `delete-account` nonce names the tombstone below, since the view it would otherwise show in is gone.
+
+## Deleting an account
+
+Apple's guideline 5.1.1(v) wants an account a person opened in an app to be deletable from inside it, record and personal data both, so Talon's card has a Delete account button and this is what it calls. `POST /apps/armillary/api/delete-account` on the customer ship, owner cookie only, no body:
+
+- `200 {"deleted":true}`: the vendor confirmed the account is deleted, or that it held nothing for this ship.
+- `202 {"queued":true,"nonce":"<n>"}`: the vendor has not answered within thirty seconds. The op stays queued and the client keeps sending it until the vendor answers, restarts and all.
+- `409` with `vendor: not set`: the ship buys from nobody.
+- `502` with the vendor's reason: the vendor refused, for instance because Stripe would not cancel. Nothing is deleted anywhere and the ship keeps its vendor, so the person can try again.
+
+Before answering 200 or 202 the ship forgets the vendor completely: `vendor.json`, `keys.json`, `lease.json`, `view.json`, and every other op queued for that vendor. After that `GET /api/account` answers an empty `vendor` and `GET /api/inference` answers 404. That matters because the vendor opens an account for any ship that pokes it anything, so a refresh or a peek sent after the deletion would quietly open a new one. The queued delete op names the vendor itself in its `client.json` row, since the setting is gone, and the client fiber sends and checks such rows whether or not the ship has a vendor.
+
+On the vendor the op is taken before the block that opens accounts and before the seen stamp, so it creates nothing. The money goes first, the way `docs/payments.md` describes, and a rail that refuses refuses the whole op. Then the writer removes the account directory, the key-index entries, the `armillary-<ship>` usergroup and every row naming the ship in `/tr/log` and `/tr/inbox`, and logs the deletion without the ship's name. The owner's `DELETE /api/accounts/<ship>` removes the same set, with the money steps best effort and their failures noted.
+
+The account view that normally carries answers is gone, so the answer is a tombstone: `/tombstones/<nonce>.json` on the vendor, holding `ship`, `nonce`, `deleted`, `why` and `at`, written by the writer as the last step of the deletion, so a customer never reads it before the cull has happened. The `/public` group may peek the whole `/tombstones` directory, and only the customer knows the nonce it chose. A refusal is answered the same way with `deleted` false and the reason. The customer's client fiber peeks the file for every queued delete op, writes what it says onto the op's row, and drops the row once the route has read it, or a minute later when no route was waiting, which is what a 202 leaves behind. The tick removes tombstones older than a day.
+
+A later `hello` from the same ship opens a fresh, empty account as usual.
 
 ## The timeout rule
 
@@ -45,5 +63,5 @@ The routes that wait do so for thirty seconds and then answer 202 with the nonce
 - Comets are accepted. On the groundwire network a comet is paid for before ames will carry its packets, so a comet whose poke lands is already a paid-for identity. A vendor elsewhere sets `refuse_comets` and their ops are noted `comet refused` and dropped.
 - Ship traffic is logged in `/tr/inbox`, a ring of 500 of its own, so nothing a stranger sends can push the owner's audit log out of `/tr/log`. Read it at `GET /grubbery/ball/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/tr/inbox?raw=1`.
 - No secret reaches either ring. The vendor's audit row for a mint names the op and the ship; the customer's names the key id.
-- Deleting an account with `DELETE /api/accounts/<ship>` empties its group as well as its directory, so the ship loses the peek with the account.
+- Deleting an account, from either side, removes its usergroup as well as its directory, so the ship loses the peek with the account.
 - The ask grows by poke on `/sys/gall/` and `/sys/ames/registry`, peek on `/sys/ames/ships/` and `/sys/ames/usergroups/`, and make on `/sys/ames/usergroups/`. Refuse the two vendor roads and this ship cannot sell; refuse the two customer roads and it cannot buy. Everything else keeps working either way.

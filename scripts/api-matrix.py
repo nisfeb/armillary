@@ -152,6 +152,17 @@ def page(url):
     return int(code or 0), text
 
 
+def raw(path):
+    """a grub's text straight out of the ball browser"""
+    return subprocess.run(['curl', '-s', '-m', '30', '-b', JAR, INSTANCE + path + '?raw=1'],
+                          capture_output=True, text=True).stdout
+
+
+def stub_state():
+    code, d = curl('GET', SSTUB + '/stub/state', jar=None)
+    return dictish(d)
+
+
 def broom():
     for pid in ('pro', 'ten'):
         curl('DELETE', API + '/plans/' + pid)
@@ -406,6 +417,12 @@ code, d = curl('POST', V1 + '/chat/completions', {'model': 'stub/alpha', 'messag
 check('a key on a closed account is 403', code == 403, (code, d))
 code, d = curl('POST', API + '/accounts/' + SHIP + '/keys', {'name': 'after'})
 check('a mint on a closed account is 409', code == 409, (code, d))
+# the account ops are in the ring now; a deletion later in this run
+# scrubs every row that names the ship, so they are checked here
+code, log = curl('GET', API + '/log')
+ops = set(r.get('op') for r in (log if isinstance(log, list) else []))
+for op in ('open-account', 'add-key', 'credit', 'debit', 'refund', 'drop-key', 'close-account'):
+    check('the ring holds an entry for ' + op, op in ops, sorted(ops))
 
 print('the stub pay page')
 PAY = HOST + '/apps/armillary/pay/stub'
@@ -643,8 +660,7 @@ code, log = curl('GET', API + '/log')
 text = json.dumps(log)
 ops = set(r.get('op') for r in (log if isinstance(log, list) else []))
 check('GET /api/log answers the ring', code == 200 and isinstance(log, list) and len(log) > 0, (code, str(log)[:200]))
-for op in ('set-provider', 'set-catalog', 'open-account', 'add-key', 'credit', 'debit', 'refund',
-           'drop-key', 'close-account', 'set-plan', 'drop-plan',
+for op in ('set-provider', 'set-catalog', 'set-plan', 'drop-plan',
            'stripe.webhook', 'stripe.return', 'btcpay.webhook'):
     check('the ring holds an entry for ' + op, op in ops, sorted(ops))
 check('the ring never carries a secret', 'stub-key' not in text and 'prov-key' not in text and
@@ -653,6 +669,172 @@ check('the ring never carries a secret', 'stub-key' not in text and 'prov-key' n
 out = subprocess.run(['curl', '-s', '-m', '30', '-b', JAR, INSTANCE + '/tr/last?raw=1'],
                      capture_output=True, text=True).stdout
 check('tr/last reads ok after the last op', '"ok"' in out and 'stub-key' not in out, out[:200])
+
+print('account deletion')
+# Talon's Delete account button, with the ship as its own customer, so
+# the vendor's answer is read locally; the two-ship shape is
+# ship-matrix's. This runs last: a deletion scrubs every ring row that
+# names the ship, and the ring checks above want those rows.
+GROUP = '/sys/ames/usergroups/armillary-' + SELF.lstrip('~') + '.grp/who.ships'
+code, d = curl('POST', API + '/delete-account', jar=None)
+check('delete-account without the cookie is 403', code == 403, (code, d))
+curl('PUT', API + '/vendor', {'ship': ''})
+settle()
+code, d = curl('POST', API + '/delete-account')
+check('delete-account with no vendor is 409 vendor: not set',
+      code == 409 and err_of(d) == 'vendor: not set', (code, d))
+settings(stripe_key=STRIPE_KEY, stripe_webhook_secret=WHSEC, stripe_url=SSTUB,
+         public_url=HOST, mode='live')
+settle()
+curl('PUT', API + '/vendor', {'ship': SELF})
+settle(3)
+code, k = curl('POST', API + '/keys', {'name': 'phone'}, timeout=120)
+check('the ship holds a key again', code == 200 and '.' in dictish(k).get('secret', ''), (code, k))
+code, d = curl('POST', API + '/accounts/' + SELF + '/credit',
+               {'amount': 1000000, 'rail': 'owner', 'ref': 'del-1'})
+check('and a dollar', code == 200, (code, d))
+code, co = curl('POST', API + '/checkout', {'rail': 'stripe', 'amount': 10000000}, timeout=120)
+SID = dictish(co).get('url', '').rsplit('/', 1)[-1]
+check('a card checkout opens a session on the stub', code == 200 and SID.startswith('cs_'), (code, co))
+code, acct = curl('GET', API + '/accounts/' + SELF)
+CUS = dictish(dictish(acct).get('account')).get('stripe_customer', '')
+check('the account holds a Stripe customer', CUS.startswith('cus_'), dictish(acct).get('account'))
+groups = subprocess.run(['curl', '-s', '-m', '30', '-b', JAR, HOST + '/grubbery/ball' + GROUP + '?raw=1'],
+                        capture_output=True, text=True).stdout
+check('the ship has its usergroup', SELF in groups, groups[:120])
+curl('POST', SSTUB + '/stub/broken/on', jar=None)
+code, d = curl('POST', API + '/delete-account', timeout=120)
+check('with Stripe down the delete is 502 with the reason',
+      code == 502 and 'stripe answered 503' in err_of(d), (code, d))
+code, acct = curl('GET', API + '/accounts/' + SELF)
+check('and the account is still there with its dollar',
+      code == 200 and dictish(dictish(acct).get('account')).get('balance') == 1000000, (code, acct))
+code, d = curl('GET', API + '/account')
+check('and the ship keeps its vendor', dictish(d).get('vendor') == SELF, d)
+code, d = curl('GET', API + '/keys')
+check('and its key', isinstance(d, list) and len(d) == 1, d)
+curl('POST', SSTUB + '/stub/broken/off', jar=None)
+# the session was paid a moment ago and its webhook has not arrived
+code, d = curl('POST', SSTUB + '/stub/pay-quietly/' + SID, jar=None)
+check('the stub pays the session quietly', code == 200, (code, str(d)[:120]))
+PI = dictish(d).get('payment_intent', '')
+code, d = curl('POST', API + '/delete-account', timeout=120)
+check('the delete is 200 deleted', code == 200 and dictish(d).get('deleted') is True, (code, d))
+code, d = curl('GET', API + '/account')
+check('the vendor setting is empty', dictish(d).get('vendor') == '', d)
+code, d = curl('GET', API + '/inference')
+check('GET /api/inference is 404 no key yet', code == 404 and 'no key yet' in err_of(d), (code, d))
+code, d = curl('GET', API + '/keys')
+check('the ship holds no key', d == [], d)
+code, d = curl('GET', API + '/accounts/' + SELF)
+check('the vendor has no account for the ship', code == 404, (code, d))
+st = stub_state()
+check('the stub saw the customer deleted',
+      dictish(dictish(st.get('customers')).get(CUS)).get('deleted') is True, st.get('customers'))
+refunds = [r for r in dictish(st.get('refunds')).values() if r.get('payment_intent') == PI]
+check('the paid session was refunded', len(refunds) == 1, st.get('refunds'))
+groups = subprocess.run(['curl', '-s', '-m', '30', '-b', JAR, HOST + '/grubbery/ball' + GROUP + '?raw=1'],
+                        capture_output=True, text=True).stdout
+check('the usergroup is gone', SELF not in groups, groups[:120])
+ix = raw('/key-index.json')
+check('the key index names the ship nowhere', SELF not in ix, ix[:200])
+code, log = curl('GET', API + '/log')
+log = log if isinstance(log, list) else []
+# the ship is its own customer here, so its own vendor rows name it
+own = ('set-vendor', 'forget-vendor')
+check('the audit ring names the ship nowhere',
+      all(r.get('ship') != SELF for r in log if r.get('op') not in own),
+      [r for r in log if r.get('ship') == SELF and r.get('op') not in own][:2])
+check('and holds the deletion', any(r.get('op') == 'delete-account' and r.get('ok') for r in log),
+      [r.get('op') for r in log[:10]])
+inbox = raw('/tr/inbox')
+check('the ship traffic ring names the ship nowhere', SELF not in inbox, inbox[:200])
+code, d = hook('checkout.session.completed', SID)
+check('the late webhook is 200', code == 200, (code, d))
+settle(2)
+code, d = curl('GET', API + '/accounts/' + SELF)
+check('and opens no account', code == 404, (code, d))
+check('and refunds nothing twice', len(dictish(stub_state().get('refunds'))) == len(dictish(st.get('refunds'))),
+      stub_state().get('refunds'))
+code, d = hook('customer.subscription.deleted', 'sub_gone')
+settle(2)
+code, log = curl('GET', API + '/log')
+rows = [r for r in (log if isinstance(log, list) else []) if r.get('op') == 'stripe.webhook']
+check('a subscription gone for a ship that is gone is a no-op',
+      rows and rows[0].get('ok') is True and 'no account' in rows[0].get('why', ''), rows[:1])
+
+print('account deletion: the vendor answers late')
+curl('PUT', API + '/vendor', {'ship': SELF})
+settle(3)
+code, d = curl('GET', API + '/account')
+check('a hello afterwards opens a fresh empty account',
+      dictish(d).get('ship') == SELF and dictish(d).get('balance') == 0 and dictish(d).get('keys') == [], d)
+code, co = curl('POST', API + '/checkout', {'rail': 'stripe', 'amount': 10000000}, timeout=120)
+check('a second card checkout opens', code == 200, (code, co))
+curl('POST', SSTUB + '/stub/delay/40', jar=None)
+code, d = curl('POST', API + '/delete-account', timeout=120)
+NONCE = dictish(d).get('nonce', '')
+check('with the vendor slow the delete is 202 queued with a nonce',
+      code == 202 and dictish(d).get('queued') is True and NONCE, (code, d))
+code, d = curl('GET', API + '/account')
+check('and the vendor is forgotten all the same', dictish(d).get('vendor') == '', d)
+ops = json.loads(raw('/client.json') or '{}').get('ops', {})
+check('and the delete op is still queued, naming the vendor',
+      dictish(ops.get(NONCE)).get('vendor') == SELF, ops)
+gone = 0
+for _ in range(30):
+    settle(2)
+    gone, d = curl('GET', API + '/accounts/' + SELF)
+    if gone == 404:
+        break
+check('the vendor deletes the account once Stripe answers', gone == 404, gone)
+done = {}
+for _ in range(40):
+    settle(3)
+    ops = json.loads(raw('/client.json') or '{}').get('ops', {})
+    done = dictish(ops.get(NONCE))
+    if not done or done.get('done'):
+        break
+check('and the ship reads the answer and drops the op',
+      not done or (done.get('done') and done.get('deleted')), done)
+
+print('account deletion: bitcoin')
+settings(stripe_key=STRIPE_KEY, stripe_webhook_secret=WHSEC, stripe_url=SSTUB,
+         btcpay_url=BSTUB, btcpay_store=BTC_STORE, btcpay_key=BTC_KEY,
+         btcpay_webhook_secret=WHSEC, public_url=HOST, mode='live')
+settle()
+curl('PUT', API + '/vendor', {'ship': SELF})
+settle(3)
+code, co = curl('POST', API + '/checkout', {'rail': 'btcpay', 'amount': 10000000}, timeout=120)
+INV1 = dictish(co).get('url', '').rsplit('/', 1)[-1]
+check('a bitcoin checkout opens an invoice', code == 200 and INV1.startswith('inv_'), (code, co))
+code, co = curl('POST', API + '/checkout', {'rail': 'btcpay', 'amount': 20000000}, timeout=120)
+INV2 = dictish(co).get('url', '').rsplit('/', 1)[-1]
+check('and a second one', code == 200 and INV2.startswith('inv_'), (code, co))
+code, d = curl('POST', BSTUB + '/stub/settle-quietly/' + INV1, jar=None)
+check('the stub settles the first quietly', code == 200, (code, str(d)[:120]))
+code, d = curl('POST', API + '/delete-account', timeout=120)
+check('the delete is 200', code == 200 and dictish(d).get('deleted') is True, (code, d))
+code, bst = curl('GET', BSTUB + '/stub/state', jar=None)
+inv = dictish(dictish(bst).get('invoices'))
+check('the unpaid invoice is marked invalid', dictish(inv.get(INV2)).get('status') == 'Invalid', inv.get(INV2))
+check('the settled one is left as it is', dictish(inv.get(INV1)).get('status') == 'Settled', inv.get(INV1))
+code, due = curl('GET', API + '/refunds-due')
+due = due if isinstance(due, list) else []
+check('the settled payment is recorded for the owner to refund',
+      len(due) == 1 and due[0].get('id') == INV1 and due[0].get('amount') == 10000000
+      and due[0].get('rail') == 'btcpay' and 'ship' not in due[0], (code, due))
+code, d = curl('POST', API + '/refunds-due/done', {'id': INV1})
+check('the owner marks it refunded', code == 200, (code, d))
+settle()
+code, due = curl('GET', API + '/refunds-due')
+check('and the record is gone', due == [], due)
+code, d = curl('POST', API + '/refunds-due/done', {'id': INV1})
+check('twice is 404', code == 404, (code, d))
+code, d = btc_hook('InvoiceSettled', INV1)
+settle(2)
+code, d = curl('GET', API + '/accounts/' + SELF)
+check('a late bitcoin webhook opens no account', code == 404, (code, d))
 
 broom()
 print()

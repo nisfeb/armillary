@@ -94,6 +94,20 @@
     !>((get-header:http 'authorization' header-list.req))
     (expect-eq !>(`(unit octs)`~) !>(body.req))
   ==
+++  test-invoice-status-request
+  =/  req=request:http  (invoice-status-request:ab url store key 'inv_1' 'Invalid')
+  ;:  weld
+    (expect-eq !>(%'POST') !>(method.req))
+    %+  expect-eq
+      !>('http://127.0.0.1:3401/api/v1/stores/store1/invoices/inv_1/status')
+    !>(url.req)
+    %+  expect-eq
+      !>(`(unit @t)`[~ 'token k'])
+    !>((get-header:http 'authorization' header-list.req))
+    %+  expect-eq
+      !>(`(unit json)`[~ (need (de:json:html '{"status":"Invalid"}'))])
+    !>(?~(body.req ~ (de:json:html q.u.body.req)))
+  ==
 ::  ==  the readers
 ::
 ++  settled-invoice

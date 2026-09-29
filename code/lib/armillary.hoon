@@ -1411,6 +1411,20 @@
 ::  vendor elsewhere turns refuse_comets on.
 ::
 ++  is-comet  |=(who=@p ^-(? ?=(%pawn (clan:title who))))
+::  +nonce-ok: a nonce that may name a grub: 1 to 64 of a-z, 0-9 and -,
+::  which is what +secret-of makes and what a tombstone is filed under
+::
+++  nonce-ok
+  |=  n=@t
+  ^-  ?
+  =/  len=@ud  (met 3 n)
+  ?:  |(=(0 len) (gth len max-id))  |
+  %+  levy  (trip n)
+  |=  c=@t
+  ?|  &((gte c 'a') (lte c 'z'))
+      &((gte c '0') (lte c '9'))
+      =('-' c)
+  ==
 ::  +$  inbox-op: everything a customer ship asks of its vendor. The
 ::  source ship of the poke is the account: no op names a ship.
 ::
@@ -1424,6 +1438,7 @@
       [%lease ~]
       [%drop-lease ~]
       [%cancel-subscription ~]
+      [%delete-account nonce=@t]
   ==
 ::  +de-inbox: one op from a poke, or the field that failed. A stranger
 ::  sends this, so every branch is a clean refusal.
@@ -1437,6 +1452,10 @@
   ?:  =('lease' op)                (each-op [%lease ~])
   ?:  =('drop-lease' op)           (each-op [%drop-lease ~])
   ?:  =('cancel-subscription' op)  (each-op [%cancel-subscription ~])
+  ?:  =('delete-account' op)
+    =/  nonce=@t  (gs jon 'nonce')
+    ?.  (nonce-ok nonce)  [%| 'nonce: 1 to 64 of a-z, 0-9 and -']
+    (each-op [%delete-account nonce])
   ?:  =('checkout' op)
     =/  rail=@t  (gs jon 'rail')
     ?.  |(=('stripe' rail) =('btcpay' rail))  [%| 'rail: stripe or btcpay']
@@ -1476,6 +1495,8 @@
       %lease                 (pairs:enjs:format ~[['op' s+'lease']])
       %drop-lease            (pairs:enjs:format ~[['op' s+'drop-lease']])
       %cancel-subscription   (pairs:enjs:format ~[['op' s+'cancel-subscription']])
+      %delete-account
+    (pairs:enjs:format ~[['op' s+'delete-account'] ['nonce' s+nonce.o]])
       %checkout
     %-  pairs:enjs:format
     :~  ['op' s+'checkout']
@@ -1885,16 +1906,69 @@
 ::
 ++  de-op-note-op
   |=  jon=json
-  ^-  (each [nonce=@t payload=json sent=?] @t)
+  ^-  (each [nonce=@t payload=json sent=? vendor=(unit @p)] @t)
   =/  nonce=@t  (gs jon 'nonce')
   ?:  |(=('' nonce) (gth (met 3 nonce) max-id))  [%| 'nonce: 1 to 64 bytes']
   =/  pay=json  (gj jon 'payload')
   ?.  ?=([%o *] pay)  [%| 'payload: a JSON object is required']
-  [%& [nonce pay (gb jon 'sent')]]
+  ::  a delete-account op names its vendor itself, since the setting
+  ::  is gone by the time the op is confirmed
+  =/  vendor=(unit @p)  (slaw %p (gs jon 'vendor'))
+  ?:  &(!=('' (gs jon 'vendor')) ?=(~ vendor))  [%| 'vendor: not an @p']
+  [%& [nonce pay (gb jon 'sent') vendor]]
 ++  de-op-drop-op
   |=  jon=json
   ^-  (each @t @t)
   =/  nonce=@t  (gs jon 'nonce')
   ?:  |(=('' nonce) (gth (met 3 nonce) max-id))  [%| 'nonce: 1 to 64 bytes']
   [%& nonce]
+::  +de-op-answer-op: what the vendor's tombstone said about a queued
+::  delete, onto its row
+::
+++  de-op-answer-op
+  |=  jon=json
+  ^-  (each [nonce=@t deleted=? why=@t] @t)
+  =/  nonce=@t  (gs jon 'nonce')
+  ?.  (nonce-ok nonce)  [%| 'nonce: 1 to 64 of a-z, 0-9 and -']
+  [%& [nonce (gb jon 'deleted') (gs jon 'why')]]
+::  ==  account deletion, on the vendor
+::
+::  +de-op-delete-account: the ship whose account goes, and the nonce
+::  its tombstone is filed under. No nonce is the owner's delete, which
+::  answers nobody.
+::
+++  de-op-delete-account
+  |=  jon=json
+  ^-  (each [ship=@p nonce=@t] @t)
+  =/  who  (ship-field jon)
+  ?:  ?=(%| -.who)  [%| p.who]
+  =/  nonce=@t  (gs jon 'nonce')
+  ?:  &(!=('' nonce) !(nonce-ok nonce))  [%| 'nonce: 1 to 64 of a-z, 0-9 and -']
+  [%& [p.who nonce]]
+::  +de-op-tombstone: a delete op's answer, filed under its nonce
+::
+++  de-op-tombstone
+  |=  jon=json
+  ^-  (each [ship=@p nonce=@t deleted=? why=@t] @t)
+  =/  who  (ship-field jon)
+  ?:  ?=(%| -.who)  [%| p.who]
+  =/  nonce=@t  (gs jon 'nonce')
+  ?.  (nonce-ok nonce)  [%| 'nonce: 1 to 64 of a-z, 0-9 and -']
+  =/  why=@t  (gs jon 'why')
+  ?:  (gth (met 3 why) max-url)  [%| 'why: at most 500 bytes']
+  [%& [p.who nonce (gb jon 'deleted') why]]
+::  +en-tombstone: the file a deleted ship's delete op is answered by.
+::  It holds the ship name and the nonce and nothing else about the
+::  ship, and it expires within a day.
+::
+++  en-tombstone
+  |=  [who=@p nonce=@t deleted=? why=@t at=@da]
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['ship' s+(scot %p who)]
+      ['nonce' s+nonce]
+      ['deleted' b+deleted]
+      ['why' s+why]
+      ['at' (en-time at)]
+  ==
 --

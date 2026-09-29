@@ -527,6 +527,92 @@
     !>((round [%mint-key 'phone' 'n1']))
     (expect-eq !>(`(each inbox-op:arm @t)`[%& [%got-key 'abc']]) !>((round [%got-key 'abc'])))
     (expect-eq !>(`(each inbox-op:arm @t)`[%& [%drop-key 'abc']]) !>((round [%drop-key 'abc'])))
+    %-  expect-eq
+    :-  !>(`(each inbox-op:arm @t)`[%& [%delete-account 'n9-abc']])
+    !>((round [%delete-account 'n9-abc']))
+  ==
+::  ==  account deletion
+::
+++  sixty-four  (crip (reap 64 'a'))
+++  test-nonce-ok
+  ;:  weld
+    (expect !>((nonce-ok:arm 'abc-123')))
+    (expect !>((nonce-ok:arm sixty-four)))
+    (expect !>(!(nonce-ok:arm (cat 3 sixty-four 'a'))))
+    (expect !>(!(nonce-ok:arm '')))
+    (expect !>(!(nonce-ok:arm 'ABC')))
+    (expect !>(!(nonce-ok:arm 'a/b')))
+    (expect !>(!(nonce-ok:arm 'a b')))
+    (expect !>(!(nonce-ok:arm 'a.json')))
+  ==
+++  test-de-inbox-delete-account
+  ;:  weld
+    %-  expect-eq
+    :-  !>(`(each inbox-op:arm @t)`[%& [%delete-account 'abc-123']])
+    !>((de-inbox:arm (jo '{"op":"delete-account","nonce":"abc-123"}')))
+    %-  expect-eq
+    :-  !>('nonce: 1 to 64 of a-z, 0-9 and -')
+    !>((why (de-inbox:arm (jo '{"op":"delete-account"}'))))
+    %-  expect-eq
+    :-  !>('nonce: 1 to 64 of a-z, 0-9 and -')
+    !>((why (de-inbox:arm (jo '{"op":"delete-account","nonce":"../x"}'))))
+  ==
+++  test-de-op-note-op-vendor
+  =/  plain  (jo '{"nonce":"n1","payload":{"op":"hello"},"sent":false}')
+  =/  named  (jo '{"nonce":"n1","payload":{"op":"delete-account","nonce":"n1"},"sent":true,"vendor":"~wex"}')
+  =/  bad    (jo '{"nonce":"n1","payload":{"op":"hello"},"vendor":"nope"}')
+  ;:  weld
+    %-  expect-eq
+    :-  !>(`(each [nonce=@t payload=json sent=? vendor=(unit @p)] @t)`[%& ['n1' (jo '{"op":"hello"}') | ~]])
+    !>((de-op-note-op:arm plain))
+    %-  expect-eq
+    :-  !>(`(each [nonce=@t payload=json sent=? vendor=(unit @p)] @t)`[%& ['n1' (jo '{"op":"delete-account","nonce":"n1"}') & `~wex]])
+    !>((de-op-note-op:arm named))
+    (expect-eq !>('vendor: not an @p') !>((why (de-op-note-op:arm bad))))
+  ==
+++  test-de-op-delete-account
+  ;:  weld
+    %-  expect-eq
+    :-  !>(`(each [ship=@p nonce=@t] @t)`[%& [~wex 'abc']])
+    !>((de-op-delete-account:arm (jo '{"ship":"~wex","nonce":"abc"}')))
+    %-  expect-eq
+    :-  !>(`(each [ship=@p nonce=@t] @t)`[%& [~wex '']])
+    !>((de-op-delete-account:arm (jo '{"ship":"~wex"}')))
+    (expect-eq !>('ship: not an @p') !>((why (de-op-delete-account:arm (jo '{"nonce":"abc"}')))))
+    %-  expect-eq
+    :-  !>('nonce: 1 to 64 of a-z, 0-9 and -')
+    !>((why (de-op-delete-account:arm (jo '{"ship":"~wex","nonce":"A"}'))))
+  ==
+++  test-de-op-tombstone
+  ;:  weld
+    %-  expect-eq
+    :-  !>(`(each [ship=@p nonce=@t deleted=? why=@t] @t)`[%& [~wex 'abc' | 'stripe answered 503']])
+    !>((de-op-tombstone:arm (jo '{"ship":"~wex","nonce":"abc","deleted":false,"why":"stripe answered 503"}')))
+    %-  expect-eq
+    :-  !>(`(each [ship=@p nonce=@t deleted=? why=@t] @t)`[%& [~wex 'abc' & '']])
+    !>((de-op-tombstone:arm (jo '{"ship":"~wex","nonce":"abc","deleted":true}')))
+    %-  expect-eq
+    :-  !>('nonce: 1 to 64 of a-z, 0-9 and -')
+    !>((why (de-op-tombstone:arm (jo '{"ship":"~wex","deleted":true}'))))
+  ==
+++  test-de-op-answer-op
+  ;:  weld
+    %-  expect-eq
+    :-  !>(`(each [nonce=@t deleted=? why=@t] @t)`[%& ['abc' & '']])
+    !>((de-op-answer-op:arm (jo '{"nonce":"abc","deleted":true}')))
+    %-  expect-eq
+    :-  !>('nonce: 1 to 64 of a-z, 0-9 and -')
+    !>((why (de-op-answer-op:arm (jo '{"deleted":true}'))))
+  ==
+++  test-en-tombstone
+  =/  j=json  (en-tombstone:arm ~wex 'abc' & '' t0)
+  ;:  weld
+    (expect-eq !>('~wex') !>((gs:arm j 'ship')))
+    (expect-eq !>('abc') !>((gs:arm j 'nonce')))
+    (expect !>((gb:arm j 'deleted')))
+    (expect-eq !>('') !>((gs:arm j 'why')))
+    (expect-eq !>(`(unit @da)`[~ t0]) !>((gt:arm j 'at')))
+    (expect-eq !>(5) !>(?:(?=([%o *] j) ~(wyt by p.j) 0)))
   ==
 ::  ==  the account view
 ::

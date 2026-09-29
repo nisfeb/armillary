@@ -57,6 +57,21 @@ The account is then reconciled: a lease is recapped to the balance that is left,
 
 `charge.dispute.closed` only writes its status into the audit ring as `stripe.dispute`. A dispute won is credited back by the owner, by hand, because only the owner can see that the money really came back.
 
+## Deleting an account
+
+A customer's `delete-account` op, `docs/channel.md`, settles the money before anything on the ship is touched, and a step that fails refuses the whole op and deletes nothing, so the person can try again once the owner has looked. The steps run in the order that leaves the least undone when one fails:
+
+1. Every open checkout row on the card rail is expired on Stripe, so nothing can be paid on it. A session that already completed cannot be expired, so it is read back: paid and not yet on the ledger, its PaymentIntent is refunded there and then, since the account the money was for is going. An intent Stripe says is already refunded counts as done.
+2. Every open row on the bitcoin rail is read back from BTCPay. An invoice nobody paid is marked `Invalid`. One that is `Settled` or `Processing` has money on it that BTCPay cannot send back on its own, so it is recorded for the owner to refund by hand: the invoice id, the amount and the rail, and nothing about the ship. `GET /api/refunds-due` lists them, the Payments view shows them, and `POST /api/refunds-due/done` with the id drops one once it is refunded.
+3. The OpenRouter lease key, `armillary/~ship`, is revoked upstream.
+4. The Stripe Customer is deleted, which cancels its subscriptions at once and removes the ship from Stripe's own description and metadata. Stripe keeps the deleted Customer for its records, as its documentation says.
+
+A row with no rail id, which is what the stub rail writes, has nothing to close. A call that answers 404 counts as done, so a deletion retried after a partial failure converges. The unspent balance is not refunded: it was prepaid credit, and the app says so before it asks. The owner's `DELETE /api/accounts/<ship>` runs the same four steps and goes on regardless, noting what failed in the ring.
+
+Two key permissions follow, over what the rails needed before: the Stripe restricted key needs **Refunds write**, and the BTCPay api key needs **`btcpay.store.canmodifyinvoices`**. Without them a deletion with money in flight is refused with the rail's reason.
+
+After the deletion, a payment or webhook naming that ship must never open an account again, and does not: every credit path finds no account and refuses, `unknown session` or `unknown invoice`, and answers 200 so the rail stops retrying. It refunds nothing either, on purpose. A session or invoice arriving for a deleted ship is a replay of one that was credited and spent before the deletion, since every open one was closed or settled by the steps above, and the ledger that would prove it is gone. Refunding on arrival would let a person top up, spend it all, delete the account and reload the return page for their money back. The `customer.subscription.deleted` that the Customer's deletion causes finds no account and is a no-op, not a failure.
+
 ## Only a ship that spoke over ames can pay
 
 Every payment credits an @p, and an @p is only ever taken from an ames poke. The inbox fiber stamps `seen` on the account on every op it takes, and the writer sets it from nothing else. Each credit path checks the stamp before it writes: a Stripe session or invoice, a BTCPay invoice, or the owner attaching a subscription for a ship that never poked the inbox is refused with `ship: never spoke to us over ames`, whatever the object says. The owner cannot open an account either: a mint for a ship with no account answers 404 until that ship says hello. The reasoning is fraud: a card session's metadata can name any ship, but only the ship itself can produce a signed ames packet, so the balance can only ever land with the @p that asked for it.
@@ -109,6 +124,7 @@ A top-up plan needs nothing on Stripe: its checkout carries the amount inline. A
 | Products | write |
 | Prices | write |
 | Subscriptions | write |
+| Refunds | write |
 | Invoices | read |
 | Disputes | read |
 | Billing Portal | write |
@@ -122,7 +138,7 @@ Without a public URL the return page still proves the whole flow: it verifies th
 
 ## Proving it
 
-`scripts/fake-stripe.py PORT SECRET SHIP_URL` stands in for Stripe: Checkout Sessions, Customers, Invoices, Products, Prices, Subscriptions, Disputes, and the pages that pretend to be a person paying. `POST /stub/pay/<session>` pays one, `POST /stub/fail/<session>` fails a late settlement, `POST /stub/dispute/<session>` opens one dispute on its payment and redelivers the event on every later call, `POST /stub/renew/<sub>` invents the next invoice, `POST /stub/delete/<sub>` reports the subscription gone, and `GET /stub/state` dumps the store. It signs its webhooks with SECRET, or posts them unsigned when SECRET is `-`.
+`scripts/fake-stripe.py PORT SECRET SHIP_URL` stands in for Stripe: Checkout Sessions, Customers, Invoices, Products, Prices, Subscriptions, Disputes and Refunds, plus the pages that pretend to be a person paying. `POST /stub/pay/<session>` pays one, `POST /stub/pay-quietly/<session>` pays one without sending the webhook, `POST /stub/fail/<session>` fails a late settlement, `POST /stub/dispute/<session>` opens one dispute on its payment and redelivers the event on every later call, `POST /stub/renew/<sub>` invents the next invoice, `POST /stub/delete/<sub>` reports the subscription gone, `POST /stub/broken/on` and `/off` make every write answer 503 meanwhile, `POST /stub/delay/<seconds>` makes the next customer delete take that long, and `GET /stub/state` dumps the store. Customers can be deleted, sessions expired and refunds made, the way a deletion needs. It signs its webhooks with SECRET, or posts them unsigned when SECRET is `-`.
 
 `api-matrix.py` and `ship-matrix.py` both run against it. `live-matrix.py` is the one run by hand, against Stripe test mode with a key from `STRIPE_TEST_KEY`; it prints the checkout url for a person to pay with `4242 4242 4242 4242` and then polls the customer's balance.
 
@@ -174,7 +190,7 @@ Neither secret ever appears unmasked on a read route, in `/tr/log`, in `/tr/inbo
 ### What BTCPay needs from the owner
 
 1. A BTCPay Server store, self-hosted or hosted, with a wallet on it.
-2. An api key on that store with `btcpay.store.cancreateinvoice` and `btcpay.store.canviewinvoices`, and nothing else.
+2. An api key on that store with `btcpay.store.cancreateinvoice`, `btcpay.store.canviewinvoices` and `btcpay.store.canmodifyinvoices`, and nothing else. The third is what marks an invoice invalid when an account is deleted.
 3. A webhook on the store pointing at `<public_url>/apps/armillary/hooks/btcpay`, with a secret, subscribed to `InvoiceSettled`, `InvoiceProcessing`, `InvoiceExpired` and `InvoiceInvalid`.
 4. The store id, the instance url, the api key and the webhook secret, pasted into the Payments view.
 
@@ -184,6 +200,6 @@ Without a public URL the return page still proves the whole flow: it verifies th
 
 ### Proving it
 
-`scripts/fake-btcpay.py PORT SECRET SHIP_URL` stands in for BTCPay: the two Greenfield invoice routes and a checkout page with three buttons. `POST /stub/pay/<id>` settles an invoice the way Lightning does, `POST /stub/processing/<id>` marks it seen the way a chain payment does, `POST /stub/expire/<id>` expires it, and `GET /stub/state` dumps the store. It signs its webhooks with SECRET, or posts them unsigned when SECRET is `-`.
+`scripts/fake-btcpay.py PORT SECRET SHIP_URL` stands in for BTCPay: the two Greenfield invoice routes, the status route that marks one invalid or settled, and a checkout page with three buttons. `POST /stub/pay/<id>` settles an invoice the way Lightning does, `POST /stub/processing/<id>` marks it seen the way a chain payment does, `POST /stub/expire/<id>` expires it, `POST /stub/settle-quietly/<id>` settles it without sending the webhook, and `GET /stub/state` dumps the store. It signs its webhooks with SECRET, or posts them unsigned when SECRET is `-`.
 
 `api-matrix.py` and `ship-matrix.py` both run against it. `live-matrix.py` is the run by hand, against a real store, with `BTCPAY_URL`, `BTCPAY_STORE` and `BTCPAY_KEY` in the environment; it prints the invoice url for a person to pay from a testnet wallet and then polls the customer's balance for half an hour.

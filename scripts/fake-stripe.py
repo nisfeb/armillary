@@ -6,11 +6,15 @@ Disputes, plus the pages that pretend to be a person paying. No
 dependencies and no disk: the store is a dict that dies with the
 process.
 
-The stub routes: /stub/pay/<session> pays one, /stub/fail/<session>
-fails a late settlement, /stub/dispute/<session> opens one dispute on
-its payment and redelivers the same event on every later call,
-/stub/renew/<sub> invents the next invoice, /stub/delete/<sub> reports
-a subscription gone, and /stub/state dumps the store.
+The stub routes: /stub/pay/<session> pays one, /stub/pay-quietly/<session>
+pays one without telling the ship (a webhook still on its way),
+/stub/fail/<session> fails a late settlement, /stub/dispute/<session>
+opens one dispute on its payment and redelivers the same event on every
+later call, /stub/renew/<sub> invents the next invoice,
+/stub/delete/<sub> reports a subscription gone, /stub/broken/on and
+/stub/broken/off make every write answer 503 meanwhile,
+/stub/delay/<seconds> makes the next customer delete take that long,
+and /stub/state dumps the store.
 
 SECRET signs the webhooks it posts to SHIP_URL, the way Stripe signs
 real ones; pass "-" to post them unsigned. SHIP_URL is the ship's own
@@ -45,8 +49,11 @@ STORE = {
     'subscriptions': {},
     'customers': {},
     'disputes': {},
+    'refunds': {},
     'hooks': [],
     'n': 0,
+    'broken': False,
+    'delay': 0,
 }
 
 
@@ -88,13 +95,15 @@ def post_hook(event_type, obj):
         return 0
 
 
-def pay(sid):
-    """mark a session paid and tell the ship, the way a card would"""
+def pay(sid, quiet=False):
+    """mark a session paid and tell the ship, the way a card would.
+    quiet pays it and tells nobody: the webhook is still on its way"""
     s = STORE['sessions'].get(sid)
-    if not s:
+    if not s or s.get('status') == 'expired':
         return None
     if s['payment_status'] != 'paid':
         s['payment_status'] = 'paid'
+        s['status'] = 'complete'
         s['payment_intent'] = nid('pi')
         if s['mode'] == 'subscription':
             s['customer'] = s.get('customer') or nid('cus')
@@ -107,8 +116,48 @@ def pay(sid):
                 'cancel_at_period_end': False,
             }
             make_invoice(s['subscription'])
-    threading.Thread(target=fire, args=(sid,), daemon=True).start()
+    if not quiet:
+        threading.Thread(target=fire, args=(sid,), daemon=True).start()
     return s
+
+
+def delete_customer(cid):
+    """the customer goes and its subscriptions end at once, each one
+    reported the way Stripe reports it"""
+    c = STORE['customers'].get(cid)
+    if not c:
+        return None
+    if STORE['delay']:
+        wait, STORE['delay'] = STORE['delay'], 0
+        time.sleep(wait)
+    c['deleted'] = True
+    gone = [sid for sid, sub in STORE['subscriptions'].items() if sub['customer'] == cid]
+    for sub_id in gone:
+        del STORE['subscriptions'][sub_id]
+        threading.Thread(target=post_hook,
+                         args=('customer.subscription.deleted', {'id': sub_id}),
+                         daemon=True).start()
+    return {'id': cid, 'object': 'customer', 'deleted': True}
+
+
+def refund(intent):
+    """the whole of a payment back to the card, once"""
+    hit = None
+    for s in STORE['sessions'].values():
+        if s.get('payment_intent') == intent:
+            hit = s
+    if not hit:
+        return 400, {'error': {'message': 'stub: no such payment intent',
+                               'type': 'invalid_request_error'}}
+    if hit.get('refunded'):
+        return 400, {'error': {'message': 'stub: charge already refunded',
+                               'type': 'invalid_request_error',
+                               'code': 'charge_already_refunded'}}
+    hit['refunded'] = True
+    rid = nid('re')
+    STORE['refunds'][rid] = {'id': rid, 'object': 'refund', 'payment_intent': intent,
+                             'amount': hit['amount_total'], 'status': 'succeeded'}
+    return 200, STORE['refunds'][rid]
 
 
 def fire(sid):
@@ -240,6 +289,15 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/stub/pay/'):
             s = pay(path[len('/stub/pay/'):])
             return self.send(200, s) if s else self.miss()
+        if path.startswith('/stub/pay-quietly/'):
+            s = pay(path[len('/stub/pay-quietly/'):], quiet=True)
+            return self.send(200, s) if s else self.miss()
+        if path.startswith('/stub/broken/'):
+            STORE['broken'] = path.endswith('/on')
+            return self.send(200, {'broken': STORE['broken']})
+        if path.startswith('/stub/delay/'):
+            STORE['delay'] = int(path[len('/stub/delay/'):] or 0)
+            return self.send(200, {'delay': STORE['delay']})
         if path.startswith('/stub/fail/'):
             s = fail(path[len('/stub/fail/'):])
             return self.send(200, s) if s else self.miss()
@@ -264,9 +322,24 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {'deleted': sub_id})
         if not self.bearer_ok():
             return None
+        if STORE['broken']:
+            return self.send(503, {'error': {'message': 'stub: broken on purpose'}})
         f = form(raw)
         if path == '/v1/checkout/sessions':
             return self.session(f)
+        if path.startswith('/v1/checkout/sessions/') and path.endswith('/expire'):
+            sid = path[len('/v1/checkout/sessions/'):-len('/expire')]
+            s = STORE['sessions'].get(sid)
+            if not s:
+                return self.miss()
+            if s.get('status') != 'open':
+                return self.send(400, {'error': {'message': 'stub: session is not open',
+                                                 'type': 'invalid_request_error'}})
+            s['status'] = 'expired'
+            return self.send(200, s)
+        if path == '/v1/refunds':
+            code, obj = refund(f.get('payment_intent', ''))
+            return self.send(code, obj)
         if path == '/v1/customers':
             cid = nid('cus')
             STORE['customers'][cid] = {
@@ -298,6 +371,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, sub)
         return self.miss()
 
+    # ---- DELETE ----
+    def do_DELETE(self):
+        path = urllib.parse.urlparse(self.path).path
+        if not self.bearer_ok():
+            return None
+        if STORE['broken']:
+            return self.send(503, {'error': {'message': 'stub: broken on purpose'}})
+        if path.startswith('/v1/customers/'):
+            gone = delete_customer(path[len('/v1/customers/'):])
+            return self.send(200, gone) if gone else self.miss()
+        return self.miss()
+
     def session(self, f):
         mode = f.get('mode', 'payment')
         sid = nid('cs')
@@ -312,6 +397,7 @@ class Handler(BaseHTTPRequestHandler):
             'id': sid,
             'url': 'http://127.0.0.1:%d/stub/pay/%s' % (PORT, sid),
             'mode': mode,
+            'status': 'open',
             'payment_status': 'unpaid',
             'amount_total': total,
             'amount_subtotal': total,

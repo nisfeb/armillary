@@ -119,7 +119,9 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 | `POST /api/accounts/<ship>/reconcile` | read this account's lease from the provider, charge what it spent and move its cap; answers `{"ship", "ok", "why"}` |
 | `DELETE /api/accounts/<ship>/lease` | delete the lease key upstream and drop the row |
 | `POST /api/accounts/<ship>/clear-subscription` | forget a subscription Stripe says is gone; 409 when there is none |
-| `DELETE /api/accounts/<ship>` | delete the account, its keys and its whole ledger. Owner only, and irreversible: this exists so the gate can leave the ship as it found it, and nothing on the page calls it |
+| `DELETE /api/accounts/<ship>` | delete the account whole: its Stripe Customer, open sessions and invoices, lease key, directory, key-index entries, usergroup and ring rows. Owner only, and irreversible: the gate's broom, and nothing on the page calls it. `docs/payments.md` |
+| `GET /api/refunds-due` | bitcoin payments that landed on accounts being deleted, for the owner to refund by hand |
+| `POST /api/refunds-due/done` | `{"id"}`: one of them is refunded |
 | `GET /api/report?days=30` | what the vendor made over a window: credits by rail, charged, cost, margin, refunds, requests, tokens, lease spend, accounts and the top ten models |
 | `POST /api/tick` | prod the housekeeping fiber: reconcile every lease, expire stale checkouts, fold old ledger rows. It runs itself every ten minutes; this is for when ten minutes is too long to wait |
 | `GET /api/log` | the audit ring, the last 500 writer outcomes, newest first. No secret ever reaches it |
@@ -147,6 +149,7 @@ These are what a client on the customer's own ship calls, over the cookie it alr
 | `DELETE /api/keys/<id>` | tell the vendor to revoke it and forget it here at once |
 | `POST /api/checkout` | `{"rail", "plan" or "amount"}`: `rail` is `stripe` for a card or `btcpay` for bitcoin. Opens a checkout and answers `{"url"}`, or 202 with the nonce. 502 with the vendor's reason when the vendor refused it. A subscription plan is card only |
 | `POST /api/cancel-subscription` | ask the vendor to stop the subscription renewing; 202, and the view says when Stripe confirms |
+| `POST /api/delete-account` | delete this ship's account on the vendor, record and data both, and forget the vendor here. 200 `deleted`, 202 `queued` with the nonce after thirty seconds, 409 `vendor: not set`, 502 with the vendor's reason and nothing deleted. `docs/channel.md` |
 | `GET /api/inference` | everything a client needs: `{"mode", "base_url", "key", "models"}`. `lease` mode with the provider's own key when this ship holds a lease that can still spend, `proxy` mode with the vendor's base URL and the newest inference key otherwise. 404 `no key yet` when this ship holds neither |
 | `GET /api/catalog` | the vendor's public catalog with prices, read live; 502 `vendor unreachable` when the vendor does not answer. On a ship that is nobody's customer this is the owner's own catalog instead |
 | `POST /api/lease` | ask the vendor for a lease and wait for it. Answers the lease, or 404 `no lease for this account` when the vendor offers none, 502 with the vendor's reason when the provider refused, 202 with the nonce after thirty seconds |

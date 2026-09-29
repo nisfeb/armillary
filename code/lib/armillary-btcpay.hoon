@@ -187,6 +187,17 @@
   ^-  request:http
   =/  full=@t  (rap 3 (invoices-at url store) '/' id ~)
   [%'GET' full (auth-only key) ~]
+::  +invoice-status-request: an invoice marked Invalid, so nothing can
+::  be paid on it, or Settled. The key needs
+::  btcpay.store.canmodifyinvoices.
+::
+++  invoice-status-request
+  |=  [url=@t store=@t key=@t id=@t status=@t]
+  ^-  request:http
+  =/  full=@t  (rap 3 (invoices-at url store) '/' id '/status' ~)
+  =/  doc=json  (pairs:enjs:format ~[['status' s+status]])
+  =/  body=octs  (as-octs:mimes:html (en:json:html doc))
+  [%'POST' full (heads key) `body]
 ::  +read-invoice: an invoice as the vendor needs it. checkoutLink comes
 ::  back on a create and is often absent on a read, so link may be ''.
 ::

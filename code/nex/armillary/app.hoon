@@ -13,12 +13,15 @@
 ::    /vendor.json                       the vendor ship; ours on the vendor
 ::    /key-index.json                    a key id to the ship that holds it
 ::    /tick.sig                          the vendor's ten minute housekeeping
+::    /tombstones/<nonce>.json           a delete op's answer, peekable by any ship, a day
+::    /refunds-due.json                  bitcoin payments the owner refunds by hand
 ::    /accounts/<ship>/account.json      ship, cached balance, made, seen, closed
 ::    /accounts/<ship>/keys.json         one salted hash per key, by id
 ::    /accounts/<ship>/ledger/<name>     [/armillary %row], one per money move
 ::    /beacon/rev                        the change beacon the page streams
 ::    /tr/last                           the last writer outcome, as json
 ::    /tr/log                            the audit ring, the last 500 ops
+::    /grant.json                        the shell's grant, kept across loads
 ::    the page and the manifests         laid fresh on every load, not %fall
 ::
 ::  ROADS ARE NEXUS-RELATIVE. A desk-installed app cannot learn its own
@@ -72,6 +75,9 @@
           [%over %& [/ %'armillary.css'] [[/ %mime] page-css]]
           [%over %& [/ %'armillary.js'] [[/ %mime] page-js]]
           [%over %& [/ %'return.html'] [[/ %mime] page-return]]
+          ::  the shell's record of the roads the owner granted, written
+          ::  on approval; a load that dropped it would jail every fiber
+          [%stay %& [/ %'grant.json']]
           [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'web.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'inbox.sig'] [[/ %sig] ~]]
@@ -81,6 +87,8 @@
           [%fall %| /accounts empty-dir:loader]
           [%fall %| /tr empty-dir:loader]
           [%fall %| /beacon empty-dir:loader]
+          [%fall %| /tombstones empty-dir:loader]
+          [%fall %& [/ %'refunds-due.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'settings.json'] [[/ %json] starter-settings:arm]]
           [%fall %& [/ %'providers.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'catalog.json'] [[/ %json] [%a ~]]]
@@ -246,7 +254,11 @@
   ?:  =('touch-key' op)      (do-touch-key jon)
   ?:  =('seen' op)           (do-seen jon)
   ?:  =('close-account' op)  (do-close-account jon)
-  ?:  =('drop-account' op)   (do-drop-account jon)
+  ?:  =('delete-account' op)  (do-delete-account jon)
+  ?:  =('tombstone' op)      (do-tombstone jon)
+  ?:  =('expire-tombstones' op)  do-expire-tombstones
+  ?:  =('refund-due' op)     (do-refund-due jon)
+  ?:  =('drop-refund-due' op)  (do-drop-refund-due jon)
   ?:  =('rebuild' op)        do-rebuild
   ?:  =('note' op)           (do-note jon)
   ?:  =('write-view' op)     (do-op-write-view jon)
@@ -266,6 +278,8 @@
   ?:  =('store-lease' op)    (do-store-lease jon)
   ?:  =('note-op' op)        (do-note-op jon)
   ?:  =('drop-op' op)        (do-drop-op jon)
+  ?:  =('answer-op' op)      (do-answer-op jon)
+  ?:  =('forget-vendor' op)  do-forget-vendor
   (refuse op 'unknown op' '')
 ::  +refuse: a refusal that leaves the writer standing
 ::
@@ -434,15 +448,19 @@
   =/  road=road:tarball  [%& %& u.base %'inbox.sig']
   =/  cat=road:tarball   [%& %& u.base %'catalog-public.json']
   =/  plans=road:tarball  [%& %& u.base %'plans.json']
+  ::  a whole directory: a delete op's answer is filed under the nonce
+  ::  the customer chose, which only that customer knows
+  =/  tombs=road:tarball  [%& %| (weld u.base /tombstones)]
   ?:  ?&  (~(has in poke.old) road)
           (~(has in peek.old) cat)
           (~(has in peek.old) plans)
+          (~(has in peek.old) tombs)
       ==
     (pure:m ~)
   ;<  reg=(unit tang)  bind:m  (reg-register-at-soft:io [u.base %'inbox.sig'])
   ?^  reg  (pure:m ~)
   ;<  err=(unit tang)  bind:m
-    (reg-how-soft:io /public [~ (sy road ~) (sy cat plans ~)])
+    (reg-how-soft:io /public [~ (sy road ~) (sy cat plans tombs ~)])
   (pure:m ~)
 ::  +remote-poke-wait: a poke to another ship's grubbery, answered or
 ::  timed out. A timer wake answers yes: grubbery's remote acks are
@@ -1078,26 +1096,157 @@
   ?~  ids  (pure:m ~)
   ;<  ~  bind:m  (index-del i.ids)
   (index-drop-each t.ids)
-::  +do-drop-account: the whole account directory, ledger and all. The
-::  gate uses it to leave the ship as it found it; nothing else does.
+::  +do-delete-account: the account and everything else that names the
+::  ship: the directory, the key-index entries, the usergroup, and the
+::  rows in both rings. The tombstone the customer peeks is written
+::  last, so a 200 over there never runs ahead of the cull here. The
+::  ring row for the deletion itself names no ship, and neither does
+::  /tr/last. The owner's delete comes here with no nonce.
 ::
-++  do-drop-account
+++  do-delete-account
   |=  jon=json
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  =/  got  (de-op-account:arm jon)
-  ?:  ?=(%| -.got)  (refuse 'drop-account' p.got '')
-  =/  who=@p  p.got
+  =/  got  (de-op-delete-account:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'delete-account' p.got '')
+  =/  who=@p  ship.p.got
+  =/  txt=@t  (scot %p who)
   ;<  ex=?  bind:m  (peek-exists:io (rv 0 (acct-dir who)))
-  ?.  ex  (refuse 'drop-account' 'ship: no such account' (scot %p who))
-  ;<  keys=json  bind:m  (read-json (rf 0 (acct-dir who) %'keys.json'))
-  =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
-  ;<  ~  bind:m  (index-drop-each ~(tap in ~(key by km)))
+  ;<  ~  bind:m  ?.(ex (pure:(fiber:fiber:nexus ,~) ~) (drop-account-files who))
+  ;<  ~  bind:m  (scrub-ring %log txt)
+  ;<  ~  bind:m  (scrub-ring %inbox txt)
+  ;<  ~  bind:m
+    ?:  =('' nonce.p.got)  (pure:(fiber:fiber:nexus ,~) ~)
+    (write-tombstone who nonce.p.got & '')
+  ;<  ~  bind:m  (note 'delete-account' & ?:(ex '' 'no account') '' --0)
+  (pure:m &)
+::  +drop-account-files: the directory, every key-index entry that
+::  names the ship, and its usergroup. The group directory is culled
+::  where the weir allows it, and emptied where it does not, which
+::  leaves the ship nothing to peek either way.
+::
+++  drop-account-files
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  txt=@t  (scot %p who)
+  ;<  ix=json  bind:m  (read-json (rf 0 / %'key-index.json'))
+  =/  im=(map @t json)  ?:(?=([%o *] ix) p.ix ~)
+  =/  kept=(list [@t json])
+    (skim ~(tap by im) |=([k=@t v=json] !=(v `json`s+txt)))
+  ;<  ~  bind:m
+    ?:  =((lent kept) ~(wyt by im))  (pure:(fiber:fiber:nexus ,~) ~)
+    (over:io (rf 0 / %'key-index.json') [[/ %json] [%o (malt kept)]])
   ;<  *  bind:m  (cull-soft:io (rv 0 (acct-dir who)))
-  ::  the group goes with the account: an empty ship set leaves nothing
-  ::  for the ship to peek, and the view it pointed at is gone anyway
-  ;<  ~  bind:m  (ug-set (group-name:arm who) ~ ~ ~)
-  ;<  ~  bind:m  (note 'drop-account' & '' (scot %p who) --0)
+  ;<  err=(unit tang)  bind:m  (cull-soft:io [%& %| (group-dir who)])
+  ?~  err  (pure:m ~)
+  (ug-set (group-name:arm who) ~ ~ ~)
+::  +scrub-ring: every row naming the ship out of one of the two rings
+::
+++  scrub-ring
+  |=  [name=@ta txt=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ring=json  bind:m  (read-json (rf 0 /tr name))
+  =/  rows=(list json)  ?:(?=([%a *] ring) p.ring ~)
+  =/  kept=(list json)  (skip rows |=(r=json =(txt (gs:arm r 'ship'))))
+  ?:  =((lent kept) (lent rows))  (pure:m ~)
+  (over:io (rf 0 /tr name) [[/ %json] a+kept])
+::  +tombstone-name: the grub a delete op's answer is filed under. The
+::  nonce is checked by the decoder to be a knot.
+::
+++  tombstone-name
+  |=  nonce=@t
+  ^-  @ta
+  `@ta`(rap 3 nonce '.json' ~)
+::  +write-tombstone: a delete op's answer, under the nonce the customer
+::  chose, in the one directory any ship may peek. A refusal is
+::  answered the same way, with deleted false and the reason.
+::
+++  write-tombstone
+  |=  [who=@p nonce=@t deleted=? why=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  now=@da  bind:m  get-time:io
+  %+  over:io  (rf 0 /tombstones (tombstone-name nonce))
+  [[/ %json] (en-tombstone:arm who nonce deleted why now)]
+::  +do-tombstone: a refused delete, answered. The account is still
+::  there, so the ring row may name the ship.
+::
+++  do-tombstone
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-tombstone:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'tombstone' p.got '')
+  =/  c  p.got
+  ;<  ~  bind:m  (write-tombstone ship.c nonce.c deleted.c why.c)
+  ;<  ~  bind:m  (note 'delete-account' deleted.c why.c (scot %p ship.c) --0)
+  (pure:m &)
+::  +do-expire-tombstones: a tombstone older than a day goes. The
+::  customer that asked has long since read it or given up.
+::
+++  do-expire-tombstones
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io (rv 0 /tombstones) ~)
+  ?.  ?=([%ball *] vw)  (pure:m |)
+  ?~  fil.ball.vw  (pure:m |)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  n=@ud  bind:m
+    (expire-tombs-each ~(tap in ~(key by contents.u.fil.ball.vw)) now 0)
+  (pure:m !=(0 n))
+++  expire-tombs-each
+  |=  [names=(list @ta) now=@da n=@ud]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ?~  names  (pure:m n)
+  ;<  jon=json  bind:m  (read-json (rf 0 /tombstones i.names))
+  =/  at=(unit @da)  (gt:arm jon 'at')
+  ?:  &(?=(^ at) (lth now (add u.at ~d1)))  (expire-tombs-each t.names now n)
+  ;<  *  bind:m  (cull-soft:io (rf 0 /tombstones i.names))
+  (expire-tombs-each t.names now +(n))
+::  +do-refund-due: a bitcoin payment that landed on an account being
+::  deleted, kept for the owner to refund by hand: the invoice id and
+::  the amount, and nothing about the ship. One document, keyed by
+::  the id, since a BTCPay id is not a knot.
+::
+++  do-refund-due
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  id=@t  (gs:arm jon 'id')
+  ?:  |(=('' id) (gth (met 3 id) max-id:arm))
+    (refuse 'refund-due' 'id: 1 to 64 bytes' '')
+  ;<  cur=json  bind:m  (read-json (rf 0 / %'refunds-due.json'))
+  =/  rm=(map @t json)  ?:(?=([%o *] cur) p.cur ~)
+  ?:  (~(has by rm) id)  (note-then-no 'refund-due' 'already recorded' '')
+  ;<  now=@da  bind:m  get-time:io
+  =/  amount=@ud  (gn:arm jon 'amount')
+  =/  row=json
+    %-  pairs:enjs:format
+    :~  ['id' s+id]
+        ['rail' s+(gs:arm jon 'rail')]
+        ['amount' (en-num:arm amount)]
+        ['at' (en-time:arm now)]
+    ==
+  ;<  ~  bind:m
+    (over:io (rf 0 / %'refunds-due.json') [[/ %json] [%o (~(put by rm) id row)]])
+  ;<  ~  bind:m  (note 'refund-due' & id '' (sun:si amount))
+  (pure:m &)
+::  +do-drop-refund-due: the owner says it is refunded
+::
+++  do-drop-refund-due
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  id=@t  (gs:arm jon 'id')
+  ;<  cur=json  bind:m  (read-json (rf 0 / %'refunds-due.json'))
+  =/  rm=(map @t json)  ?:(?=([%o *] cur) p.cur ~)
+  ?.  (~(has by rm) id)  (note-then-no 'drop-refund-due' 'no such refund' '')
+  ;<  ~  bind:m
+    (over:io (rf 0 / %'refunds-due.json') [[/ %json] [%o (~(del by rm) id)]])
+  ;<  ~  bind:m  (note 'drop-refund-due' & id '' --0)
   (pure:m &)
 ::  +do-rebuild: refold every account's cached balance from its ledger,
 ::  so a balance that drifted is repaired from the rows that are the
@@ -1624,10 +1773,62 @@
     :~  ['nonce' s+nonce.n]
         ['payload' payload.n]
         ['sent' b+sent.n]
+        ['vendor' ?~(vendor.n ~ s+(scot %p u.vendor.n))]
         ['at' (en-time:arm now)]
     ==
   =/  doc=json  (pairs:enjs:format ~[['ops' [%o (~(put by om) nonce.n row)]]])
   ;<  ~  bind:m  (over:io (rf 0 / %'client.json') [[/ %json] doc])
+  (pure:m &)
+::  +do-answer-op: what the vendor's tombstone said, onto the row of the
+::  delete op it answers, for the route waiting on it
+::
+++  do-answer-op
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-op-answer-op:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'answer-op' p.got '')
+  ;<  cj=json  bind:m  (read-json (rf 0 / %'client.json'))
+  =/  ops=json  (gj:arm cj 'ops')
+  =/  om=(map @t json)  ?:(?=([%o *] ops) p.ops ~)
+  =/  row=(unit json)  (~(get by om) nonce.p.got)
+  ?~  row  (pure:m |)
+  ?.  ?=([%o *] u.row)  (pure:m |)
+  ;<  now=@da  bind:m  get-time:io
+  =/  next=json
+    :-  %o
+    %-  ~(gas by p.u.row)
+    :~  ['done' b+&]
+        ['deleted' b+deleted.p.got]
+        ['why' s+why.p.got]
+        ['at' (en-time:arm now)]
+    ==
+  =/  doc=json  (pairs:enjs:format ~[['ops' [%o (~(put by om) nonce.p.got next)]]])
+  ;<  ~  bind:m  (over:io (rf 0 / %'client.json') [[/ %json] doc])
+  (pure:m &)
+::  +do-forget-vendor: the account is gone over there, so everything
+::  about the vendor goes here: the setting, the keys, the lease, the
+::  view, and every op still queued for it. A delete op stays, since it
+::  names its vendor itself and the client keeps sending it until the
+::  vendor answers.
+::
+++  do-forget-vendor
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  vj=json  bind:m  (read-json (rf 0 / %'vendor.json'))
+  =/  txt=@t  (gs:arm vj 'ship')
+  ;<  ~  bind:m  (over:io (rf 0 / %'vendor.json') [[/ %json] vendor-starter])
+  ;<  ~  bind:m  (over:io (rf 0 / %'keys.json') [[/ %json] [%o ~]])
+  ;<  ~  bind:m  (over:io (rf 0 / %'lease.json') [[/ %json] [%o ~]])
+  ;<  ~  bind:m  (over:io (rf 0 / %'view.json') [[/ %json] [%o ~]])
+  ;<  cj=json  bind:m  (read-json (rf 0 / %'client.json'))
+  =/  ops=json  (gj:arm cj 'ops')
+  =/  om=(map @t json)  ?:(?=([%o *] ops) p.ops ~)
+  =/  kept=(list [@t json])
+    (skim ~(tap by om) |=([n=@t j=json] !=('' (gs:arm j 'vendor'))))
+  =/  doc=json  (pairs:enjs:format ~[['ops' [%o (malt kept)]]])
+  ;<  ~  bind:m  (over:io (rf 0 / %'client.json') [[/ %json] doc])
+  ;<  ~  bind:m  (note 'forget-vendor' & '' txt --0)
   (pure:m &)
 ++  do-drop-op
   |=  jon=json
@@ -1995,6 +2196,9 @@
   ?:  ?=(%| -.got)  (note-inbox 'inbox' | p.got who)
   =/  o=inbox-op:arm  p.got
   ;<  sj=json  bind:m  (read-json (rf 0 / %'settings.json'))
+  ::  a delete op is answered whoever sent it, opens nothing and stamps
+  ::  nothing: deleting a ship that has no account is a success
+  ?:  ?=(%delete-account -.o)  (inbox-delete src nonce.o)
   ?:  ?&((gb:arm sj 'refuse_comets') (is-comet:arm src))
     (note-inbox 'inbox' | 'comet refused' who)
   ::  a ship with no account gets one on its first op, whatever the op
@@ -2034,7 +2238,170 @@
       %cancel-subscription   (inbox-cancel src)
       %lease                 (inbox-lease src)
       %drop-lease            (inbox-drop-lease src)
+      %delete-account        (inbox-delete src nonce.o)
   ==
+::  +inbox-delete: the customer asks for its account to go. Money
+::  first: every open session and invoice is closed, a payment already
+::  made and not yet credited is settled, the lease key is revoked and
+::  the Stripe Customer deleted, and any of those failing refuses the
+::  whole op and deletes nothing. Then the writer removes everything
+::  and answers the tombstone last.
+::
+++  inbox-delete
+  |=  [src=@p nonce=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  got=[ok=? why=@t]  bind:m  (settle-money 0 src)
+  ?.  ok.got
+    ;<  ~  bind:m
+      %+  poke-writer  0
+      %-  pairs:enjs:format
+      :~  ['op' s+'tombstone']
+          ['ship' s+who]
+          ['nonce' s+nonce]
+          ['deleted' b+|]
+          ['why' s+why.got]
+      ==
+    (note-inbox 'delete-account' | why.got who)
+  ;<  ~  bind:m
+    %+  poke-writer  0
+    %-  pairs:enjs:format
+    :~  ['op' s+'delete-account']
+        ['ship' s+who]
+        ['nonce' s+nonce]
+    ==
+  ::  the ring row names no ship: the deletion is the last thing about
+  ::  the ship this vendor keeps, and the writer scrubs the rest
+  (note-inbox 'delete-account' & '' '')
+::  +settle-money: the money side of a deletion, in the order that
+::  leaves the least undone when a step fails: sessions, invoices, the
+::  lease key, then the Stripe Customer, which is the one step Stripe
+::  cannot undo. Every call takes gone (404) as done, so a retry after
+::  a partial failure converges. Answers why when a step refused.
+::
+++  settle-money
+  |=  [up=@ud who=@p]
+  =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
+  ^-  form:m
+  ;<  aj=json  bind:m  (read-json (rf up (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?~  a  (pure:m [& ''])
+  ;<  s=settings:arm  bind:m  (settings-of up)
+  ;<  cj=json  bind:m  (read-json (rf up (acct-dir who) %'checkouts.json'))
+  =/  rows=(list json)
+    ?.  ?=([%o *] cj)  ~
+    (turn ~(tap by p.cj) |=([k=@t j=json] j))
+  ;<  ledger=(list [name=@ta =row:arm])  bind:m  (ledger-of up who)
+  ;<  why=@t  bind:m  (close-checkouts up s rows ledger)
+  ?.  =('' why)  (pure:m [| why])
+  ;<  lj=json  bind:m  (read-json (rf up (acct-dir who) %'lease.json'))
+  =/  held=(unit lease:arm)  (de-lease:arm lj)
+  ;<  why=@t  bind:m
+    ?~  held  (pure:(fiber:fiber:nexus ,@t) '')
+    =/  pid=@t  ?:(=('' provider.u.held) lease-provider.s provider.u.held)
+    ;<  road=(unit [base=@t key=@t])  bind:(fiber:fiber:nexus ,@t)  (lease-road up pid)
+    (kill-upstream road hash.u.held)
+  ?.  =('' why)  (pure:m [| why])
+  ?:  =('' stripe-customer.u.a)  (pure:m [& ''])
+  ?:  =('' stripe-key.s)  (pure:m [| 'stripe_key: not set'])
+  ;<  res=[status=@ud body=@t]  bind:m
+    %-  fetch
+    (customer-delete-request:astripe stripe-url.s stripe-key.s stripe-customer.u.a)
+  ?:  |((two-xx status.res) =(404 status.res))  (pure:m [& ''])
+  (pure:m [| (stripe-why status.res body.res)])
+::  +close-checkouts: every open checkout row closed on its rail, and a
+::  payment that already landed on one settled. A stub row has no sid
+::  and nothing to close. Answers the first refusal, or blank.
+::
+++  close-checkouts
+  |=  [up=@ud s=settings:arm rows=(list json) ledger=(list [name=@ta =row:arm])]
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ?~  rows  (pure:m '')
+  =/  r=json  i.rows
+  =/  rail=@t  (gs:arm r 'rail')
+  =/  sid=@t  (gs:arm r 'sid')
+  =/  status=@t  (gs:arm r 'status')
+  =/  open=?  |(=('pending' status) =('processing' status))
+  ;<  why=@t  bind:m
+    ?:  |(=('' sid) !open)  (pure:(fiber:fiber:nexus ,@t) '')
+    ?:  =('stripe' rail)  (close-session up s sid ledger)
+    ?:  =('btcpay' rail)  (close-invoice up s sid ledger)
+    (pure:(fiber:fiber:nexus ,@t) '')
+  ?.  =('' why)  (pure:m why)
+  (close-checkouts up s t.rows ledger)
+::  +close-session: a Stripe session expired. One that already
+::  completed cannot be, so it is read back: paid and not on the
+::  ledger, the money goes back to the card now, since the account it
+::  was for is going. An intent already refunded is done.
+::
+++  close-session
+  |=  [up=@ud s=settings:arm sid=@t ledger=(list [name=@ta =row:arm])]
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ?:  =('' stripe-key.s)  (pure:m 'stripe_key: not set')
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (session-expire-request:astripe stripe-url.s stripe-key.s sid))
+  ?:  |((two-xx status.res) =(404 status.res))  (pure:m '')
+  ?.  =(400 status.res)  (pure:m (stripe-why status.res body.res))
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (session-request:astripe stripe-url.s stripe-key.s sid))
+  ?.  (two-xx status.res)  (pure:m (stripe-why status.res body.res))
+  =/  got  (read-session:astripe body.res)
+  ?~  got  (pure:m 'stripe answered no session')
+  ?.  paid.u.got  (pure:m '')
+  ?:  (has-ref ledger id.u.got)  (pure:m '')
+  ?:  =('' intent.u.got)  (pure:m 'stripe: a paid session with no payment intent')
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (refund-request:astripe stripe-url.s stripe-key.s intent.u.got))
+  =/  code=@t
+    (gs:arm (gj:arm (fall (de:json:html body.res) ~) 'error') 'code')
+  ?:  |((two-xx status.res) =('charge_already_refunded' code))
+    ;<  ~  bind:m  (poke-note up 'stripe.refund' & (rap 3 sid ' refunded' ~))
+    (pure:m '')
+  (pure:m (stripe-why status.res body.res))
+::  +close-invoice: a BTCPay invoice read back. Money already on it,
+::  settled or still confirming, is recorded for the owner to refund;
+::  one nobody paid is marked invalid so nobody can.
+::
+++  close-invoice
+  |=  [up=@ud s=settings:arm id=@t ledger=(list [name=@ta =row:arm])]
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  =/  unset=?
+    ?|  =('' btcpay-url.s)
+        =('' btcpay-store.s)
+        =('' btcpay-key.s)
+    ==
+  ?:  unset  (pure:m 'btcpay: not set')
+  ;<  res=[status=@ud body=@t]  bind:m
+    %-  fetch
+    (invoice-get-request:abtc btcpay-url.s btcpay-store.s btcpay-key.s id)
+  ?:  =(404 status.res)  (pure:m '')
+  ?.  (two-xx status.res)  (pure:m (btcpay-why status.res body.res))
+  =/  got  (read-invoice:abtc body.res)
+  ?~  got  (pure:m 'btcpay answered no invoice')
+  =/  st=@t  status.u.got
+  ?:  |(=('Settled' st) =('Processing' st))
+    ?:  (has-ref ledger id)  (pure:m '')
+    =/  micro=@ud  (fall (micro-of:abtc amount.u.got) 0)
+    ;<  ~  bind:m
+      %+  poke-writer  up
+      %-  pairs:enjs:format
+      :~  ['op' s+'refund-due']
+          ['id' s+id]
+          ['rail' s+'btcpay']
+          ['amount' (en-num:arm micro)]
+      ==
+    (pure:m '')
+  ?:  |(=('Expired' st) =('Invalid' st))  (pure:m '')
+  ;<  res=[status=@ud body=@t]  bind:m
+    %-  fetch
+    %-  invoice-status-request:abtc
+    [btcpay-url.s btcpay-store.s btcpay-key.s id 'Invalid']
+  ?:  |((two-xx status.res) =(404 status.res))  (pure:m '')
+  (pure:m (btcpay-why status.res body.res))
 ::  +inbox-cancel: the customer asks Stripe to stop renewing. The row on
 ::  the account stays until customer.subscription.deleted arrives, so
 ::  what it already paid for is still its own until the period ends.
@@ -2412,6 +2779,8 @@
   ;<  ~  bind:m  (tick-leases ships now force)
   ;<  ~  bind:m
     (poke-writer 0 (pairs:enjs:format ~[['op' s+'expire-checkouts']]))
+  ;<  ~  bind:m
+    (poke-writer 0 (pairs:enjs:format ~[['op' s+'expire-tombstones']]))
   (tick-compact ships)
 ::  +tick-leases: on the timer, a lease read under nine minutes ago is
 ::  left alone, so a pass right after a lease op does not call the
@@ -2447,14 +2816,18 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   |-
+  ::  a delete op names its vendor itself: it is sent, and its answer
+  ::  read, whether or not this ship still has a vendor
+  ;<  queued=?  bind:m  client-deletes
   ;<  vj=json  bind:m  (read-json (rf 0 / %'vendor.json'))
   =/  vendor=(unit @p)  (slaw %p (gs:arm vj 'ship'))
   ?~  vendor
     ::  a ship with no vendor waits, but not forever: the prod that
     ::  named a vendor can land before the writer has written it down,
-    ::  and then only a second look finds it
+    ::  and then only a second look finds it. A delete op still queued
+    ::  is looked after every minute.
     ;<  now=@da  bind:m  get-time:io
-    ;<  ~  bind:m  (set-timer:io /idle (add now ~m5))
+    ;<  ~  bind:m  (set-timer:io /idle (add now ?:(queued ~m1 ~m5)))
     ;<  *  bind:m  take-poke-from:io
     ;<  ~  bind:m  (cancel-timer:io /idle)
     $
@@ -2475,7 +2848,8 @@
   =/  ops=json  (gj:arm cj 'ops')
   =/  om=(map @t json)  ?:(?=([%o *] ops) p.ops ~)
   =/  todo=(list [nonce=@t row=json])
-    (skim ~(tap by om) |=([n=@t j=json] !(gb:arm j 'sent')))
+    %+  skim  ~(tap by om)
+    |=([n=@t j=json] &(!(gb:arm j 'sent') =('' (gs:arm j 'vendor'))))
   ;<  ~  bind:m  (send-queued vendor todo)
   ::  the vendor's own writer runs only after our poke has landed, so a
   ::  pass that sent something looks again a moment later rather than
@@ -2507,8 +2881,86 @@
         ['nonce' s+n]
         ['payload' pay]
         ['sent' b+&]
+        ['vendor' (gj:arm row.i.todo 'vendor')]
     ==
   (send-queued vendor t.todo)
+::  +client-deletes: the delete ops queued, each to the vendor it names.
+::  One not yet answered is sent again and its tombstone peeked, on
+::  every wake: a poke's ack is unobservable, the vendor deletes an
+::  account that is already gone as a no-op, and only the tombstone
+::  says it is done. One answered a minute ago that no route collected
+::  is dropped, with a ring row when the vendor refused.
+::
+++  client-deletes
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  cj=json  bind:m  (read-json (rf 0 / %'client.json'))
+  =/  ops=json  (gj:arm cj 'ops')
+  =/  om=(map @t json)  ?:(?=([%o *] ops) p.ops ~)
+  =/  rows=(list [nonce=@t row=json])
+    (skim ~(tap by om) |=([n=@t j=json] !=('' (gs:arm j 'vendor'))))
+  ;<  ~  bind:m  (delete-each rows)
+  (pure:m ?=(^ rows))
+++  delete-each
+  |=  rows=(list [nonce=@t row=json])
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  rows  (pure:m ~)
+  =/  n=@t  nonce.i.rows
+  =/  row=json  row.i.rows
+  =/  vendor=(unit @p)  (slaw %p (gs:arm row 'vendor'))
+  ?~  vendor  (delete-each t.rows)
+  ;<  ~  bind:m
+    ?:  (gb:arm row 'done')  (drop-answered n row)
+    ;<  *  bind:(fiber:fiber:nexus ,~)  (send-op u.vendor (gj:arm row 'payload'))
+    ;<  got=(unit json)  bind:(fiber:fiber:nexus ,~)  (peek-tombstone u.vendor n)
+    ?~  got  (pure:(fiber:fiber:nexus ,~) ~)
+    %+  poke-writer  0
+    %-  pairs:enjs:format
+    :~  ['op' s+'answer-op']
+        ['nonce' s+n]
+        ['deleted' b+(gb:arm u.got 'deleted')]
+        ['why' s+(gs:arm u.got 'why')]
+    ==
+  (delete-each t.rows)
+::  +peek-tombstone: a delete op's answer on the vendor, or ~ while
+::  there is none. Our own ship is read locally.
+::
+++  peek-tombstone
+  |=  [vendor=@p nonce=@t]
+  =/  m  (fiber:fiber:nexus ,(unit json))
+  ^-  form:m
+  =/  name=@ta  (tombstone-name nonce)
+  ;<  our=@p  bind:m  get-our:io
+  ?:  =(vendor our)
+    ;<  jon=json  bind:m  (read-json (rf 0 /tombstones name))
+    (pure:m ?:(=('' (gs:arm jon 'nonce')) ~ `jon))
+  =/  road=road:tarball  [%& %& (weld armillary-instance:arm /tombstones) name]
+  ;<  vw=(unit view:nexus)  bind:m  (peek-remote-wait vendor road)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  (pure:m (sang-json sang.u.vw))
+::  +drop-answered: an answered delete op nobody collected within a
+::  minute, which is what a 202 leaves behind. A refusal is noted here,
+::  since the route that would have said so has long since answered.
+::
+++  drop-answered
+  |=  [n=@t row=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  now=@da  bind:m  get-time:io
+  =/  at=(unit @da)  (gt:arm row 'at')
+  ?:  &(?=(^ at) (lth now (add u.at ~m1)))  (pure:m ~)
+  ;<  ~  bind:m
+    ?:  (gb:arm row 'deleted')  (pure:(fiber:fiber:nexus ,~) ~)
+    %+  poke-writer  0
+    %-  pairs:enjs:format
+    :~  ['op' s+'note']
+        ['what' s+'delete-account']
+        ['ok' b+|]
+        ['why' s+(gs:arm row 'why')]
+        ['ship' s+(gs:arm row 'vendor')]
+    ==
+  (poke-writer 0 (pairs:enjs:format ~[['op' s+'drop-op'] ['nonce' s+n]]))
 ::  +send-op: one op into the vendor's inbox. Our own ship is poked
 ::  directly, since a ship cannot ames itself.
 ::
@@ -2845,6 +3297,10 @@
   ?:  &(=('GET' meth) ?=([%api %accounts @ ~] suffix))   (own (serve-account eyre-id s2))
   ?:  &(=('DELETE' meth) ?=([%api %accounts @ ~] suffix))
     (own (serve-drop-account eyre-id s2))
+  ?:  &(=('GET' meth) ?=([%api %'refunds-due' ~] suffix))
+    (own (serve-refunds-due eyre-id))
+  ?:  &(=('POST' meth) ?=([%api %'refunds-due' %done ~] suffix))
+    (own (serve-refund-done eyre-id jon))
   ?:  &(=('POST' meth) ?=([%api %accounts @ %keys ~] suffix))
     (own (serve-mint eyre-id s2 jon))
   ?:  &(=('DELETE' meth) ?=([%api %accounts @ %keys @ ~] suffix))
@@ -2880,6 +3336,8 @@
   ?:  &(=('DELETE' meth) ?=([%api %lease ~] suffix))     (own (serve-give-lease eyre-id))
   ?:  &(=('POST' meth) ?=([%api %'cancel-subscription' ~] suffix))
     (own (serve-my-cancel eyre-id))
+  ?:  &(=('POST' meth) ?=([%api %'delete-account' ~] suffix))
+    (own (serve-delete-account eyre-id))
   (send-err eyre-id 404 'no such route')
 ::  +ship-of: a ship named in a route. The segment carries its ~.
 ::
@@ -3595,8 +4053,10 @@
     ==
   ;<  ~  bind:m  (poke-writer 1 op)
   (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+(scot %p u.who)] ['ok' b+&]]))
-::  +serve-drop-account: a hard delete, the gate's broom. The owner
-::  alone may take it and nothing on the page calls it.
+::  +serve-drop-account: the owner deletes an account whole, the same
+::  way a customer's delete op does, except that a rail that will not
+::  answer does not stop it: what failed is noted and the account goes
+::  anyway. The gate's broom runs on it.
 ::
 ++  serve-drop-account
   |=  [eyre-id=@ta seg=@ta]
@@ -3606,12 +4066,35 @@
   ?~  who  (send-err eyre-id 400 'ship: not an @p')
   ;<  ex=?  bind:m  (peek-exists:io (rv 1 (acct-dir u.who)))
   ?.  ex  (send-err eyre-id 404 'no such account')
-  ::  a hard delete takes the key upstream with it, the way a close does
-  ;<  *  bind:m  (kill-lease 1 u.who)
+  ;<  got=[ok=? why=@t]  bind:m  (settle-money 1 u.who)
+  ;<  ~  bind:m
+    ?:  ok.got  (pure:(fiber:fiber:nexus ,~) ~)
+    (poke-note 1 'delete-account' | why.got)
   =/  op=json
-    (pairs:enjs:format ~[['op' s+'drop-account'] ['ship' s+(scot %p u.who)]])
+    (pairs:enjs:format ~[['op' s+'delete-account'] ['ship' s+(scot %p u.who)]])
   ;<  ~  bind:m  (poke-writer 1 op)
   (send-json eyre-id 200 (pairs:enjs:format ~[['ship' s+(scot %p u.who)] ['ok' b+&]]))
+::  +serve-refunds-due: the bitcoin payments the owner still has to
+::  refund by hand, and the button that says one is done
+::
+++  serve-refunds-due
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  cur=json  bind:m  (read-json (rf 1 / %'refunds-due.json'))
+  =/  rm=(map @t json)  ?:(?=([%o *] cur) p.cur ~)
+  (send-json eyre-id 200 a+(turn ~(tap by rm) |=([k=@t j=json] j)))
+++  serve-refund-done
+  |=  [eyre-id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  id=@t  (gs:arm jon 'id')
+  ?:  =('' id)  (send-err eyre-id 400 'id: required')
+  ;<  cur=json  bind:m  (read-json (rf 1 / %'refunds-due.json'))
+  ?.  (has-key:arm cur id)  (send-err eyre-id 404 'no such refund')
+  ;<  ~  bind:m
+    (poke-writer 1 (pairs:enjs:format ~[['op' s+'drop-refund-due'] ['id' s+id]]))
+  (send-json eyre-id 200 (pairs:enjs:format ~[['id' s+id] ['ok' b+&]]))
 ++  serve-log
   |=  eyre-id=@ta
   =/  m  (fiber:fiber:nexus ,~)
@@ -3770,14 +4253,16 @@
   ;<  vj=json  bind:m  (read-json (rf up / %'vendor.json'))
   (pure:m (slaw %p (gs:arm vj 'ship')))
 ::  +prod-client: wake the client fiber. The payload says why; what to
-::  send is already in client.json.
+::  send is already in client.json. The ack is never taken: a client
+::  busy on a vendor that does not answer holds the poke for up to
+::  thirty seconds, and a route counting down must not wait behind it.
 ::
 ++  prod-client
   |=  jon=json
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  *  bind:m  (poke-soft:io (rf 1 / %'client.sig') [[/ %json] jon])
-  (pure:m ~)
+  ;<  wir=wire  bind:m  (nonce:io /prod)
+  (send-dart:io %node wir (rf 1 / %'client.sig') %poke [[/ %json] jon])
 ::  +fresh-nonce: an op's idempotency key, from entropy
 ::
 ++  fresh-nonce
@@ -3997,6 +4482,71 @@
   ;<  ~  bind:m  (queue-at n (en-inbox:arm [%cancel-subscription ~]))
   ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
   (send-json eyre-id 202 (pairs:enjs:format ~[['queued' b+&]]))
+::  +serve-delete-account: the person deletes its account on the
+::  vendor. The op is queued naming the vendor itself, and the route
+::  waits thirty seconds for the vendor's tombstone. Deleted: everything
+::  about the vendor is forgotten here first, then 200. Refused:
+::  nothing is forgotten, 502 with the vendor's reason. No answer yet:
+::  forgotten all the same, 202 with the nonce, and the client keeps
+::  sending the op until the vendor answers, restarts and all.
+::
+++  serve-delete-account
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vendor=(unit @p)  bind:m  (vendor-of 1)
+  ?~  vendor  (send-err eyre-id 409 'vendor: not set')
+  ;<  n=@t  bind:m  fresh-nonce
+  ;<  ~  bind:m
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'note-op']
+        ['nonce' s+n]
+        ['payload' (en-inbox:arm [%delete-account n])]
+        ['sent' b+|]
+        ['vendor' s+(scot %p u.vendor)]
+    ==
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  ;<  got=(unit json)  bind:m  (await-answer n 30)
+  ?:  &(?=(^ got) !(gb:arm u.got 'deleted'))
+    ;<  ~  bind:m
+      (poke-writer 1 (pairs:enjs:format ~[['op' s+'drop-op'] ['nonce' s+n]]))
+    (send-err eyre-id 502 (gs:arm u.got 'why'))
+  ;<  ~  bind:m  (poke-writer 1 (pairs:enjs:format ~[['op' s+'forget-vendor']]))
+  ;<  ~  bind:m
+    ?~  got  (pure:(fiber:fiber:nexus ,~) ~)
+    (poke-writer 1 (pairs:enjs:format ~[['op' s+'drop-op'] ['nonce' s+n]]))
+  ::  the writer applies the forget after this fiber has moved on, and
+  ::  the next read of the account must not find the vendor. The client
+  ::  is prodded once more so it wakes without a vendor and keeps the
+  ::  delete op on its one minute cadence.
+  ;<  ~  bind:m  (await-forgotten 20)
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  ?~  got
+    (send-json eyre-id 202 (pairs:enjs:format ~[['queued' b+&] ['nonce' s+n]]))
+  (send-json eyre-id 200 (pairs:enjs:format ~[['deleted' b+&]]))
+::  +await-answer: the delete op's row answered, or thirty seconds gone
+::
+++  await-answer
+  |=  [n=@t left=@ud]
+  =/  m  (fiber:fiber:nexus ,(unit json))
+  ^-  form:m
+  ;<  cj=json  bind:m  (read-json (rf 1 / %'client.json'))
+  =/  row=json  (gj:arm (gj:arm cj 'ops') n)
+  ?:  (gb:arm row 'done')  (pure:m `row)
+  ?:  =(0 left)  (pure:m ~)
+  ;<  ~  bind:m  (nudge left)
+  ;<  ~  bind:m  (nap ~s1)
+  (await-answer n (dec left))
+++  await-forgotten
+  |=  left=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vj=json  bind:m  (read-json (rf 1 / %'vendor.json'))
+  ?:  =('' (gs:arm vj 'ship'))  (pure:m ~)
+  ?:  =(0 left)  (pure:m ~)
+  ;<  ~  bind:m  (nap (div ~s1 4))
+  (await-forgotten (dec left))
 ++  await-checkout
   |=  [n=@t left=@ud]
   =/  m  (fiber:fiber:nexus ,(unit json))
@@ -4436,7 +4986,8 @@
     |=  [a=account:arm keys=@ud]
     ^-  ?
     =(stripe-subscription.a sub)
-  ?~  hits  (pure:m [| 'no account on that subscription'])
+  ::  a deleted ship's subscription going is the deletion's own doing
+  ?~  hits  (pure:m [& 'no account on that subscription'])
   =/  op=json
     %-  pairs:enjs:format
     :~  ['op' s+'clear-subscription']

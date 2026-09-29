@@ -13,7 +13,9 @@ own base, such as http://localhost:8080, and the webhook lands on
 The three buttons on the checkout page are the three ways an invoice
 moves: settled at once, the way Lightning does; processing and then
 settled, the way a chain payment does; and expired, the way an invoice
-nobody paid does.
+nobody paid does. /stub/settle-quietly/<id> settles one without telling
+the ship, a webhook still on its way, and the status route marks one
+Invalid or Settled the way the Greenfield API does.
 
 Threaded on purpose: paying posts a webhook, the ship answers it by
 reading the invoice back from here, and a single-threaded server would
@@ -133,6 +135,8 @@ class Handler(BaseHTTPRequestHandler):
         rest = parts[5:]
         if tail == 'one':
             return (parts[3], rest[0]) if len(rest) == 1 else None
+        if tail == 'status':
+            return (parts[3], rest[0]) if len(rest) == 2 and rest[1] == 'status' else None
         return (parts[3], None) if not rest else None
 
     # ---- GET ----
@@ -164,8 +168,27 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith(prefix):
                 inv = move(path[len(prefix):], status, event)
                 return self.send(200, inv) if inv else self.miss()
+        if path.startswith('/stub/settle-quietly/'):
+            inv = STORE['invoices'].get(path[len('/stub/settle-quietly/'):])
+            if not inv:
+                return self.miss()
+            inv['status'] = 'Settled'
+            return self.send(200, inv)
         if not self.token_ok():
             return None
+        marked = self.store_route(path, 'status')
+        if marked:
+            inv = STORE['invoices'].get(marked[1])
+            if not inv:
+                return self.miss()
+            try:
+                want = (json.loads(raw) if raw else {}).get('status')
+            except ValueError:
+                want = None
+            if want not in ('Invalid', 'Settled'):
+                return self.send(400, {'message': 'stub: status is Invalid or Settled'})
+            move(marked[1], want, 'InvoiceInvalid' if want == 'Invalid' else 'InvoiceSettled')
+            return self.send(200, inv)
         many = self.store_route(path, 'many')
         if many:
             return self.invoice(many[0], raw)
