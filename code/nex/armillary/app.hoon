@@ -21,6 +21,7 @@
 ::    /beacon/rev                        the change beacon the page streams
 ::    /tr/last                           the last writer outcome, as json
 ::    /tr/log                            the audit ring, the last 500 ops
+::    /tr/crashes                        one row per fiber that crashed since the last load
 ::    /grant.json                        the shell's grant, kept across loads
 ::    the page and the manifests         laid fresh on every load, not %fall
 ::
@@ -29,13 +30,20 @@
 ::  of steps from the calling fiber to the nexus root: 0 for the writer
 ::  and the binder, 1 for a request fiber at /requests/<id>.
 ::
-::  THE WRITER MUST NOT CRASH. +rise-wait restarts a failed process by
+::  THE WRITER MUST NOT CRASH. +rise restarts a failed process by
 ::  consuming the next poke without processing it, so every refusal is a
 ::  branch that returns cleanly and writes /tr/last.
 ::
 ::  SECRETS NEVER LEAVE. A provider key and a key's secret are stored
 ::  and sent upstream and nowhere else: no read route answers one, and
 ::  no audit row carries one.
+::
+::  THE CONSOLE IS SILENT. A ship within its parameters prints nothing:
+::  no banner, no success, no progress, nothing per request. A refusal
+::  goes to /tr/last and the rings, where it can be read back. The one
+::  thing that prints is a fiber crash, once, at >>>, naming the fiber
+::  and the remedy, after the fault is written to /tr/crashes; the trace
+::  prints only when +dbg is on, since a trace can carry a secret.
 ::
 /<  arm     /lib/armillary.hoon
 /<  ahttp   /lib/armillary-http.hoon
@@ -102,6 +110,7 @@
           [%fall %& [/ %'client.json'] [[/ %json] client-starter]]
           [%fall %& [/beacon %rev] [[/ %json] (numb:enjs:format 0)]]
           [%fall %& [/tr %last] [[/ %json] [%o ~]]]
+          [%over %& [/tr %crashes] [[/ %json] [%o ~]]]
           [%fall %& [/tr %log] [[/ %json] [%a ~]]]
           [%fall %& [/tr %inbox] [[/ %json] [%a ~]]]
       ==
@@ -118,7 +127,7 @@
           ::  and a crashed writer waits for the next poke before it
           ::  runs again.
           [~ %'main.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%armillary writer: failed")
+        ;<  ~  bind:m  (rise prod %'main.sig' %'main.sig' 0)
         |-
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
         ;<  changed=?  bind:m  (apply from sage)
@@ -127,7 +136,7 @@
           ::  the HTTP binder. bind-http-self is veto-tolerant: jailed,
           ::  it logs and waits; the approval reload binds for real.
           [~ %'web.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%armillary web: failed")
+        ;<  ~  bind:m  (rise prod %'web.sig' %'web.sig' 0)
         ;<  ~  bind:m  (bind-http-self:io [~ /apps/armillary])
         (http-dispatch:io %armillary)
           ::  the vendor's inbox: any ship may poke an account op here,
@@ -135,7 +144,7 @@
           ::  poke is the account; nothing in the payload names a ship.
           ::  A local poke is this ship acting as its own customer.
           [~ %'inbox.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%armillary inbox: failed")
+        ;<  ~  bind:m  (rise prod %'inbox.sig' %'inbox.sig' 0)
         ::  the road a stranger pokes is laid from here: the registry
         ::  keys a grant to the poking fiber's own rail, so only a fiber
         ::  at the root can grant a road at the root
@@ -148,21 +157,106 @@
           ::  the customer's client: send what is queued, peek the view,
           ::  and do it again every five minutes or whenever prodded
           [~ %'client.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%armillary client: failed")
+        ;<  ~  bind:m  (rise prod %'client.sig' %'client.sig' 0)
         client-loop
           ::  the vendor's housekeeping: reconcile every lease, expire
           ::  stale checkouts and fold old ledger rows, every ten
           ::  minutes or whenever prodded
           [~ %'tick.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%armillary tick: failed")
+        ;<  ~  bind:m  (rise prod %'tick.sig' %'tick.sig' 0)
         (tick-round |)
           ::  one ephemeral fiber per in-flight request
           [[%requests ~] @]
-        ;<  ~  bind:m  (rise-wait:io prod "%armillary request: failed")
+        ::  one row for every request fiber, so the record stays bounded;
+        ::  the line names the one that crashed
+        ;<  ~  bind:m  (rise prod %requests (rap 3 'requests/' name.rail ~) 1)
         (handle-request name.rail)
       ==
     --
 |%
+::  ==  the console
+::
+::  +dbg: the one debug switch. Off in every release; on, a crash also
+::  prints its trace, with no marker.
+::
+++  dbg  ^-(? |)
+::  +rise: a fiber's first step, which is where a crash lands it again.
+::  A clean start continues at once. A crash is recorded on the ship
+::  first, in /tr/crashes, one row per key with the count, the time,
+::  the error's first line and what clears it, and then one line goes
+::  to the console at >>> with the remedy, the wording fixed and the
+::  variable parts last, the way the kernel's parked line reads. The
+::  trace itself never reaches the console or the record: a trace can
+::  hold any noun, a key among them. Then the fiber waits for a poke,
+::  as +rise-wait does, and that poke restarts it without being
+::  applied, which the >> line says when it carried anything.
+::
+++  rise
+  |=  [=prod:fiber:nexus key=@t where=@t up=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ::  the very first step takes the start's kick and nothing else.
+  ::  After a reload the kernel queues that kick behind inputs already
+  ::  waiting, a timer wake or a customer's poke, and a first step that
+  ::  sent a dart would be offered the input instead and crash on it,
+  ::  a crash whose restart then eats the input.
+  ;<  ~  bind:m
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?~(in [%done ~] [%skip ~])
+  ?~  prod  (pure:m ~)
+  ;<  cur=json  bind:m  (read-json (rf up /tr %crashes))
+  =/  rows=(map @t json)  ?:(?=([%o *] cur) p.cur ~)
+  =/  count=@ud  +((gn:arm (gj:arm cur key) 'count'))
+  ;<  now=@da  bind:m  get-time:io
+  =/  head=@t  (crash-head u.prod)
+  =/  row=json
+    %-  pairs:enjs:format
+    :~  ['count' (en-num:arm count)]
+        ['at' (en-time:arm now)]
+        ['error' s+head]
+        ['clears' s+'a reload of the instance']
+    ==
+  ;<  ~  bind:m
+    (over:io (rf up /tr %crashes) [[/ %json] [%o (~(put by rows) key row)]])
+  ;<  grub=@t  bind:m  (grub-path up where)
+  =/  line=tape
+    ;:  weld
+      "armillary: fiber crashed; it waits for its next poke, which restarts it;"
+      " the record is /tr/crashes, which a reload clears: "
+      (trip grub)  ": "  (trip head)
+      " ("  (a-co:co count)  " since the last load)"
+    ==
+  ~>  %slog.[3 leaf+line]
+  %-  ?.(dbg same (slog u.prod))
+  ;<  =sage:tarball  bind:m  take-poke:io
+  ?:  =([/ %sig] p.sage)  (pure:m ~)
+  =/  warn=tape
+    %+  weld
+      "armillary: a poke restarted a crashed fiber without being applied; send it again: "
+    (trip grub)
+  ~>  %slog.[2 leaf+warn]
+  (pure:m ~)
+::  +grub-path: a grub's absolute path, from the shell's grant, which
+::  carries the app's own address, or the name alone where there is no
+::  grant
+::
+++  grub-path
+  |=  [up=@ud name=@t]
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ;<  g=json  bind:m  (read-json (rf up / %'grant.json'))
+  =/  here=@t  (gs:arm g 'here')
+  (pure:m ?:(=('' here) name (rap 3 here '/' name ~)))
+::  +crash-head: the first line of a trace, which is the error's own
+::  name, cut to 200 bytes. The rest is the stack, which stays out.
+::
+++  crash-head
+  |=  =tang
+  ^-  @t
+  ?~  tang  'no trace'
+  =/  t=tape  ~(ram re i.tang)
+  (crip (scag 200 t))
 ::  ==  roads
 ::
 ++  rf  |=([up=@ud p=path n=@ta] ^-(road:tarball [%| up [%& p n]]))

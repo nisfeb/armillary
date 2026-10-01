@@ -98,9 +98,11 @@ if '--add' in sys.argv or '--approve' in sys.argv:
                 body={'action': 'approve-weir', 'app': '/' + INSTANCE, 'granted': grant})
     print(f'permits: {s} {b.decode(errors="replace")[:200]}')
     time.sleep(5)
-    #  the fibers rose jailed and parked on a vetoed dart, and a reload
-    #  never revives a parked fiber: its stale veto is still queued. A
-    #  parked sig file is culled instead, and the reload lays it fresh
+    #  the fibers rose jailed and parked on a vetoed dart. A kernel
+    #  before 785d015 never revives one on reload, its stale veto still
+    #  queued, so a parked sig file is culled and the reload lays it
+    #  fresh; on a newer kernel nothing is parked here and nothing is
+    #  culled
     for sig in ('main.sig', 'web.sig', 'inbox.sig', 'client.sig', 'tick.sig'):
         s, b = call('GET', f'grubbery/ball/{INSTANCE}/{sig}?info=1')
         if s == 200 and json.loads(b).get('bang'):
