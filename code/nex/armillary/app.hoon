@@ -64,7 +64,7 @@
         %-  pairs:enjs:format
         :~  title+s+'Armillary'
             info+s+'Sell model inference from your ship'
-            color+s+'#1b2a4a'
+            color+s+'#1E1B4B'
             image+s+'/grubbery/tiles/icon/armillary'
             href+s+'/apps/armillary'
         ==
