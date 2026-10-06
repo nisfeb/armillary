@@ -476,11 +476,17 @@
   ;<  vw=(unit view:nexus)  bind:m
     (peek-soft:io [%& %& /sys/link/armillary %'dest.lanes'] ~)
   ?.  ?=([~ %file *] vw)  (pure:m ~)
-  =/  ls=(unit (set lane:tarball))
-    (mole |.(!<((set lane:tarball) (need-vase:tarball sang.u.vw))))
+  ::  an ordered list (earliest claimant first) on a kernel from
+  ::  develop's line, a set on the older one: read either, so this
+  ::  instance finds itself on both
+  =/  ls=(unit (list lane:tarball))
+    =/  l  (mole |.(!<((list lane:tarball) (need-vase:tarball sang.u.vw))))
+    ?^  l  l
+    %+  bind  (mole |.(!<((set lane:tarball) (need-vase:tarball sang.u.vw))))
+    |=(s=(set lane:tarball) ~(tap in s))
   ?~  ls  (pure:m ~)
   =/  dirs=(list path)
-    (murn ~(tap in u.ls) |=(=lane:tarball ?:(?=(%| -.lane) `p.lane ~)))
+    (murn u.ls |=(=lane:tarball ?:(?=(%| -.lane) `p.lane ~)))
   ?~  dirs  (pure:m ~)
   ::  an arbitrary lane: a desk app cannot learn its own path, so two
   ::  instances claiming the name leave nothing here to tell them apart
