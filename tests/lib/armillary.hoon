@@ -943,4 +943,41 @@
     (expect-eq !>('placing') !>((ph 'n5')))
     (expect-eq !>('placing') !>((gs:arm (checkout-phase:arm ~ ~ 'n1') 'phase')))
   ==
+::  ==  suggested models
+::
+::  roles map to models, a blank model drops its role, and a role name
+::  is checked like a nonce with _ allowed
+::
+++  test-de-suggested
+  =/  ok  (de-suggested:arm (jo '{"models":{"default":"a/b","catch_up":"c/d","assistant":""}}'))
+  ;:  weld
+    (expect-eq !>(%.y) !>(?=(%& -.ok)))
+    (expect-eq !>(`(unit @t)``'a/b') !>(?.(?=(%& -.ok) ~ (~(get by p.ok) 'default'))))
+    (expect-eq !>(`(unit @t)`~) !>(?.(?=(%& -.ok) ~ (~(get by p.ok) 'assistant'))))
+    %-  expect-eq
+    :-  !>('models: an object of role to model id')
+    !>((why (de-suggested:arm (jo '{"models":[]}'))))
+    %-  expect-eq
+    :-  !>('role Bad: 1 to 64 of a-z, 0-9, _ and -')
+    !>((why (de-suggested:arm (jo '{"models":{"Bad":"x"}}'))))
+    %-  expect-eq
+    :-  !>('models.default: a model id')
+    !>((why (de-suggested:arm (jo '{"models":{"default":3}}'))))
+  ==
+++  test-en-suggested
+  =/  j=json  (en-suggested:arm 4 (my ~[['default' 'a/b']]))
+  ;:  weld
+    (expect-eq !>(`@ud`4) !>((gn:arm j 'rev')))
+    (expect-eq !>('a/b') !>((gs:arm (gj:arm j 'models') 'default')))
+    %-  expect-eq
+    :-  !>(`(each (map @t @t) @t)`[%& (my ~[['default' 'a/b']])])
+    !>((de-suggested:arm j))
+  ==
+++  test-unsold
+  =/  sold=(set @t)  (sy ~['a/b' 'c/d'])
+  ;:  weld
+    (expect-eq !>('') !>((unsold:arm (my ~[['default' 'a/b'] ['assistant' 'c/d']]) sold)))
+    (expect-eq !>('x/y') !>((unsold:arm (my ~[['default' 'x/y']]) sold)))
+    (expect-eq !>('') !>((unsold:arm ~ sold)))
+  ==
 --

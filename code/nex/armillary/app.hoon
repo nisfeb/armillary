@@ -102,6 +102,9 @@
           [%fall %& [/ %'catalog.json'] [[/ %json] [%a ~]]]
           [%fall %& [/ %'catalog-public.json'] [[/ %json] [%a ~]]]
           [%fall %& [/ %'plans.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/ %'suggested.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/ %'vendor-suggested.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/ %'app-inference.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'vendor.json'] [[/ %json] vendor-starter]]
           [%fall %& [/ %'key-index.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'keys.json'] [[/ %json] [%o ~]]]
@@ -374,6 +377,7 @@
   ?:  =('drop-op' op)        (do-drop-op jon)
   ?:  =('answer-op' op)      (do-answer-op jon)
   ?:  =('forget-vendor' op)  do-forget-vendor
+  ?:  =('set-suggested' op)  (do-set-suggested jon)
   (refuse op 'unknown op' '')
 ::  +refuse: a refusal that leaves the writer standing
 ::
@@ -1471,7 +1475,39 @@
         +((gn:arm old 'rev'))
         now
     ==
-  (over:io (rf 0 (acct-dir who) %'view.json') [[/ %json] (en-view:arm v)])
+  ::  the vendor's suggested models ride in every view, so a customer
+  ::  reads them on its next pass
+  ;<  sug=json  bind:m  (read-json (rf 0 / %'suggested.json'))
+  =/  vj=json  (en-view:arm v)
+  =?  vj  ?=([%o *] vj)  [%o (~(put by p.vj) 'suggested' sug)]
+  (over:io (rf 0 (acct-dir who) %'view.json') [[/ %json] vj])
+::  +do-set-suggested: the vendor's suggested models, with a revision
+::  that moves on every change, then every account's view written
+::  again so each customer reads the new ones on its next pass. The
+::  route checked every model against the catalog before this.
+::
+++  do-set-suggested
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  got  (de-suggested:arm jon)
+  ?:  ?=(%| -.got)  (refuse 'set-suggested' p.got '')
+  ;<  old=json  bind:m  (read-json (rf 0 / %'suggested.json'))
+  =/  doc=json  (en-suggested:arm +((gn:arm old 'rev')) p.got)
+  ?:  =((gj:arm old 'models') (gj:arm doc 'models'))
+    (note-then-no 'set-suggested' 'unchanged' '')
+  ;<  ~  bind:m  (over:io (rf 0 / %'suggested.json') [[/ %json] doc])
+  ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 0)
+  ;<  ~  bind:m  (write-views (turn all |=([a=account:arm n=@ud] ship.a)))
+  ;<  ~  bind:m  (note 'set-suggested' & (scot %ud (gn:arm doc 'rev')) '' --0)
+  (pure:m &)
+++  write-views
+  |=  ships=(list @p)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  ships  (pure:m ~)
+  ;<  ~  bind:m  (do-write-view i.ships)
+  (write-views t.ships)
 ::  +lease-view: the lease as its own ship reads it, or null. The base
 ::  url and the model list come from the provider that minted the key,
 ::  so a client has everything it needs in one object.
@@ -1807,6 +1843,7 @@
     (over:io (rf 0 / %'keys.json') [[/ %json] [%o (~(put by km) id.k (en-held:arm k))]])
   ::  the audit row names the key id, never the secret
   ;<  ~  bind:m  (note 'store-key' & id.k '' --0)
+  ;<  ~  bind:m  write-app-inference
   (pure:m &)
 ++  do-forget-key
   |=  jon=json
@@ -1820,6 +1857,7 @@
   ;<  ~  bind:m
     (over:io (rf 0 / %'keys.json') [[/ %json] [%o (~(del by km) p.got)]])
   ;<  ~  bind:m  (note 'forget-key' & p.got '' --0)
+  ;<  ~  bind:m  write-app-inference
   (pure:m &)
 ::  +do-store-view: the vendor's view of our account, kept verbatim with
 ::  the time we read it. No audit row: this runs every five minutes and
@@ -1836,7 +1874,59 @@
     ?.  ?=([%o *] p.got)  p.got
     [%o (~(put by p.p.got) 'fetched' (en-time:arm now))]
   ;<  ~  bind:m  (over:io (rf 0 / %'view.json') [[/ %json] doc])
+  ::  the vendor's suggested models get a file of their own, with nothing
+  ::  secret in it, so another app on this ship (Orrery) may be granted
+  ::  that one file; written only when it changes, so a watcher wakes
+  ::  for a new suggestion and not for every five-minute read
+  =/  sug=json  (gj:arm p.got 'suggested')
+  ;<  was=json  bind:m  (read-json (rf 0 / %'vendor-suggested.json'))
+  ;<  ~  bind:m
+    ?:  |(!?=([%o *] sug) =(was sug))  (pure:(fiber:fiber:nexus ,~) ~)
+    (over:io (rf 0 / %'vendor-suggested.json') [[/ %json] sug])
+  ;<  ~  bind:m  write-app-inference
   (pure:m &)
+::  +write-app-inference: what another app on this ship (Orrery) needs
+::  to call the vendor's models, in a file of its own so the owner can
+::  grant that one file and nothing else: the choice GET /api/inference
+::  makes (a lease that can spend, else the newest key against the
+::  vendor's proxy) and the vendor's suggested models. It holds a key,
+::  which is its purpose; written only when it changes, so a watcher
+::  wakes for a change and not for every read.
+::
+++  write-app-inference
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  lj=json  bind:m  (read-json (rf 0 / %'lease.json'))
+  ;<  doc=json  bind:m  (read-json (rf 0 / %'view.json'))
+  ;<  held=(list held-key:arm)  bind:m  (held-keys 0)
+  =/  sug=json  (gj:arm doc 'suggested')
+  =?  sug  !?=([%o *] sug)  (en-suggested:arm 0 ~)
+  =/  leased=@t  (gs:arm lj 'key')
+  =/  out=json
+    ?:  &(!=('' leased) !(gb:arm lj 'disabled'))
+      (app-inference 'lease' (gs:arm lj 'base_url') leased sug)
+    ?~  held  (app-inference 'none' '' '' sug)
+    =/  newest=held-key:arm
+      %+  roll  `(list held-key:arm)`t.held
+      |=([k=held-key:arm best=_i.held] ?:((gth made.k made.best) k best))
+    %:  app-inference
+      'proxy'
+      (rap 3 (public-url-of doc) '/apps/armillary/v1' ~)
+      (rap 3 id.newest '.' secret.newest ~)
+      sug
+    ==
+  ;<  was=json  bind:m  (read-json (rf 0 / %'app-inference.json'))
+  ?:  =(was out)  (pure:m ~)
+  (over:io (rf 0 / %'app-inference.json') [[/ %json] out])
+++  app-inference
+  |=  [mode=@t base=@t key=@t sug=json]
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['mode' s+mode]
+      ['base_url' s+base]
+      ['key' s+key]
+      ['suggested' sug]
+  ==
 ::  +do-store-lease: the lease object out of the vendor's view, kept as
 ::  it came. This is the one place on a customer ship that holds a
 ::  provider key, and GET /api/inference is the only route that reads
@@ -1858,6 +1948,7 @@
   ?:  &((gb:arm cur 'dropped') !empty)  (pure:m |)
   ?:  =(cur p.got)  (pure:m |)
   ;<  ~  bind:m  (over:io (rf 0 / %'lease.json') [[/ %json] p.got])
+  ;<  ~  bind:m  write-app-inference
   (pure:m &)
 ::  +do-note-op: an op queued for the vendor, by nonce. The client fiber
 ::  sends what is here and drops a nonce once it shows in the view.
@@ -1934,6 +2025,7 @@
   =/  doc=json  (pairs:enjs:format ~[['ops' [%o (malt kept)]]])
   ;<  ~  bind:m  (over:io (rf 0 / %'client.json') [[/ %json] doc])
   ;<  ~  bind:m  (note 'forget-vendor' & '' txt --0)
+  ;<  ~  bind:m  write-app-inference
   (pure:m &)
 ++  do-drop-op
   |=  jon=json
@@ -3518,6 +3610,8 @@
     (own (serve-import eyre-id s2))
   ?:  &(=('GET' meth) ?=([%api %catalog ~] suffix))      (own (serve-catalog eyre-id))
   ?:  &(=('PUT' meth) ?=([%api %catalog ~] suffix))      (own (serve-set-catalog eyre-id jon))
+  ?:  &(=('GET' meth) ?=([%api %suggested ~] suffix))    (own (serve-suggested eyre-id))
+  ?:  &(=('PUT' meth) ?=([%api %suggested ~] suffix))    (own (serve-set-suggested eyre-id jon))
   ::  the plans. GET serves both halves: our own list on a vendor, the
   ::  vendor's list on a customer ship, since nothing on a plan is secret
   ?:  &(=('GET' meth) ?=([%api %plans ~] suffix))        (own (serve-plans eyre-id))
@@ -3821,6 +3915,35 @@
 ::  read live, when the vendor is elsewhere. Nothing on a plan is a
 ::  secret, so the two answers are the same shape.
 ::
+::  +serve-suggested: the vendor's suggested models, rev 0 and no roles
+::  before any are set
+::
+++  serve-suggested
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  doc=json  bind:m  (read-json (rf 1 / %'suggested.json'))
+  =?  doc  !?=([%o *] (gj:arm doc 'models'))  (en-suggested:arm (gn:arm doc 'rev') ~)
+  (send-json eyre-id 200 doc)
+::  +serve-set-suggested: the owner names a model per role. Every one
+::  must be a model the catalog sells, so a customer is never pointed at
+::  something it cannot buy.
+::
+++  serve-set-suggested
+  |=  [eyre-id=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  got  (de-suggested:arm jon)
+  ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
+  ;<  cat=(list model-row:arm)  bind:m  (catalog-of 1)
+  =/  sold=(set @t)
+    (silt (turn (skim cat |=(r=model-row:arm enabled.r)) |=(r=model-row:arm id.r)))
+  =/  bad=@t  (unsold:arm p.got sold)
+  ?.  =('' bad)  (send-err eyre-id 400 (rap 3 'models: ' bad ' is not in the catalog' ~))
+  ;<  ~  bind:m
+    %+  poke-writer  1
+    (pairs:enjs:format ~[['op' s+'set-suggested'] ['models' (gj:arm jon 'models')]])
+  (send-json eyre-id 200 (pairs:enjs:format ~[['ok' b+&]]))
 ++  serve-plans
   |=  eyre-id=@ta
   =/  m  (fiber:fiber:nexus ,~)
@@ -4885,8 +5008,10 @@
   ::  read, so a client keeps its one code path.
   ;<  lj=json  bind:m  (read-json (rf 1 / %'lease.json'))
   =/  leased=@t  (gs:arm lj 'key')
+  ;<  doc=json  bind:m  (read-json (rf 1 / %'view.json'))
   ?:  &(!=('' leased) !(gb:arm lj 'disabled'))
     %^  send-json  eyre-id  200
+    %+  with-suggested  doc
     %-  inference-json:arm
     :*  'lease'
         (gs:arm lj 'base_url')
@@ -4899,14 +5024,23 @@
     %+  roll  `(list held-key:arm)`t.held
     |=  [k=held-key:arm best=_i.held]
     ?:((gth made.k made.best) k best)
-  ;<  doc=json  bind:m  (read-json (rf 1 / %'view.json'))
   =/  base=@t  (rap 3 (public-url-of doc) '/apps/armillary/v1' ~)
   ;<  cat=(unit json)  bind:m  (vendor-catalog 1)
   =/  models=(list @t)
     ?.  ?=([~ %a *] cat)  ~
     (turn p.u.cat |=(j=json ^-(@t (gs:arm j 'id'))))
   =/  key=@t  (rap 3 id.newest '.' secret.newest ~)
-  (send-json eyre-id 200 (inference-json:arm 'proxy' base key models))
+  (send-json eyre-id 200 (with-suggested doc (inference-json:arm 'proxy' base key models)))
+::  +with-suggested: an inference answer with the vendor's suggested
+::  models from the view, rev 0 and no roles before any arrive
+::
+++  with-suggested
+  |=  [doc=json inf=json]
+  ^-  json
+  ?.  ?=([%o *] inf)  inf
+  =/  sug=json  (gj:arm doc 'suggested')
+  =?  sug  !?=([%o *] sug)  (en-suggested:arm 0 ~)
+  [%o (~(put by p.inf) 'suggested' sug)]
 ::  +serve-take-lease: ask the vendor for a lease and wait for the
 ::  answer to show in the view. The ship's own view carries the key,
 ::  and the caller here is this ship's owner or a client on the

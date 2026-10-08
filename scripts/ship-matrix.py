@@ -289,6 +289,42 @@ check('the inference config names the proxy and what it sells',
       str(dictish(inf).get('base_url', '')).endswith('/apps/armillary/v1')
       and 'stub/alpha' in dictish(inf).get('models', []), inf)
 
+print('suggested models')
+code, d = curl('PUT', api(HOST) + '/suggested', {'models': {'default': 'nope/never'}}, jar=JAR)
+check('a suggestion the catalog does not sell is 400', code == 400 and 'catalog' in err_of(d), (code, d))
+code, d = curl('PUT', api(HOST) + '/suggested',
+               {'models': {'default': 'stub/alpha', 'orrery_generator': 'stub/alpha'}}, jar=JAR)
+check('the vendor suggests stub/alpha', code == 200, (code, d))
+settle(2)
+code, sug = curl('GET', api(HOST) + '/suggested', jar=JAR)
+REV = dictish(sug).get('rev', 0)
+check('the suggestion has a revision and its roles',
+      REV >= 1 and dictish(dictish(sug).get('models')).get('orrery_generator') == 'stub/alpha', sug)
+view = wait_view(PEER, PJAR, lambda v: dictish(v.get('suggested')).get('rev') == REV)
+check('the customer view carries it', dictish(view.get('suggested')).get('rev') == REV, view.get('suggested'))
+code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
+check('the inference config carries it for clients',
+      dictish(dictish(inf).get('suggested')).get('rev') == REV, dictish(inf).get('suggested'))
+filed = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR,
+                        instance(PEER) + '/vendor-suggested.json?raw=1'],
+                       capture_output=True, text=True).stdout
+check('and the file another app may read holds it',
+      dictish(json.loads(filed or '{}')).get('rev') == REV, filed[:200])
+appinf = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR,
+                         instance(PEER) + '/app-inference.json?raw=1'],
+                        capture_output=True, text=True).stdout
+ai = dictish(json.loads(appinf or '{}'))
+check('the app inference file holds the proxy, its key and the suggestion',
+      ai.get('mode') == 'proxy' and ai.get('key') == secret
+      and str(ai.get('base_url', '')).endswith('/apps/armillary/v1')
+      and dictish(ai.get('suggested')).get('rev') == REV,
+      {k: (v if k != 'key' else (v == secret)) for k, v in ai.items()})
+code, d = curl('PUT', api(HOST) + '/suggested',
+               {'models': {'default': 'stub/alpha', 'orrery_generator': 'stub/alpha'}}, jar=JAR)
+settle(2)
+code, sug = curl('GET', api(HOST) + '/suggested', jar=JAR)
+check('saving the same suggestion again keeps the revision', dictish(sug).get('rev') == REV, sug)
+
 print('no credit, no answer')
 code, d = curl('POST', v1(HOST) + '/chat/completions',
                {'model': 'stub/alpha', 'messages': message('hi')}, bearer=secret)

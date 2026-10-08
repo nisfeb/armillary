@@ -1746,6 +1746,58 @@
       ['key' s+key]
       ['models' a+(turn models |=(t=@t ^-(json s+t)))]
   ==
+::  ==  suggested models
+::
+::  The vendor suggests a model per role: default, catch_up, assistant,
+::  orrery_generator, or any role a client of its own knows. It travels
+::  in every account's view, so a customer reads it on its next pass, and
+::  a client that follows it switches when .rev moves.
+::
+::  +de-suggested: the roles from an owner's PUT, or the field that
+::  failed. A blank model drops its role.
+::
+++  de-suggested
+  |=  jon=json
+  ^-  (each (map @t @t) @t)
+  =/  ms=json  (gj jon 'models')
+  ?.  ?=([%o *] ms)  [%| 'models: an object of role to model id']
+  =/  rows=(list [k=@t v=json])  ~(tap by p.ms)
+  ?:  (gth (lent rows) 32)  [%| 'models: 32 roles at most']
+  =|  out=(map @t @t)
+  |-  ^-  (each (map @t @t) @t)
+  ?~  rows  [%& out]
+  =/  k=@t  k.i.rows
+  ?.  (role-ok k)  [%| (rap 3 'role ' k ': 1 to 64 of a-z, 0-9, _ and -' ~)]
+  ?.  ?=([%s *] v.i.rows)  [%| (rap 3 'models.' k ': a model id' ~)]
+  =/  id=@t  p.v.i.rows
+  ?:  (gth (met 3 id) max-name)  [%| (rap 3 'models.' k ': 200 bytes at most' ~)]
+  $(rows t.rows, out ?:(=('' id) out (~(put by out) k id)))
+++  role-ok
+  |=  r=@t
+  ^-  ?
+  =/  len=@ud  (met 3 r)
+  ?:  |(=(0 len) (gth len 64))  |
+  %+  levy  (trip r)
+  |=  c=@t
+  ?|  &((gte c 'a') (lte c 'z'))
+      &((gte c '0') (lte c '9'))
+      =('_' c)
+      =('-' c)
+  ==
+++  en-suggested
+  |=  [rev=@ud models=(map @t @t)]
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['rev' (en-num rev)]
+      ['models' [%o (~(run by models) |=(t=@t ^-(json s+t)))]]
+  ==
+::  +unsold: the first suggested model the catalog does not sell, or ''
+::
+++  unsold
+  |=  [models=(map @t @t) sold=(set @t)]
+  ^-  @t
+  =/  bad=(list @t)  (skip ~(val by models) |=(t=@t (~(has in sold) t)))
+  ?~(bad '' i.bad)
 ::  ==  the channel's writer ops, on the vendor
 ::
 ::  +de-op-view: the write-view payload

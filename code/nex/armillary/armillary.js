@@ -94,6 +94,36 @@
       '</div>';
   }
 
+  // the roles a client follows; a role stored that is not here still shows
+  var ROLES = [
+    ['default', 'Default, for anything without its own'],
+    ['catch_up', 'Catch-up (Talon)'],
+    ['assistant', 'Assistant (Talon)'],
+    ['orrery_generator', 'Orrery generator'],
+  ];
+  // +suggestedCard: the models this vendor suggests by role. An app that
+  // follows the suggestion switches when the revision moves.
+  function suggestedCard(rows) {
+    var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return r.id; });
+    var models = mySuggested.models || {};
+    var roles = ROLES.slice();
+    Object.keys(models).forEach(function (k) {
+      if (!roles.some(function (r) { return r[0] === k; })) roles.push([k, k]);
+    });
+    var out = '<div class="card"><h2>Suggested models</h2>' +
+      '<p class="muted">What your customers\' apps use when they follow your suggestion. A change reaches each customer ship within five minutes. Revision ' +
+      esc(mySuggested.rev || 0) + '.</p><div class="inline">';
+    roles.forEach(function (r) {
+      var cur = models[r[0]] || '';
+      var ids = cur && sold.indexOf(cur) < 0 ? sold.concat([cur]) : sold;
+      var opts = '<option value="">none</option>' + ids.map(function (id) {
+        return '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc(id) + '</option>';
+      }).join('');
+      out += '<div class="field"><label for="sg-' + esc(r[0]) + '">' + esc(r[1]) + '</label>' +
+        '<select id="sg-' + esc(r[0]) + '" data-role="' + esc(r[0]) + '">' + opts + '</select></div>';
+    });
+    return out + '<div class="field"><label>&nbsp;</label><button data-save-suggested="1">Save suggestion</button></div></div></div>';
+  }
   function catalog(rows, filter) {
     var f = String(filter || '').toLowerCase();
     var kept = rows.filter(function (r) {
@@ -105,6 +135,7 @@
       '<button data-save-catalog="1">Save catalog</button>' +
       '<span class="muted"> ' + kept.length + ' of ' + rows.length + ' rows</span></div>';
     if (!rows.length) return out + '<p class="muted">Nothing in the catalog. Import from a provider first.</p>';
+    out += suggestedCard(rows);
     out += '<div class="card">' + thead(['Id', 'Provider',
       { name: 'In $/M', num: true }, { name: 'Out $/M', num: true },
       { name: 'Cost in', num: true }, { name: 'Cost out', num: true },
@@ -757,6 +788,12 @@
     return { name: name, data: data };
   }
 
+  // state the render functions read, declared before the node export so
+  // scripts/render-check.js sees it too
+  var myVendor = '';                   // the vendor the account view last named
+  var myCheckouts = {};                // the checkout rows that view last held
+  var mySuggested = { rev: 0, models: {} };   // the models this vendor suggests, by role
+  var watchSaid = { text: '', cls: '' };    // the line the Balance card shows
   var render = {
     esc: esc, dollars: dollars, micro: micro, margin: margin,
     providers: providers, catalog: catalog, accounts: accounts, account: account,
@@ -765,6 +802,7 @@
     subscriptionLine: subscriptionLine,
     myAccount: myAccount, myKeys: myKeys, myLease: myLease, buyCatalog: buyCatalog,
     usage: usage, usageCard: usageCard,
+    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard,
     route: route, sseEvent: sseEvent,
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = render; }
@@ -790,8 +828,6 @@
   var st0 = null;                      // the settings the Payments view last read
   var reportDays = 30;                 // the Report view's window
   var myPlans = [];                    // the vendor's plans, as the customer reads them
-  var myVendor = '';                   // the vendor the account view last named
-  var myCheckouts = {};                // the checkout rows that view last held
   var held = null;                     // [html, class] the next redraw puts back
 
   function say(msg, bad) { statusEl.textContent = msg; statusEl.className = 'status' + (bad ? ' bad' : ''); }
@@ -891,7 +927,6 @@
   function watch(n) { var w = watched(); w[n] = Date.now(); setWatched(w); payWatch(); }
   function unwatch(n) { var w = watched(); delete w[n]; setWatched(w); }
   var watching = false;
-  var watchSaid = { text: '', cls: '' };    // the line the Balance card shows
   // +payWatch: one loop at a time. Each round reads the vendor fresh and
   // says what came of every watched checkout; between rounds the line
   // says when it last looked. A card checkout is watched for fifteen
@@ -1075,7 +1110,13 @@
     } else if (r.name === 'catalog' && !providerMode) {
       p = api('/catalog').then(function (rows) { draw(buyCatalog(rows || [], buyFilter)); });
     } else if (r.name === 'catalog') {
-      p = api('/catalog').then(function (rows) { catRows = rows || []; draw(catalog(catRows, catFilter)); });
+      p = api('/catalog').then(function (rows) {
+        catRows = rows || [];
+        return api('/suggested').catch(function () { return mySuggested; }).then(function (sg) {
+          mySuggested = sg || mySuggested;
+          draw(catalog(catRows, catFilter));
+        });
+      });
     } else if (r.name === 'accounts') {
       p = api('/accounts').then(function (rows) { draw(accounts(rows || [], acctSearch)); });
     } else if (r.name === 'account') {
@@ -1217,6 +1258,16 @@
       say('setting the vendor');
       post('/vendor', { ship: v }, 'PUT').then(function () { boot(); })
         .catch(function (e) { say(e.message, true); });
+    } else if (d.saveSuggested) {
+      var roleModels = {};
+      view.querySelectorAll('select[data-role]').forEach(function (el) { roleModels[el.dataset.role] = el.value; });
+      var stopSave = busy('Saving the suggestion');
+      post('/suggested', { models: roleModels }, 'PUT').then(function () {
+        stopSave();
+        say('Suggestion saved; customer ships pick it up within five minutes');
+        held = [statusEl.innerHTML, statusEl.className];
+        later();
+      }).catch(function (e) { stopSave(); say(e.message, true); });
     } else if (d.cancelCheckout) {
       cancelCheckout(d.cancelCheckout, b);
     } else if (d.refreshView) {

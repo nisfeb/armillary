@@ -24,4 +24,12 @@ is(r.usageCard({ ledger: rows }).indexOf('gpt-5') > 0, 'the card names the model
 is(r.usageCard({ ledger: [] }).indexOf('No requests') > 0, 'the empty card');
 is(r.myAccount({ vendor: '~nisfeb', balance: 1, ledger: rows }, []).indexOf('Usage') > 0, 'the account view carries usage');
 is(r.myAccount({ vendor: '' }, []).indexOf('Provider mode') > 0, 'a ship with no vendor is told about provider mode');
+var co = { n1: { status: 'pending', url: 'https://pay/x', amount: 5000000 }, n2: { status: 'cancelled', url: '', amount: 1 } };
+is(r.checkoutRows(co, true).split('data-cancel-checkout').length === 2, 'only the pending row of the customer offers Cancel');
+is(r.checkoutRows(co).indexOf('data-cancel-checkout') < 0, "the owner's view of an account offers no Cancel");
+is(r.freshness({ stale: 120, fetched: 'x', fetch_ms: 2100 }).indexOf('2 min ago, in 2.1 s') > 0, 'the balance says its age and read time');
+is(r.freshness({}).indexOf('Refresh reads it now') > 0, 'a balance never read says so');
+var card = r.suggestedCard([{ id: 'a/b', enabled: true }, { id: 'c/d', enabled: false }]);
+is(card.indexOf('Orrery generator') > 0 && card.indexOf('value="a/b"') > 0, 'the suggestion card offers what is sold');
+is(card.indexOf('value="c/d"') < 0, 'and not what is not');
 console.log('render-check ok');
