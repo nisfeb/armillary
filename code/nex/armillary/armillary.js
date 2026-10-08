@@ -558,7 +558,7 @@
       plans.map(function (p) {
         var how = p.kind === 'subscription'
           ? ' per ' + esc(p.interval || 'month')
-          : ' for ' + esc(dollars(p.credit)) + ' of credit';
+          : ' for $' + esc(dollars(p.credit)) + ' of credit';
         return '<button data-buy="' + esc(p.id) + '">' + esc(p.name) +
           ' &middot; $' + esc(dollars(p.price)) + how + '</button> ';
       }).join('') + '</div></div>';
@@ -618,6 +618,7 @@
   }
   function myAccount(d, plans) {
     var vendor = (d && d.vendor) || '';
+    myVendor = vendor;
     var out = '<h1>Account</h1>' +
       '<div class="card"><h2>Vendor</h2><p>' +
       (vendor ? '<code>' + esc(vendor) + '</code>' : '<span class="muted">none set</span>') +
@@ -773,8 +774,76 @@
   var st0 = null;                      // the settings the Payments view last read
   var reportDays = 30;                 // the Report view's window
   var myPlans = [];                    // the vendor's plans, as the customer reads them
+  var myVendor = '';                   // the vendor the account view last named
+  var held = null;                     // [html, class] the next redraw puts back
 
   function say(msg, bad) { statusEl.textContent = msg; statusEl.className = 'status' + (bad ? ' bad' : ''); }
+  // +startCheckout: a checkout from a plan or an amount, said step by
+  // step in the status line and in the new tab, while the button says it
+  // is busy. The tab opens inside the click: one opened after the vendor
+  // answers comes too late, and the browser blocks it without a word.
+  function startCheckout(body, btn) {
+    var tab = window.open('', '_blank');
+    if (tab) { tab.opener = null; tab.document.title = 'Checkout'; }
+    var who = myVendor || 'the vendor';
+    var t0 = Date.now(), polls = 0, label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Opening checkout…';
+    // the seconds count on their own, so a wait never looks frozen
+    var cur = '', tick = setInterval(function () { if (cur) tell(cur); }, 1000);
+    function tell(msg, bad, html) {
+      cur = bad ? '' : msg;
+      var line = msg + (bad ? '' : ' (' + Math.round((Date.now() - t0) / 1000) + ' s)');
+      say(line, bad);
+      if (!tab) return;
+      try {
+        tab.document.body.innerHTML =
+          '<div style="font:18px/1.5 system-ui,sans-serif;max-width:34rem;margin:18vh auto;padding:0 1rem;text-align:center;color:' +
+          (bad ? '#b3261e' : '#1b2a4a') + '">' + esc(line) + (html || '') + '</div>';
+      } catch (e) { /* the tab has left for the checkout */ }
+    }
+    function done() {
+      clearInterval(tick);
+      held = [statusEl.innerHTML, statusEl.className];
+      btn.disabled = false; btn.textContent = label; later();
+    }
+    function fail(e) { tell(e.message, true, '<p>You can close this tab.</p>'); done(); }
+    function land(p) {
+      if (!p.url || p.status === 'refused' || p.status === 'unavailable') {
+        tell(who + ' refused the checkout: ' + (p.note || p.status), true, '<p>You can close this tab.</p>');
+        return done();
+      }
+      if (tab) {
+        tell('Checkout ready; opening it');
+        tab.location.replace(p.url);
+        say('Checkout opened in a new tab');
+      } else {
+        // a blocker refused even the tab opened in the click: a link is
+        // a click of its own, which no blocker refuses
+        statusEl.innerHTML = 'Checkout ready: <a href="' + esc(p.url) + '" target="_blank" rel="noopener">open it</a>';
+        statusEl.className = 'status';
+      }
+      done();
+    }
+    tell('Placing the order on your ship');
+    body.wait = false;
+    post('/checkout', body).then(function (r) {
+      (function poll() {
+        polls++;
+        api('/checkout/' + seg(r.nonce) + (polls % 2 ? '' : '?nudge=1')).then(function (p) {
+          if (p.phase === 'answered') return land(p);
+          if (Date.now() - t0 > 90000) {
+            tell('No answer from ' + who + ' in 90 s. Your ship keeps asking; the checkout will appear under Checkouts with an Open link', true, '<p>You can close this tab.</p>');
+            return done();
+          }
+          tell(p.phase === 'sent' ? 'Sent to ' + who + '; waiting for the checkout'
+            : p.phase === 'queued' ? 'Sending the order to ' + who
+            : 'Placing the order on your ship');
+          setTimeout(poll, 1500);
+        }).catch(fail);
+      })();
+    }).catch(fail);
+  }
   // the settings PUT replaces the document whole, so a save from one
   // card carries the other card's stored fields back with it. Every
   // secret goes out blank, which is what keeps what the ship holds.
@@ -884,7 +953,11 @@
     } else {
       p = api('/providers').then(function (rows) { draw(providers(rows || [], tests, editing)); });
     }
-    p = p.then(function () { say(''); }).catch(function (e) { say(String(e.message || e), true); });
+    // a checkout's last word outlives the redraw that follows it
+    p = p.then(function () {
+      if (held) { statusEl.innerHTML = held[0]; statusEl.className = held[1]; } else say('');
+      held = null;
+    }).catch(function (e) { say(String(e.message || e), true); });
     p.then(function () { refreshing = false; if (again) { again = false; refresh(); } });
   }
   // a write answers before the writer applies, so the refetch waits
@@ -1028,14 +1101,7 @@
       var amount = micro(document.getElementById('t-amount').value);
       var railEl = view.querySelector('input[name="rail"]:checked');
       if (!amount || amount <= 0) { say('amount: dollars above zero', true); return; }
-      say('opening a checkout');
-      post('/checkout', { rail: railEl ? railEl.value : 'stripe', amount: amount })
-        .then(function (r) {
-          if (r.url) { window.open(r.url, '_blank', 'noopener'); say('checkout open'); }
-          else say('the vendor has not answered yet; it will show under Checkouts');
-          later();
-        })
-        .catch(function (e) { say(e.message, true); });
+      startCheckout({ rail: railEl ? railEl.value : 'stripe', amount: amount }, b);
     } else if (d.myMint) {
       var mn = document.getElementById('my-k-name').value.trim();
       if (!mn) { say('name: 1 to 200 bytes', true); return; }
@@ -1147,14 +1213,7 @@
         say('subscriptions are card only; choose Card to subscribe', true);
         return;
       }
-      say('opening a checkout');
-      post('/checkout', { rail: buyRail, plan: d.buy })
-        .then(function (r) {
-          if (r.url) { window.open(r.url, '_blank', 'noopener'); say('checkout open'); }
-          else say('the vendor has not answered yet; it will show under Checkouts');
-          later();
-        })
-        .catch(function (e) { say(e.message, true); });
+      startCheckout({ rail: buyRail, plan: d.buy }, b);
     } else if (d.cancelSub) {
       if (!confirm('Cancel the subscription at the end of the period?')) return;
       post('/cancel-subscription').then(function () { say('asked the vendor to cancel'); later(); })

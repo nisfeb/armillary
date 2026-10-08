@@ -55,7 +55,7 @@ A later `hello` from the same ship opens a fresh, empty account as usual.
 
 A remote poke's ack is unobservable in grubbery, so a timeout is unknown, not failure. `remote-poke-wait` gives up after thirty seconds and answers yes: the poke usually landed, and the view is what settles it. A peek gives up after thirty seconds and answers nothing, which leaves whatever the customer already knew in place. Nothing in the client fiber treats silence as an error.
 
-The routes that wait do so for thirty seconds and then answer 202 with the nonce rather than an error: `POST /api/keys` and `POST /api/checkout`. The op is still queued and the next pass will land it.
+The routes that wait do so for thirty seconds and then answer 202 with the nonce rather than an error: `POST /api/keys` and `POST /api/checkout`. The op is still queued and the next pass will land it. The page sends its checkout with `"wait": false`, which answers 202 at once, then reads `GET /api/checkout/<nonce>` until the vendor answers and says each step as it goes.
 
 ## What to know
 

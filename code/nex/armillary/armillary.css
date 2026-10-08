@@ -6,8 +6,11 @@ header { display: flex; align-items: center; gap: 1.5rem; padding: .6rem 1rem; b
 header .brand { font-weight: 700; color: var(--ink); text-decoration: none; letter-spacing: .02em; }
 header nav a { margin-right: 1rem; color: var(--ink); text-decoration: none; }
 header nav a:hover { text-decoration: underline; }
-.status { margin-left: auto; color: var(--muted); font-size: .85em; }
+.status { margin-left: auto; min-width: 0; color: var(--ink); font-weight: 600; }
+header nav, header .mode { flex-shrink: 0; }
+.status:not(:empty) { background: #fff4d6; padding: .25rem .7rem; border-radius: 6px; }
 .status.bad { color: var(--bad); }
+.status.bad:not(:empty) { background: #fde8e6; }
 main { max-width: 1150px; margin: 0 auto; padding: 1rem; }
 h1 { font-size: 1.4rem; margin: .2rem 0 .6rem; }
 h2 { font-size: 1.05rem; margin: 1.2rem 0 .4rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
@@ -56,6 +59,7 @@ a { color: var(--ink); }
    inputs stay at 16px so iOS does not zoom into them */
 @media (max-width: 700px) {
   header { gap: .8rem; flex-wrap: wrap; }
+  header nav { flex-shrink: 1; }
   header nav a { margin-right: .7rem; }
   .status { margin-left: 0; width: 100%; }
   table, tbody, tr, td { display: block; width: 100%; }

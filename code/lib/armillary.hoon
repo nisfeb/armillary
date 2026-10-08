@@ -1858,6 +1858,28 @@
   [%& [p.who why]]
 ::  ==  the channel's writer ops, on the customer
 ::
+::  +checkout-phase: how far a checkout this ship asked for has got,
+::  from the two files that can say: the vendor's row in the view, else
+::  the op still queued here. Sent folds an ack and a send that timed
+::  out, so it says only that the order went out. Neither is the
+::  moment before the writer has queued the op.
+::
+++  checkout-phase
+  |=  [view=json client=json n=@t]
+  ^-  json
+  =/  row=json  (gj (gj view 'checkouts') n)
+  ?:  ?=([%o *] row)
+    %-  pairs:enjs:format
+    :~  ['phase' s+'answered']
+        ['status' s+(gs row 'status')]
+        ['url' s+(gs row 'url')]
+        ['note' s+(gs row 'note')]
+    ==
+  =/  op=json  (gj (gj client 'ops') n)
+  =/  phase=@t
+    ?.  ?=([%o *] op)  'placing'
+    ?:((gb op 'sent') 'sent' 'queued')
+  (pairs:enjs:format ~[['phase' s+phase]])
 ::  +de-op-vendor: the vendor ship, or ~ to stop being anyone's customer
 ::
 ++  de-op-vendor

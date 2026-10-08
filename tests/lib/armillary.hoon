@@ -908,4 +908,25 @@
     (expect-eq !>(`@ud`10.000.000) !>((gn:arm c 'stripe')))
     (expect-eq !>(`@ud`100.007) !>((gn:arm c 'stub')))
   ==
+::  ==  a checkout's phase, for the page that says it while it waits
+::
+::  the vendor's row wins over the op, which the client drops once
+::  the row shows; an op not sent yet is queued; nothing is placing
+::
+++  test-checkout-phase
+  =/  view=json
+    (jo '{"checkouts":{"n1":{"status":"pending","url":"https://pay/x","note":""},"n2":{"status":"refused","note":"plan: unknown"}}}')
+  =/  client=json
+    (jo '{"ops":{"n1":{"sent":true},"n3":{"sent":false},"n4":{"sent":true}}}')
+  =/  ph  |=(n=@t (gs:arm (checkout-phase:arm view client n) 'phase'))
+  ;:  weld
+    (expect-eq !>('answered') !>((ph 'n1')))
+    (expect-eq !>('https://pay/x') !>((gs:arm (checkout-phase:arm view client 'n1') 'url')))
+    (expect-eq !>('refused') !>((gs:arm (checkout-phase:arm view client 'n2') 'status')))
+    (expect-eq !>('plan: unknown') !>((gs:arm (checkout-phase:arm view client 'n2') 'note')))
+    (expect-eq !>('queued') !>((ph 'n3')))
+    (expect-eq !>('sent') !>((ph 'n4')))
+    (expect-eq !>('placing') !>((ph 'n5')))
+    (expect-eq !>('placing') !>((gs:arm (checkout-phase:arm ~ ~ 'n1') 'phase')))
+  ==
 --

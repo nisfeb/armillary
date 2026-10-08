@@ -318,6 +318,29 @@ check('an unknown nonce is 404', code == 404, (code, d))
 view = wait_view(PEER, PJAR, lambda v: v.get('balance') == TOPUP)
 check('the customer sees the dollar', view.get('balance') == TOPUP, view.get('balance'))
 
+print('the page: no wait, then the checkout step by step')
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': TOPUP, 'wait': False},
+                jar=PJAR)
+pnonce = dictish(co).get('nonce', '')
+check('"wait": false answers 202 with the nonce', code == 202 and pnonce != '', (code, co))
+seen, ph = [], {}
+for i in range(60):
+    code, ph = curl('GET', api(PEER) + '/checkout/' + pnonce + ('?nudge=1' if i % 2 else ''), jar=PJAR)
+    p = dictish(ph).get('phase')
+    if not seen or seen[-1] != p:
+        seen.append(p)
+    if p == 'answered':
+        break
+    time.sleep(1)
+order = ['placing', 'queued', 'sent', 'answered']
+check('the phases only move forward and end answered',
+      seen[-1:] == ['answered'] and seen == [s for s in order if s in seen], seen)
+check('the answer carries the stub pay url', '/pay/stub' in dictish(ph).get('url', ''), ph)
+code, d = curl('GET', api(PEER) + '/checkout/not-a-nonce', jar=PJAR)
+check('an unknown nonce reads as placing', code == 200 and dictish(d).get('phase') == 'placing', (code, d))
+code, d = curl('GET', api(PEER) + '/checkout/' + pnonce)
+check('the phase route needs the cookie', code == 403, (code, d))
+
 print('spending it')
 code, d = curl('POST', v1(HOST) + '/chat/completions',
                {'model': 'stub/alpha', 'messages': message('hello there world')}, bearer=secret)

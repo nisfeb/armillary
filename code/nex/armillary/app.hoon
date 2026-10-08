@@ -3431,6 +3431,7 @@
   ?:  &(=('POST' meth) ?=([%api %keys ~] suffix))        (own (serve-my-mint eyre-id jon))
   ?:  &(=('DELETE' meth) ?=([%api %keys @ ~] suffix))    (own (serve-my-revoke eyre-id s2))
   ?:  &(=('POST' meth) ?=([%api %checkout ~] suffix))    (own (serve-my-checkout eyre-id jon))
+  ?:  &(=('GET' meth) ?=([%api %checkout @ ~] suffix))   (own (serve-checkout-phase eyre-id s2 args))
   ?:  &(=('GET' meth) ?=([%api %inference ~] suffix))    (own (serve-inference eyre-id))
   ?:  &(=('POST' meth) ?=([%api %lease ~] suffix))       (own (serve-take-lease eyre-id))
   ?:  &(=('DELETE' meth) ?=([%api %lease ~] suffix))     (own (serve-give-lease eyre-id))
@@ -4535,7 +4536,9 @@
   ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
   (send-json eyre-id 200 (pairs:enjs:format ~[['id' s+`@t`id] ['ok' b+&]]))
 ::  +serve-my-checkout: ask the vendor to open a checkout and wait for
-::  the url to show in the view
+::  the url to show in the view. "wait": false answers 202 with the
+::  nonce at once, for the page, which asks +serve-checkout-phase how
+::  far it has got and says so; Talon sends no "wait" and waits here.
 ::
 ++  serve-my-checkout
   |=  [eyre-id=@ta jon=json]
@@ -4552,6 +4555,9 @@
   ;<  n=@t  bind:m  fresh-nonce
   ;<  ~  bind:m  (queue-at n (en-inbox:arm [%checkout rail plan amount n]))
   ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  ?:  &((has-key:arm jon 'wait') !(gb:arm jon 'wait'))
+    %^  send-json  eyre-id  202
+    (pairs:enjs:format ~[['pending' b+&] ['nonce' s+n]])
   ;<  got=(unit json)  bind:m  (await-checkout n 30)
   ?~  got
     %^  send-json  eyre-id  202
@@ -4568,6 +4574,21 @@
       ['url' s+(gs:arm u.got 'url')]
       ['status' s+status]
   ==
+::  +serve-checkout-phase: how far a checkout from +serve-my-checkout
+::  has got. ?nudge=1 wakes the client, as +await-checkout does every
+::  third second of its own wait.
+::
+++  serve-checkout-phase
+  |=  [eyre-id=@ta n=@ta args=quay:eyre]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m
+    ?.  =('1' (fall (get-key:kv:html-utils 'nudge' args) ''))
+      (pure:(fiber:fiber:nexus ,~) ~)
+    (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  ;<  vw=json  bind:m  (read-json (rf 1 / %'view.json'))
+  ;<  cj=json  bind:m  (read-json (rf 1 / %'client.json'))
+  (send-json eyre-id 200 (checkout-phase:arm vw cj `@t`n))
 ::  +serve-my-cancel: the customer asks its vendor to stop the
 ::  subscription renewing. The vendor answers in the view, so this is a
 ::  202 and nothing more.
