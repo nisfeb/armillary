@@ -142,13 +142,14 @@ These are what a client on the customer's own ship calls, over the cookie it alr
 
 | route | answers |
 |---|---|
-| `GET /api/account` | the last view this ship read from its vendor, plus `vendor`, `self` and `stale` (seconds since the read). `?fresh=1` peeks the vendor first and waits up to thirty seconds |
+| `GET /api/account` | the last view this ship read from its vendor, plus `vendor`, `self`, `stale` (seconds since the read) and `fetch_ms` (how long that read took). `?fresh=1` peeks the vendor first and waits up to thirty seconds |
 | `PUT /api/vendor` | `{"ship"}`: who this ship buys from, and a `hello` to open the account there. `{"ship": ""}` clears it |
 | `GET /api/keys` | the inference keys this ship holds, never their secrets |
 | `POST /api/keys` | `{"name"}`: ask the vendor for a key and wait for it. Answers `{"id", "name", "secret"}` once, or 202 `{"pending": true, "nonce"}` after thirty seconds, which is not a failure |
 | `DELETE /api/keys/<id>` | tell the vendor to revoke it and forget it here at once |
 | `POST /api/checkout` | `{"rail", "plan" or "amount"}`: `rail` is `stripe` for a card or `btcpay` for bitcoin. Opens a checkout and answers `{"url"}`, or 202 with the nonce. 502 with the vendor's reason when the vendor refused it. A subscription plan is card only. `"wait": false` answers 202 `{"pending": true, "nonce"}` at once, for a client that follows the phase route below instead |
 | `GET /api/checkout/<nonce>` | how far that checkout has got: `{"phase"}`, one of `placing` (not queued yet), `queued` (on this ship, not sent), `sent` (sent to the vendor, or its send timed out) and `answered`, which adds the vendor's `status`, `url` and `note`. `?nudge=1` wakes the client fiber, which the page asks every third second |
+| `POST /api/checkout/<nonce>/cancel` | ask the vendor to cancel a `pending` checkout: its Stripe session expires or its BTCPay invoice goes Invalid, and the row turns `cancelled` with no url. Waits up to thirty seconds and answers `{"status", "note"}`; a payment that landed first keeps the row with a `not cancelled: ...` note. 404 for an unknown checkout, 409 for one not pending. `"wait": false` answers 202 at once. `docs/payments.md` |
 | `POST /api/cancel-subscription` | ask the vendor to stop the subscription renewing; 202, and the view says when Stripe confirms |
 | `POST /api/delete-account` | delete this ship's account on the vendor, record and data both, and forget the vendor here. 200 `deleted`, 202 `queued` with the nonce after thirty seconds, 409 `vendor: not set`, 502 with the vendor's reason and nothing deleted. `docs/channel.md` |
 | `GET /api/inference` | everything a client needs: `{"mode", "base_url", "key", "models"}`. `lease` mode with the provider's own key when this ship holds a lease that can still spend, `proxy` mode with the vendor's base URL and the newest inference key otherwise. 404 `no key yet` when this ship holds neither |

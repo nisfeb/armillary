@@ -530,22 +530,27 @@
   function statusLine(c) {
     var s = c.status || '';
     if (s === 'processing') return 'processing &middot; waiting for confirmations';
-    if (s === 'refused' && c.note) return esc(s) + ' &middot; ' + esc(c.note);
+    if (c.note && s !== 'cancelled') return esc(s) + ' &middot; ' + esc(c.note);
     return esc(s);
   }
-  function checkoutRows(obj) {
+  // .mine: the customer's own rows, which a pending one can cancel; the
+  // owner's view of an account shows them without the button
+  function checkoutRows(obj, mine) {
     var keys = Object.keys(obj || {});
     if (!keys.length) return '';
     var out = '<div class="card"><h2>Checkouts</h2>' +
       thead(['Order', 'Rail', { name: 'Amount', num: true }, 'Status', '']);
     keys.forEach(function (n) {
       var c = obj[n] || {};
+      var open = c.url ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">Open</a>' : '';
+      var cancel = mine && c.status === 'pending'
+        ? ' <button data-cancel-checkout="' + esc(n) + '">Cancel</button>' : '';
       out += '<tr>' +
         cell('Order', '<code>' + esc(n) + '</code>') +
         cell('Rail', esc(railName(c.rail))) +
         cell('Amount', esc(dollars(c.amount)), 'num') +
         cell('Status', statusLine(c)) +
-        cell('', c.url ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">Open</a>' : '') +
+        cell('', open + cancel) +
         '</tr>';
     });
     return out + '</tbody></table></div>';
@@ -616,6 +621,14 @@
     if (u.floor) out += '<p class="muted">The ledger below shows the newest fifty rows, so these figures are a floor.</p>';
     return out + '</div>';
   }
+  // +freshness: how old this ship's copy of the balance is, and how long
+  // its last read from the vendor took
+  function freshness(d) {
+    if (!d || d.stale === undefined || !d.fetched) return 'Not read from the vendor yet. Refresh reads it now.';
+    var s = Number(d.stale), age = s < 90 ? s + ' s' : Math.round(s / 60) + ' min';
+    var took = d.fetch_ms ? ', in ' + (Number(d.fetch_ms) / 1000).toFixed(1) + ' s' : '';
+    return 'As of ' + esc(age) + ' ago' + took + '. Your ship rereads it every five minutes; Refresh reads it now.';
+  }
   function myAccount(d, plans) {
     var vendor = (d && d.vendor) || '';
     myVendor = vendor;
@@ -630,8 +643,11 @@
       '<button data-refresh-view="1">Refresh</button></div></div></div>';
     if (!vendor) return out + '<p class="muted">Name a vendor ship above to open an account on it. Talon sets this for you when you add the Armillary provider.</p>' +
       '<p class="muted">Running a service of your own instead? Switch on Provider mode in the header.</p>';
+    myCheckouts = (d && d.checkouts) || {};
     out += '<div class="card"><h2>Balance</h2>' +
       '<p style="font-size:1.6rem;margin:.2rem 0">$' + signed(d && d.balance) + '</p>' +
+      '<p class="muted">' + freshness(d) + '</p>' +
+      '<p id="pay-watch" class="watch ' + watchSaid.cls + '">' + esc(watchSaid.text) + '</p>' +
       subscriptionLine(d, plans) +
       '<div class="inline">' +
       planButtons(plans) +
@@ -642,7 +658,7 @@
       (plans.some(function (p) { return p.kind === 'subscription'; }) ? '<span class="muted">Subscriptions are card only.</span>' : '') + '</div>' +
       '<div class="field"><label>&nbsp;</label><button data-topup="1">Top up</button></div>' +
       '</div></div>';
-    out += checkoutRows(d && d.checkouts);
+    out += checkoutRows(d && d.checkouts, true);
     out += usageCard(d);
     return out + '<div class="card"><h2>Ledger</h2>' + ledger((d && d.ledger) || []) + '</div>';
   }
@@ -775,6 +791,7 @@
   var reportDays = 30;                 // the Report view's window
   var myPlans = [];                    // the vendor's plans, as the customer reads them
   var myVendor = '';                   // the vendor the account view last named
+  var myCheckouts = {};                // the checkout rows that view last held
   var held = null;                     // [html, class] the next redraw puts back
 
   function say(msg, bad) { statusEl.textContent = msg; statusEl.className = 'status' + (bad ? ' bad' : ''); }
@@ -782,6 +799,12 @@
   // step in the status line and in the new tab, while the button says it
   // is busy. The tab opens inside the click: one opened after the vendor
   // answers comes too late, and the browser blocks it without a word.
+  // the new tab is its own document, so it carries the page's two
+  // palettes itself and follows the system the same way
+  var TAB_STYLE = '<style>:root{color-scheme:light dark}' +
+    'body{margin:0;font:18px/1.5 system-ui,sans-serif;color:#1b2a4a;background:#fbfbfd}' +
+    'div{max-width:34rem;margin:18vh auto;padding:0 1rem;text-align:center}.bad{color:#b3261e}' +
+    '@media (prefers-color-scheme:dark){body{color:#e4e8f2;background:#11151f}.bad{color:#ff8a80}}</style>';
   function startCheckout(body, btn) {
     var tab = window.open('', '_blank');
     if (tab) { tab.opener = null; tab.document.title = 'Checkout'; }
@@ -797,9 +820,8 @@
       say(line, bad);
       if (!tab) return;
       try {
-        tab.document.body.innerHTML =
-          '<div style="font:18px/1.5 system-ui,sans-serif;max-width:34rem;margin:18vh auto;padding:0 1rem;text-align:center;color:' +
-          (bad ? '#b3261e' : '#1b2a4a') + '">' + esc(line) + (html || '') + '</div>';
+        tab.document.body.innerHTML = TAB_STYLE +
+          '<div class="' + (bad ? 'bad' : '') + '">' + esc(line) + (html || '') + '</div>';
       } catch (e) { /* the tab has left for the checkout */ }
     }
     function done() {
@@ -823,6 +845,7 @@
         statusEl.innerHTML = 'Checkout ready: <a href="' + esc(p.url) + '" target="_blank" rel="noopener">open it</a>';
         statusEl.className = 'status';
       }
+      watch(p.nonce);
       done();
     }
     tell('Placing the order on your ship');
@@ -831,6 +854,7 @@
       (function poll() {
         polls++;
         api('/checkout/' + seg(r.nonce) + (polls % 2 ? '' : '?nudge=1')).then(function (p) {
+          p.nonce = r.nonce;
           if (p.phase === 'answered') return land(p);
           if (Date.now() - t0 > 90000) {
             tell('No answer from ' + who + ' in 90 s. Your ship keeps asking; the checkout will appear under Checkouts with an Open link', true, '<p>You can close this tab.</p>');
@@ -843,6 +867,113 @@
         }).catch(fail);
       })();
     }).catch(fail);
+  }
+  // +busy: the status line saying .msg with its seconds counting, until
+  // the function it answers is called
+  function busy(msg) {
+    var t0 = Date.now();
+    function show() { say(msg + ' (' + Math.round((Date.now() - t0) / 1000) + ' s)'); }
+    show();
+    var iv = setInterval(show, 1000);
+    return function () { clearInterval(iv); };
+  }
+  // the checkouts this browser opened, nonce to the time it opened them,
+  // kept across a reload. The vendor credits a payment the moment its
+  // rail says so, but this ship only rereads the vendor every five
+  // minutes, so a watched checkout is read fresh until it is paid or over.
+  var WATCH_KEY = 'armillary.watch';
+  function watched() {
+    try { return JSON.parse(localStorage.getItem(WATCH_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function setWatched(w) {
+    try { localStorage.setItem(WATCH_KEY, JSON.stringify(w)); } catch (e) { /* a private window */ }
+  }
+  function watch(n) { var w = watched(); w[n] = Date.now(); setWatched(w); payWatch(); }
+  function unwatch(n) { var w = watched(); delete w[n]; setWatched(w); }
+  var watching = false;
+  var watchSaid = { text: '', cls: '' };    // the line the Balance card shows
+  // +payWatch: one loop at a time. Each round reads the vendor fresh and
+  // says what came of every watched checkout; between rounds the line
+  // says when it last looked. A card checkout is watched for fifteen
+  // minutes, a bitcoin one confirming for two hours.
+  function payWatch() {
+    if (watching || !Object.keys(watched()).length) return;
+    watching = true;
+    var checking = 0, last = 0, waiting = '';
+    function secs(t) { return Math.round((Date.now() - t) / 1000); }
+    function line(text, cls) { watchSaid = { text: text, cls: cls || '' }; show(); }
+    function show() {
+      if (checking) watchSaid = { text: 'Checking with ' + (myVendor || 'the vendor') + ' for your payment (' + secs(checking) + ' s)', cls: '' };
+      else if (waiting) watchSaid = { text: waiting + ' Last checked ' + secs(last) + ' s ago.', cls: '' };
+      var el = document.getElementById('pay-watch');
+      if (el) { el.textContent = watchSaid.text; el.className = 'watch ' + watchSaid.cls; }
+    }
+    var tick = setInterval(show, 1000);
+    function stop() { clearInterval(tick); watching = false; waiting = ''; show(); }
+    (function round() {
+      checking = Date.now(); show();
+      api('/account?fresh=1').then(function (d) {
+        checking = 0; last = Date.now(); waiting = '';
+        var w = watched(), rows = d.checkouts || {}, said = '', cls = '';
+        Object.keys(w).forEach(function (n) {
+          var r = rows[n] || {}, age = Date.now() - w[n], amt = '$' + dollars(r.amount);
+          if (r.status === 'paid') { said = 'Payment received: ' + amt + ' added.'; cls = 'pos'; delete w[n]; }
+          else if (r.status === 'failed') { said = 'The ' + amt + ' payment did not go through.'; cls = 'neg'; delete w[n]; }
+          else if (r.status === 'expired') { said = 'The ' + amt + ' checkout expired before it was paid.'; delete w[n]; }
+          else if (r.status === 'cancelled' || r.status === 'refused') { delete w[n]; }
+          else if (r.status === 'processing') {
+            if (age > 2 * 3600000) delete w[n];
+            else waiting = 'Bitcoin payment of ' + amt + ' seen; waiting for confirmations, usually ten to twenty minutes.';
+          } else if (age > 15 * 60000) {
+            said = 'Stopped watching the ' + amt + ' checkout after fifteen minutes. Refresh reads the balance again.'; delete w[n];
+          } else if (!waiting) waiting = 'Waiting for your ' + amt + ' payment. It shows here as soon as ' + (myVendor || 'the vendor') + ' has it.';
+        });
+        setWatched(w);
+        // the fresh read stored the new balance; a redraw shows it, unless
+        // the person is typing into the page
+        if (route(location.hash).name === 'my-account' && !typing()) refresh();
+        if (said) line(said, cls);
+        if (Object.keys(w).length) return setTimeout(round, 10000);
+        if (!said) line('', '');
+        stop();
+        // the last word stays two minutes, through any redraw
+        setTimeout(function () { if (!watching) { watchSaid = { text: '', cls: '' }; show(); } }, 120000);
+      }).catch(function () {
+        checking = 0; last = Date.now();
+        waiting = 'Could not reach ' + (myVendor || 'the vendor') + ' just now; trying again.';
+        setTimeout(round, 15000);
+      });
+    })();
+  }
+  // +cancelCheckout: ask the vendor to stop a pending checkout, with the
+  // ask's seconds counting until the row moves; the vendor answers by
+  // rewriting the row, cancelled or with its reason
+  function cancelCheckout(n, btn) {
+    var who = myVendor || 'the vendor';
+    var before = myCheckouts[n] || {};
+    var t0 = Date.now(), polls = 0;
+    btn.disabled = true; btn.textContent = 'Cancelling…';
+    var stop = busy('Asking ' + who + ' to cancel the checkout');
+    function end(msg, bad) {
+      stop(); say(msg, bad);
+      held = [statusEl.innerHTML, statusEl.className];
+      later();
+    }
+    post('/checkout/' + seg(n) + '/cancel', { wait: false }).then(function () {
+      (function poll() {
+        polls++;
+        api('/checkout/' + seg(n) + (polls % 2 ? '' : '?nudge=1')).then(function (p) {
+          if (p.phase === 'answered' && (p.status !== before.status || p.note !== (before.note || ''))) {
+            if (p.status === 'cancelled') { unwatch(n); return end('Checkout cancelled'); }
+            return end(who + ' did not cancel it: ' + (p.note || p.status), true);
+          }
+          if (Date.now() - t0 > 60000) {
+            return end('No answer from ' + who + ' in 60 s. Your ship keeps asking; the row updates when it answers', true);
+          }
+          setTimeout(poll, 1500);
+        }).catch(function (e) { end(e.message, true); });
+      })();
+    }).catch(function (e) { end(e.message, true); });
   }
   // the settings PUT replaces the document whole, so a save from one
   // card carries the other card's stored fields back with it. Every
@@ -914,6 +1045,7 @@
         return api('/plans').catch(function () { return []; }).then(function (pl) {
           myPlans = pl || [];
           draw(myAccount(d, myPlans));
+          payWatch();   // a checkout opened before a reload is still watched
         });
       });
     } else if (r.name === 'payments') {
@@ -1085,8 +1217,10 @@
       say('setting the vendor');
       post('/vendor', { ship: v }, 'PUT').then(function () { boot(); })
         .catch(function (e) { say(e.message, true); });
+    } else if (d.cancelCheckout) {
+      cancelCheckout(d.cancelCheckout, b);
     } else if (d.refreshView) {
-      say('reading the vendor');
+      var stopRead = busy('Reading your balance from ' + (myVendor || 'the vendor'));
       var drawAccount = drawer();
       api('/account?fresh=1').then(function (dd) {
         // the plans go with it, or the buttons and the plan's name
@@ -1094,9 +1228,10 @@
         return api('/plans').catch(function () { return myPlans; }).then(function (pl) {
           myPlans = pl || [];
           drawAccount(myAccount(dd, myPlans));
-          say('');
+          stopRead();
+          say('Balance read from ' + (myVendor || 'the vendor') + ' just now');
         });
-      }).catch(function (e) { say(e.message, true); });
+      }).catch(function (e) { stopRead(); say(e.message, true); });
     } else if (d.topup) {
       var amount = micro(document.getElementById('t-amount').value);
       var railEl = view.querySelector('input[name="rail"]:checked');

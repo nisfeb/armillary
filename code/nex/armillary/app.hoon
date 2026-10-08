@@ -1558,6 +1558,11 @@
   ;<  cj=json  bind:m  (read-json (rf 0 (acct-dir ship.c) %'checkouts.json'))
   =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
   =/  old=json  (fall (~(get by cm) nonce.c) ~)
+  ::  "if_status": write only if the row still has it, so a cancel that
+  ::  read the row before a payment landed never overwrites the payment
+  =/  want=@t  (gs:arm jon 'if_status')
+  ?:  &(!=('' want) !=(want (gs:arm old 'status')))
+    (note-then-no 'set-checkout' 'status moved' who)
   =/  row=json
     %-  pairs:enjs:format
     :~  ['nonce' s+nonce.c]
@@ -2339,6 +2344,7 @@
       %lease                 (inbox-lease src)
       %drop-lease            (inbox-drop-lease src)
       %delete-account        (inbox-delete src nonce.o)
+      %cancel-checkout       (inbox-cancel-checkout src checkout.o)
   ==
 ::  +inbox-delete: the customer asks for its account to go. Money
 ::  first: every open session and invoice is closed, a payment already
@@ -2502,6 +2508,125 @@
     [btcpay-url.s btcpay-store.s btcpay-key.s id 'Invalid']
   ?:  |((two-xx status.res) =(404 status.res))  (pure:m '')
   (pure:m (btcpay-why status.res body.res))
+::  +inbox-cancel-checkout: the customer stops a checkout it has not
+::  paid. Only a pending one: its Stripe session expires or its BTCPay
+::  invoice goes Invalid, and the row turns cancelled with no url, so
+::  the customer's Open link goes. A payment that landed first wins: the
+::  row keeps its status with a note, and the rail's own event credits
+::  it. Nothing here refunds; that is +close-session's, for an account
+::  that is going.
+::
+++  inbox-cancel-checkout
+  |=  [src=@p nonce=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  who=@t  (scot %p src)
+  ;<  cj=json  bind:m  (read-json (rf 0 (acct-dir src) %'checkouts.json'))
+  =/  row=json  (gj:arm cj nonce)
+  ?.  ?=([%o *] row)  (note-inbox 'cancel-checkout' | 'no such checkout' who)
+  =/  status=@t  (gs:arm row 'status')
+  =/  url=@t  (gs:arm row 'url')
+  ?:  =('processing' status)
+    =/  why=@t  'a payment is already on its way'
+    ;<  ~  bind:m
+      (recheck-checkout src nonce row url status (rap 3 'not cancelled: ' why ~) status)
+    (note-inbox 'cancel-checkout' | why who)
+  ?.  =('pending' status)
+    (note-inbox 'cancel-checkout' | (rap 3 'not open: ' status ~) who)
+  ;<  s=settings:arm  bind:m  (settings-of 0)
+  =/  rail=@t  (gs:arm row 'rail')
+  =/  sid=@t  (gs:arm row 'sid')
+  ;<  why=@t  bind:m
+    ?:  =('' sid)  (pure:(fiber:fiber:nexus ,@t) '')
+    ?:  =('stripe' rail)  (cancel-session s sid)
+    ?:  =('btcpay' rail)  (cancel-invoice src nonce row s sid)
+    (pure:(fiber:fiber:nexus ,@t) '')
+  ?.  =('' why)
+    ;<  ~  bind:m
+      (recheck-checkout src nonce row url status (rap 3 'not cancelled: ' why ~) status)
+    (note-inbox 'cancel-checkout' | why who)
+  ::  a BTCPay row was written by +cancel-invoice itself, before BTCPay
+  ;<  ~  bind:m
+    ?:  &(=('btcpay' rail) !=('' sid))  (pure:(fiber:fiber:nexus ,~) ~)
+    (recheck-checkout src nonce row '' 'cancelled' 'cancelled by the customer' 'pending')
+  (note-inbox 'cancel-checkout' & '' who)
+::  +cancel-session: a Stripe session expired so nobody can pay it.
+::  Blank when it is gone or was already; one that completed first is
+::  read back, and paid is the refusal.
+::
+++  cancel-session
+  |=  [s=settings:arm sid=@t]
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ?:  =('' stripe-key.s)  (pure:m 'stripe_key: not set')
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (session-expire-request:astripe stripe-url.s stripe-key.s sid))
+  ?:  |((two-xx status.res) =(404 status.res))  (pure:m '')
+  ?.  =(400 status.res)  (pure:m (stripe-why status.res body.res))
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (session-request:astripe stripe-url.s stripe-key.s sid))
+  ?.  (two-xx status.res)  (pure:m (stripe-why status.res body.res))
+  =/  got  (read-session:astripe body.res)
+  ?~  got  (pure:m 'stripe answered no session')
+  ?:  paid.u.got  (pure:m 'paid before the cancel arrived')
+  (pure:m '')
+::  +cancel-invoice: a BTCPay invoice marked Invalid so nobody can pay
+::  it. Money already on it, settled or confirming, is the refusal.
+::  Every other way out writes the row here, cancelled, and BEFORE
+::  BTCPay is told, since BTCPay's own InvoiceInvalid event can land
+::  before this fiber writes again; if BTCPay refuses, the row goes
+::  back to pending and the caller writes why.
+::
+++  cancel-invoice
+  |=  [src=@p nonce=@t row=json s=settings:arm id=@t]
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ?:  |(=('' btcpay-url.s) =('' btcpay-store.s) =('' btcpay-key.s))
+    (pure:m 'btcpay: not set')
+  ;<  res=[status=@ud body=@t]  bind:m
+    %-  fetch
+    (invoice-get-request:abtc btcpay-url.s btcpay-store.s btcpay-key.s id)
+  =/  gone=?  =(404 status.res)
+  ?.  |(gone (two-xx status.res))  (pure:m (btcpay-why status.res body.res))
+  =/  got  ?:(gone ~ (read-invoice:abtc body.res))
+  ?:  &(!gone ?=(~ got))  (pure:m 'btcpay answered no invoice')
+  =/  st=@t  ?~(got '' status.u.got)
+  ?:  |(=('Settled' st) =('Processing' st))  (pure:m 'paid before the cancel arrived')
+  ;<  ~  bind:m
+    (recheck-checkout src nonce row '' 'cancelled' 'cancelled by the customer' 'pending')
+  ?:  |(gone =('Expired' st) =('Invalid' st))  (pure:m '')
+  ;<  res=[status=@ud body=@t]  bind:m
+    %-  fetch
+    %-  invoice-status-request:abtc
+    [btcpay-url.s btcpay-store.s btcpay-key.s id 'Invalid']
+  ?:  |((two-xx status.res) =(404 status.res))  (pure:m '')
+  ;<  ~  bind:m
+    (recheck-checkout src nonce row (gs:arm row 'url') 'pending' '' 'cancelled')
+  (pure:m (btcpay-why status.res body.res))
+::  +recheck-checkout: one row's url, status and note rewritten by the
+::  writer only while its status is still .was, so a payment that lands
+::  between the read and this write is never overwritten
+::
+++  recheck-checkout
+  |=  [src=@p nonce=@t row=json url=@t status=@t note=@t was=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  poke-writer  0
+  %-  pairs:enjs:format
+  :~  ['op' s+'set-checkout']
+      ['ship' s+(scot %p src)]
+      ['nonce' s+nonce]
+      ['rail' s+(gs:arm row 'rail')]
+      ['plan' s+(gs:arm row 'plan')]
+      ['amount' (en-num:arm (gn:arm row 'amount'))]
+      ['url' s+url]
+      ['sid' s+(gs:arm row 'sid')]
+      ['intent' s+(gs:arm row 'intent')]
+      ['expires' s+(gs:arm row 'expires')]
+      ['status' s+status]
+      ['note' s+note]
+      ['if_status' s+was]
+  ==
 ::  +inbox-cancel: the customer asks Stripe to stop renewing. The row on
 ::  the account stays until customer.subscription.deleted arrives, so
 ::  what it already paid for is still its own until the period ends.
@@ -2955,9 +3080,17 @@
   ::  pass that sent something looks again a moment later rather than
   ::  reading the account as it was before the op
   ;<  ~  bind:m  ?~(todo (pure:(fiber:fiber:nexus ,~) ~) (nap ~s2))
+  ;<  t0=@da  bind:m  get-time:io
   ;<  got=(unit json)  bind:m  (peek-view vendor)
+  ;<  t1=@da  bind:m  get-time:io
   ?~  got  (pure:m ~)
-  (absorb-view vendor u.got)
+  ::  how long the read itself took travels with the view, so a slow
+  ::  balance says whether the vendor or this ship is the slow half
+  =/  ms=@ud  (div (sub t1 t0) (div ~s1 1.000))
+  =/  doc=json
+    ?.  ?=([%o *] u.got)  u.got
+    [%o (~(put by p.u.got) 'fetch_ms' (en-num:arm ms))]
+  (absorb-view vendor doc)
 ::  +send-queued: the ops waiting, one at a time. A remote ack is
 ::  unobservable, so a timeout answers yes and the view is the truth.
 ::
@@ -3432,6 +3565,8 @@
   ?:  &(=('DELETE' meth) ?=([%api %keys @ ~] suffix))    (own (serve-my-revoke eyre-id s2))
   ?:  &(=('POST' meth) ?=([%api %checkout ~] suffix))    (own (serve-my-checkout eyre-id jon))
   ?:  &(=('GET' meth) ?=([%api %checkout @ ~] suffix))   (own (serve-checkout-phase eyre-id s2 args))
+  ?:  &(=('POST' meth) ?=([%api %checkout @ %cancel ~] suffix))
+    (own (serve-my-cancel-checkout eyre-id s2 jon))
   ?:  &(=('GET' meth) ?=([%api %inference ~] suffix))    (own (serve-inference eyre-id))
   ?:  &(=('POST' meth) ?=([%api %lease ~] suffix))       (own (serve-take-lease eyre-id))
   ?:  &(=('DELETE' meth) ?=([%api %lease ~] suffix))     (own (serve-give-lease eyre-id))
@@ -4574,6 +4709,48 @@
       ['url' s+(gs:arm u.got 'url')]
       ['status' s+status]
   ==
+::  +serve-my-cancel-checkout: ask the vendor to cancel a checkout this
+::  ship has not paid. The view must hold it as pending; the vendor
+::  decides from its own row and answers by rewriting it, so this waits
+::  for the row's status or note to move. "wait": false answers 202 at
+::  once, for the page, which reads the row through the phase route.
+::
+++  serve-my-cancel-checkout
+  |=  [eyre-id=@ta n=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vendor=(unit @p)  bind:m  (vendor-of 1)
+  ?~  vendor  (send-err eyre-id 409 'vendor: not set')
+  ;<  vw=json  bind:m  (read-json (rf 1 / %'view.json'))
+  =/  row=json  (gj:arm (gj:arm vw 'checkouts') `@t`n)
+  ?.  ?=([%o *] row)  (send-err eyre-id 404 'no such checkout')
+  ?.  =('pending' (gs:arm row 'status'))  (send-err eyre-id 409 'checkout: not pending')
+  ;<  q=@t  bind:m  fresh-nonce
+  ;<  ~  bind:m  (queue-at q (en-inbox:arm [%cancel-checkout `@t`n]))
+  ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
+  ?:  &((has-key:arm jon 'wait') !(gb:arm jon 'wait'))
+    (send-json eyre-id 202 (pairs:enjs:format ~[['pending' b+&]]))
+  ;<  got=json  bind:m  (await-row-moved `@t`n row 30)
+  ?:  =(got row)  (send-json eyre-id 202 (pairs:enjs:format ~[['pending' b+&]]))
+  %^  send-json  eyre-id  200
+  (pairs:enjs:format ~[['status' s+(gs:arm got 'status')] ['note' s+(gs:arm got 'note')]])
+::  +await-row-moved: a checkout row's status or note changed in the
+::  view, or thirty seconds gone; the row as it stands either way
+::
+++  await-row-moved
+  |=  [n=@t was=json left=@ud]
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ;<  doc=json  bind:m  (read-json (rf 1 / %'view.json'))
+  =/  row=json  (gj:arm (gj:arm doc 'checkouts') n)
+  ?:  ?|  !=((gs:arm row 'status') (gs:arm was 'status'))
+          !=((gs:arm row 'note') (gs:arm was 'note'))
+      ==
+    (pure:m row)
+  ?:  =(0 left)  (pure:m was)
+  ;<  ~  bind:m  (nudge left)
+  ;<  ~  bind:m  (nap ~s1)
+  (await-row-moved n was (dec left))
 ::  +serve-checkout-phase: how far a checkout from +serve-my-checkout
 ::  has got. ?nudge=1 wakes the client, as +await-checkout does every
 ::  third second of its own wait.
@@ -4867,6 +5044,7 @@
   =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
   =/  row=(unit json)  (~(get by cm) nonce)
   ?~  row  (send-err eyre-id 404 'no such checkout')
+  ?:  =('cancelled' (gs:arm u.row 'status'))  (send-err eyre-id 409 'checkout: cancelled')
   =/  ship=@t  (scot %p u.who)
   =/  amount=@ud  (gn:arm u.row 'amount')
   ::  plans arrive in phase 3, so a plan checkout in stub mode is worth
@@ -4963,6 +5141,13 @@
   ::  reached a PaymentIntent has one to give
   =/  pi=@t  ?:(=('' intent) (gs:arm row 'intent') intent)
   ?:  ?&(=(status (gs:arm row 'status')) =(pi (gs:arm row 'intent')))
+    (pure:m ~)
+  ::  a cancelled row stays cancelled when the rail's own event says the
+  ::  invoice expired or went invalid, which the cancel itself caused; a
+  ::  payment that lands on it anyway still shows
+  ?:  ?&  =('cancelled' (gs:arm row 'status'))
+          |(=('expired' status) =('invalid' status))
+      ==
     (pure:m ~)
   %+  poke-writer  1
   %-  pairs:enjs:format

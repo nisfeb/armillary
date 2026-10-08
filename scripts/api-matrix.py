@@ -771,7 +771,9 @@ check('a hello afterwards opens a fresh empty account',
       dictish(d).get('ship') == SELF and dictish(d).get('balance') == 0 and dictish(d).get('keys') == [], d)
 code, co = curl('POST', API + '/checkout', {'rail': 'stripe', 'amount': 10000000}, timeout=120)
 check('a second card checkout opens', code == 200, (code, co))
-curl('POST', SSTUB + '/stub/delay/40', jar=None)
+# the route waits thirty rounds of a one second nap and its own work, which
+# runs past forty seconds on a loaded machine; sixty stays slower than it
+curl('POST', SSTUB + '/stub/delay/60', jar=None)
 code, d = curl('POST', API + '/delete-account', timeout=120)
 NONCE = dictish(d).get('nonce', '')
 check('with the vendor slow the delete is 202 queued with a nonce',

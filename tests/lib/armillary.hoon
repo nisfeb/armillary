@@ -506,6 +506,20 @@
     :-  !>('rail: stripe or btcpay')
     !>((why (de-inbox:arm (jo '{"op":"checkout","rail":"cash","nonce":"n2","amount":10}'))))
   ==
+::  a cancel names its checkout as "checkout" and carries no "nonce", so
+::  the client drops it once its send is taken
+::
+++  test-de-inbox-cancel-checkout
+  ;:  weld
+    %-  expect-eq
+    :-  !>(`(each inbox-op:arm @t)`[%& [%cancel-checkout 'n7']])
+    !>((de-inbox:arm (jo '{"op":"cancel-checkout","checkout":"n7"}')))
+    %-  expect-eq
+    :-  !>('checkout: 1 to 64 bytes')
+    !>((why (de-inbox:arm (jo '{"op":"cancel-checkout","nonce":"n7"}'))))
+    (expect-eq !>(`(each inbox-op:arm @t)`[%& [%cancel-checkout 'n7']]) !>((round [%cancel-checkout 'n7'])))
+    (expect-eq !>('') !>((gs:arm (en-inbox:arm [%cancel-checkout 'n7']) 'nonce')))
+  ==
 ::  +why: a refusal's text, so a test asks for the message by name
 ++  why  |=(e=(each * @t) ^-(@t ?:(?=(%| -.e) p.e '')))
 ::  +round: an op through en-inbox and back

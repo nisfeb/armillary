@@ -517,6 +517,45 @@ check('the subscription clears on the account',
       dictish(view.get('subscription')).get('active') is False and view.get('plan') == '',
       (view.get('subscription'), view.get('plan')))
 
+print('cancelling a card checkout')
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': CARD},
+                jar=PJAR, timeout=180)
+cnonce = dictish(co).get('nonce', '')
+csid = dictish(co).get('url', '').rsplit('/', 1)[-1]
+check('a card checkout to cancel opens',
+      code == 200 and dictish(co).get('url', '').startswith(SSTUB + '/stub/pay/'), (code, co))
+code, d = curl('POST', api(PEER) + '/checkout/' + cnonce + '/cancel', {}, jar=PJAR, timeout=180)
+check('cancelling it answers cancelled',
+      code == 200 and dictish(d).get('status') == 'cancelled', (code, d))
+code, st = curl('GET', SSTUB + '/stub/state')
+check('and Stripe expired the session',
+      dictish(dictish(st).get('sessions', {}).get(csid)).get('status') == 'expired',
+      dictish(st).get('sessions', {}).get(csid))
+view = wait_view(PEER, PJAR, lambda v: dictish(
+    dictish(v.get('checkouts')).get(cnonce)).get('status') == 'cancelled')
+row = dictish(dictish(view.get('checkouts')).get(cnonce))
+check('the cancelled row has no url to open', row.get('status') == 'cancelled' and row.get('url') == '', row)
+code, d = stub_post(SSTUB + '/stub/pay/' + csid)
+check('the expired session cannot be paid', code == 404, (code, str(d)[:120]))
+code, d = curl('POST', api(PEER) + '/checkout/' + cnonce + '/cancel', {}, jar=PJAR)
+check('cancelling it again is 409', code == 409, (code, d))
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': CARD},
+                jar=PJAR, timeout=180)
+qnonce = dictish(co).get('nonce', '')
+qsid = dictish(co).get('url', '').rsplit('/', 1)[-1]
+code, d = stub_post(SSTUB + '/stub/pay-quietly/' + qsid)
+check('a checkout paid at Stripe before the cancel lands', code == 200, (code, str(d)[:120]))
+code, d = curl('POST', api(PEER) + '/checkout/' + qnonce + '/cancel', {}, jar=PJAR, timeout=180)
+check('the cancel loses to the payment and says so',
+      code == 200 and dictish(d).get('status') == 'pending'
+      and 'paid before' in str(dictish(d).get('note', '')), (code, d))
+code, d = stub_post(SSTUB + '/stub/pay/' + qsid)
+view = wait_view(PEER, PJAR, lambda v: dictish(
+    dictish(v.get('checkouts')).get(qnonce)).get('status') == 'paid', tries=15)
+check('and the payment still lands when its webhook does',
+      dictish(dictish(view.get('checkouts')).get(qnonce)).get('status') == 'paid',
+      dictish(view.get('checkouts')).get(qnonce))
+
 print('the bitcoin rail')
 # whatever the card rail left behind is the floor the bitcoin rail adds to
 BASE2 = dictish(fresh(PEER, PJAR)).get('balance', 0)
@@ -591,6 +630,20 @@ view = wait_view(PEER, PJAR, lambda v: dictish(
 check('the expired row says so',
       dictish(dictish(view.get('checkouts')).get(enonce)).get('status') == 'expired',
       dictish(view.get('checkouts')).get(enonce))
+
+code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'btcpay', 'amount': BTC},
+                jar=PJAR, timeout=180)
+xnonce = dictish(co).get('nonce', '')
+xid = dictish(co).get('url', '').rsplit('/', 1)[-1]
+check('a bitcoin checkout to cancel opens',
+      code == 200 and dictish(co).get('url', '').startswith(BSTUB + '/stub/pay/'), (code, co))
+code, d = curl('POST', api(PEER) + '/checkout/' + xnonce + '/cancel', {}, jar=PJAR, timeout=180)
+check('cancelling the bitcoin one answers cancelled',
+      code == 200 and dictish(d).get('status') == 'cancelled', (code, d))
+code, st = curl('GET', BSTUB + '/stub/state')
+check('and BTCPay marked the invoice Invalid',
+      dictish(dictish(st).get('invoices', {}).get(xid)).get('status') == 'Invalid',
+      dictish(st).get('invoices', {}).get(xid))
 
 settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB)
 settle()

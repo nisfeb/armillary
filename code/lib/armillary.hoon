@@ -1439,6 +1439,7 @@
       [%drop-lease ~]
       [%cancel-subscription ~]
       [%delete-account nonce=@t]
+      [%cancel-checkout checkout=@t]
   ==
 ::  +de-inbox: one op from a poke, or the field that failed. A stranger
 ::  sends this, so every branch is a clean refusal.
@@ -1465,6 +1466,12 @@
     =/  amount=@ud  (gn jon 'amount')
     ?:  &(=('' plan) =(0 amount))  [%| 'plan or amount required']
     (each-op [%checkout rail plan amount nonce])
+  ::  the checkout it names travels as "checkout", not "nonce": an op
+  ::  with no nonce of its own is dropped once its send is taken
+  ?:  =('cancel-checkout' op)
+    =/  target=@t  (gs jon 'checkout')
+    ?:  |(=('' target) (gth (met 3 target) max-id))  [%| 'checkout: 1 to 64 bytes']
+    (each-op [%cancel-checkout target])
   ?:  =('mint-key' op)
     =/  name=@t  (gs jon 'name')
     ?:  |(=('' name) (gth (met 3 name) max-name))  [%| 'name: 1 to 200 bytes']
@@ -1513,6 +1520,8 @@
     ==
       %got-key   (pairs:enjs:format ~[['op' s+'got-key'] ['id' s+id.o]])
       %drop-key  (pairs:enjs:format ~[['op' s+'drop-key'] ['id' s+id.o]])
+      %cancel-checkout
+    (pairs:enjs:format ~[['op' s+'cancel-checkout'] ['checkout' s+checkout.o]])
   ==
 ::  +$  view: the account as its own ship reads it. The vendor writes it
 ::  whole on every change and one usergroup lets that ship alone peek it.

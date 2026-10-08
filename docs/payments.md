@@ -12,6 +12,16 @@ A customer buys credit with a card or with bitcoin. On the card rail the vendor 
 
 A top-up is `mode=payment` with one inline line item at the amount. Every line item, inline or on a plan's Product, carries Stripe's product tax code `txcd_10105001`, Artificial Intelligence as a Service, cloud based, personal use. Stripe needs it for two reasons: a Stripe account with Managed Payments on (the default on new accounts, Stripe as merchant of record for tax, fraud and disputes) refuses a line item without an eligible code, and Stripe Tax needs it to tax a digital service correctly in the US. A subscription is `mode=subscription` on the plan's Stripe Price, with the ship and the plan id in the subscription's own metadata, so an invoice months later still says which plan it renews.
 
+## Cancelling a checkout
+
+The customer's `POST /api/checkout/<nonce>/cancel` pokes a `cancel-checkout` op naming the checkout (under `checkout`, not `nonce`, so the client drops the op once its send is taken). The vendor acts only on a `pending` row:
+
+- **Stripe**: the session is expired, so nobody can pay it. A session that completed first cannot be expired; it is read back, and paid is a refusal.
+- **BTCPay**: the invoice is read back. Settled or Processing is a refusal. Otherwise the row turns `cancelled` first, then the invoice is marked Invalid; BTCPay's own `InvoiceInvalid` event lands after the row already says cancelled. If BTCPay refuses, the row goes back to `pending`.
+- **Stub mode**: the row turns `cancelled`, and the stub pay page answers 409 for it.
+
+A cancelled row has no `url`, so the customer's page drops its Open link. A refusal keeps the row's status and sets its `note` to `not cancelled: <why>`, and the rail's own event credits a payment that won the race. A `processing` row is refused at once: a bitcoin payment is already on its way. Nothing here refunds. Every write goes through the writer with `if_status`, so a payment that lands between the vendor's read and its write is never overwritten, and a webhook never turns a `cancelled` row into `expired` or `invalid`.
+
 The rail's call runs inside the inbox fiber. That serializes every customer's ops behind one slow call, for up to two minutes. It is marked in the code with a `ponytail:` comment; a spawned fiber per op is the upgrade when a vendor has enough customers to feel it.
 
 ## The two verification paths
@@ -160,8 +170,8 @@ Both end in one arm, `+credit-btc-invoice`, which reads the invoice back from BT
 |---|---|
 | `Processing` | the row becomes `processing`, nothing is credited. On chain this is the wait for the store's confirmation count |
 | `Settled` | the invoice's `amount` is credited as microdollars with `ref` the invoice id and `rail` `btcpay`, and the row becomes `paid` |
-| `Expired` | the row becomes `expired` |
-| `Invalid` | the row becomes `invalid` |
+| `Expired` | the row becomes `expired`, unless the customer cancelled it |
+| `Invalid` | the row becomes `invalid`, unless the customer cancelled it |
 
 The credit is deduped by its ref, so running it twice answers `already recorded` and writes nothing.
 
