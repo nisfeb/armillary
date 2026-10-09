@@ -1480,10 +1480,14 @@
         now
     ==
   ::  the vendor's suggested models ride in every view, so a customer
-  ::  reads them on its next pass
+  ::  reads them on its next pass, and whether it may search through
+  ::  this vendor: a search address with no Brave key behind it would
+  ::  take an app's own search away for nothing
   ;<  sug=json  bind:m  (read-json (rf 0 / %'suggested.json'))
+  ;<  bj=json  bind:m  (read-json (rf 0 / %'brave.json'))
   =/  vj=json  (en-view:arm v)
-  =?  vj  ?=([%o *] vj)  [%o (~(put by p.vj) 'suggested' sug)]
+  =?  vj  ?=([%o *] vj)
+    [%o (~(gas by p.vj) ~[['suggested' sug] ['search_offered' b+!=('' (gs:arm bj 'key'))]])]
   (over:io (rf 0 (acct-dir who) %'view.json') [[/ %json] vj])
 ::  +do-set-suggested: the vendor's suggested models, with a revision
 ::  that moves on every change, then every account's view written
@@ -1528,6 +1532,13 @@
   ;<  ~  bind:m
     %+  over:io  (rf 0 / %'brave.json')
     [[/ %json] (pairs:enjs:format ~[['key' s+key] ['url' s+url]])]
+  ::  a key set or removed changes what every customer may search with
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ^-  form:n
+    ?:  =(=('' key) =('' (gs:arm old 'key')))  (pure:n ~)
+    ;<  all=(list [=account:arm keys=@ud])  bind:n  (all-accounts 0)
+    (write-views (turn all |=([a=account:arm k=@ud] ship.a)))
   ::  the audit row says whether a key is set, never the key
   ;<  ~  bind:m  (note 'set-brave' & ?:(=('' key) 'no key' 'key set') '' --0)
   (pure:m &)
@@ -5185,12 +5196,14 @@
   =?  sug  !?=([%o *] (gj:arm sug 'tiers'))  (en-suggestion:arm (gn:arm sug 'rev') [~ ~])
   [%o (~(gas by p.inf) ~[['suggested' sug] ['search' (search-of doc held)]])]
 ::  +search-of: the vendor's Brave proxy and the key an app sends it, or
-::  an empty object while this ship holds no armillary key
+::  an empty object while this ship holds no armillary key or the vendor
+::  has no Brave key
 ::
 ++  search-of
   |=  [doc=json held=(list held-key:arm)]
   ^-  json
   ?~  held  [%o ~]
+  ?.  =(b+& (gj:arm doc 'search_offered'))  [%o ~]
   =/  newest=held-key:arm
     %+  roll  `(list held-key:arm)`t.held
     |=([k=held-key:arm best=_i.held] ?:((gth made.k made.best) k best))

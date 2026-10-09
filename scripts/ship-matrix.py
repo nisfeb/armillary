@@ -221,6 +221,8 @@ def broom():
     curl('PUT', api(HOST) + '/catalog', [], jar=JAR)
     curl('DELETE', api(HOST) + '/providers/stub', jar=JAR)
     curl('DELETE', api(HOST) + '/plans/' + PLAN['id'], jar=JAR)
+    # no Brave key: the suite's search checks start from a vendor with none
+    curl('PUT', api(HOST) + '/brave', {'key': None}, jar=JAR)
     # null clears a secret, blank would keep it
     settings(HOST, JAR, stripe_key=None, stripe_webhook_secret=None,
              btcpay_key=None, btcpay_webhook_secret=None, lease_provider='')
@@ -313,10 +315,9 @@ check('each feature resolves through its tier, default the frontier model',
 view = wait_view(PEER, PJAR, lambda v: dictish(v.get('suggested')).get('rev') == REV)
 check('the customer view carries it', dictish(view.get('suggested')).get('rev') == REV, view.get('suggested'))
 code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
-check('the inference config carries it and where to search',
+check('the inference config carries it, and no search while the vendor has no Brave key',
       dictish(dictish(inf).get('suggested')).get('rev') == REV
-      and str(dictish(dictish(inf).get('search')).get('url', '')).endswith('/apps/armillary/brave')
-      and dictish(dictish(inf).get('search')).get('key') == secret, {'suggested': dictish(inf).get('suggested')})
+      and dictish(inf).get('search') == {}, {'suggested': dictish(inf).get('suggested'), 'search': dictish(inf).get('search')})
 filed = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR,
                         instance(PEER) + '/vendor-suggested.json?raw=1'],
                        capture_output=True, text=True).stdout
@@ -326,11 +327,11 @@ appinf = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR,
                          instance(PEER) + '/app-inference.json?raw=1'],
                         capture_output=True, text=True).stdout
 ai = dictish(json.loads(appinf or '{}'))
-check('the app inference file holds the proxy, its key, the suggestion and the search proxy',
+check('the app inference file holds the proxy, its key and the suggestion',
       ai.get('mode') == 'proxy' and ai.get('key') == secret
       and str(ai.get('base_url', '')).endswith('/apps/armillary/v1')
       and dictish(ai.get('suggested')).get('rev') == REV
-      and dictish(ai.get('search')).get('key') == secret,
+      and ai.get('search') == {},
       {k: v for k, v in ai.items() if k not in ('key', 'search')})
 code, d = curl('PUT', api(HOST) + '/suggested', {'tiers': TIERS, 'features': FEATS}, jar=JAR)
 settle(2)
@@ -344,6 +345,12 @@ check('the vendor sets its Brave key', code == 200, (code, d))
 settle(2)
 code, d = curl('GET', api(HOST) + '/brave', jar=JAR)
 check('the key is never read back', dictish(d).get('key_set') is True and 'key' not in dictish(d), d)
+view = wait_view(PEER, PJAR, lambda v: v.get('search_offered') is True)
+code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
+check('with a Brave key the customer is offered the vendor\'s search and its own key for it',
+      view.get('search_offered') is True
+      and str(dictish(dictish(inf).get('search')).get('url', '')).endswith('/apps/armillary/brave')
+      and dictish(dictish(inf).get('search')).get('key') == secret, view.get('search_offered'))
 BPROXY = HOST + '/apps/armillary/brave'
 out = subprocess.run(['curl', '-s', '-m', '60', '-H', 'x-subscription-token: ' + secret,
                       BPROXY + '/res/v1/web/search?q=hello%20world%20%26%20more&count=3'],
@@ -366,6 +373,9 @@ curl('PUT', api(HOST) + '/brave', {'key': None}, jar=JAR)
 settle(2)
 code, d = curl('GET', BPROXY + '/res/v1/web/search?q=x', bearer=secret)
 check('with the key removed a search is 503', code == 503, (code, d))
+view = wait_view(PEER, PJAR, lambda v: v.get('search_offered') is False)
+code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
+check('and the customer is offered no search again', dictish(inf).get('search') == {}, dictish(inf).get('search'))
 
 print('no credit, no answer')
 code, d = curl('POST', v1(HOST) + '/chat/completions',
