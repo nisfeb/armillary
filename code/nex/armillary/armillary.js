@@ -380,14 +380,15 @@
     out += '<div class="card"><h2>Ledger</h2>';
     if (!rows.length) out += '<p class="muted">Nothing yet.</p>';
     else {
-      out += thead(['At', 'Kind', { name: 'Amount', num: true }, 'Model', { name: 'Tokens', num: true }, 'Ref']);
+      var tok = rows.some(hasTokens);
+      out += thead(['At', 'Kind', { name: 'Amount', num: true }, 'Model'].concat(tok ? [{ name: 'Tokens', num: true }] : [], ['Ref']));
       rows.forEach(function (r) {
         out += '<tr>' +
           cell('At', fmtTime(r.at)) +
           cell('Kind', esc(r.kind)) +
           cell('Amount', esc(dollars(r.amount)), 'num') +
           cell('Model', esc(r.model)) +
-          cell('Tokens', r.kind === 'debit' ? esc(r.in + ' in, ' + r.out + ' out') : '', 'num') +
+          (tok ? cell('Tokens', tokenCell(r), 'num') : '') +
           cell('Ref', '<code>' + esc(r.ref) + '</code>') +
           '</tr>';
       });
@@ -655,13 +656,14 @@
   }
   function modelRows(models) {
     if (!models || !models.length) return '<p class="muted">Nothing used yet.</p>';
-    return thead(['Model', { name: 'Spent', num: true }, { name: 'Requests', num: true }, { name: 'Tokens', num: true }]) +
+    var tok = models.some(function (m) { return Number(m['in'] || 0) + Number(m.out || 0) > 0; });
+    return thead(['Model', { name: 'Spent', num: true }, { name: 'Requests', num: true }].concat(tok ? [{ name: 'Tokens', num: true }] : [])) +
       models.map(function (m) {
         return '<tr>' + cell('Model', '<code>' + esc(m.model) + '</code>') + cell('Spent', esc(money$(m.spent)), 'num') +
-          cell('Requests', esc(m.requests), 'num') + cell('Tokens', esc(tokens(Number(m['in'] || 0) + Number(m.out || 0))), 'num') + '</tr>';
+          cell('Requests', esc(m.requests), 'num') + (tok ? cell('Tokens', esc(tokens(Number(m['in'] || 0) + Number(m.out || 0))), 'num') : '') + '</tr>';
       }).join('') + '</tbody></table>';
   }
-  var LEASE_NOTE = '<p class="muted">Under a lease your calls go straight to the provider, which reports what was spent every ten minutes but not the tokens or the model; that spend shows as <code>openrouter</code> with no tokens.</p>';
+  var LEASE_NOTE = '<p class="muted">Under a lease your calls go straight to the provider, which reports what was spent every ten minutes but not the tokens or the model; that spend shows as <code>openrouter</code>.</p>';
   // +myData: a customer's own use, from its account view
   function myData(d) {
     var out = '<h1>Data</h1>';
@@ -671,9 +673,10 @@
     var s = u.series, bal = Number(d.balance || 0);
     var rate = rateOf(s, 'spent', 7) || rateOf(s, 'spent', 30);
     var run = runway(bal, rate);
+    var tok = sumOf(s, 'in', s.length) + sumOf(s, 'out', s.length) > 0;
     out += '<div class="card"><h2>The last 30 days</h2><div class="stats">' +
       stat(money$(sumOf(s, 'spent', 30)), 'spent') + stat(sumOf(s, 'requests', 30), 'requests') +
-      stat(tokens(sumOf(s, 'in', 30) + sumOf(s, 'out', 30)), 'tokens') + stat(money$(sumOf(s, 'credited', 30)), 'credited') + '</div></div>';
+      (tok ? stat(tokens(sumOf(s, 'in', 30) + sumOf(s, 'out', 30)), 'tokens') : '') + stat(money$(sumOf(s, 'credited', 30)), 'credited') + '</div></div>';
     out += '<div class="card"><h2>Ahead</h2><div class="stats">' +
       stat(money$(bal), 'balance now') + stat(money$(rate), 'a day lately') + stat(money$(rate * 30), 'the next 30 days at that rate') +
       stat(run.n, run.l) + '</div>' +
@@ -685,8 +688,8 @@
     }
     out += '</div><div class="card"><h2>By day, the last ' + esc(u.days) + ' days</h2>' +
       bars(s, 'spent', money$, 'Spent') + bars(s, 'requests', String, 'Requests') +
-      bars(s.map(function (x) { return { day: x.day, t: Number(x['in'] || 0) + Number(x.out || 0) }; }), 't', tokens, 'Tokens') + '</div>';
-    out += '<div class="card"><h2>By model, the last ' + esc(u.days) + ' days</h2>' + modelRows(u.models) + (l ? LEASE_NOTE : '') + '</div>';
+      (tok ? bars(s.map(function (x) { return { day: x.day, t: Number(x['in'] || 0) + Number(x.out || 0) }; }), 't', tokens, 'Tokens') : '') + '</div>';
+    out += '<div class="card"><h2>By model, the last ' + esc(u.days) + ' days</h2>' + modelRows(u.models) + (l && !tok ? LEASE_NOTE : '') + '</div>';
     return out;
   }
   // +vendorData: every account's use, the leases' caps, the day totals
@@ -701,7 +704,8 @@
     var rate = rateOf(s, 'spent', 7) || rateOf(s, 'spent', 30), costRate = rateOf(s, 'cost', 7) || rateOf(s, 'cost', 30);
     var out = '<h1>Data</h1><div class="card"><p>' + pick + '</p><div class="stats">' +
       stat(money$(spent), 'charged') + stat(money$(cost), 'cost') + stat(money$(spent - cost), 'margin') +
-      stat(sumOf(s, 'requests', s.length), 'requests') + stat(tokens(sumOf(s, 'in', s.length) + sumOf(s, 'out', s.length)), 'tokens') +
+      stat(sumOf(s, 'requests', s.length), 'requests') +
+      (sumOf(s, 'in', s.length) + sumOf(s, 'out', s.length) > 0 ? stat(tokens(sumOf(s, 'in', s.length) + sumOf(s, 'out', s.length)), 'tokens') : '') +
       stat(money$(sumOf(s, 'credited', s.length)), 'credited') + '</div>' +
       '<div class="stats">' + stat(money$(rate), 'charged a day lately') + stat(money$(rate * 30), 'charged the next 30 days') +
       stat(money$(costRate * 30), 'cost the next 30 days') + '</div></div>';
@@ -741,8 +745,9 @@
     out += '<div class="card"><h2>Customers</h2>';
     if (!accts.length) out += '<p class="muted">No accounts yet.</p>';
     else {
-      out += thead(['Ship', { name: 'Balance', num: true }, { name: 'Spent', num: true }, { name: 'Requests', num: true },
-        { name: 'Tokens', num: true }, 'Lease cap', 'Lasts', 'Last used']) +
+      var atok = accts.some(function (x) { var us = (x.usage || {}).series || []; return sumOf(us, 'in', us.length) + sumOf(us, 'out', us.length) > 0; });
+      out += thead(['Ship', { name: 'Balance', num: true }, { name: 'Spent', num: true }, { name: 'Requests', num: true }]
+        .concat(atok ? [{ name: 'Tokens', num: true }] : [], ['Lease cap', 'Lasts', 'Last used'])) +
         accts.map(function (x) {
           var a = x.account || {}, us = (x.usage || {}).series || [], l = x.lease;
           var r = rateOf(us, 'spent', 7) || rateOf(us, 'spent', 30), run = runway(Number(a.balance || 0), r);
@@ -751,7 +756,7 @@
           return '<tr' + (a.closed ? ' class="closed"' : '') + '>' +
             cell('Ship', '<a href="#accounts/' + esc(a.ship) + '"><code>' + esc(a.ship) + '</code></a>') +
             cell('Balance', esc(money$(a.balance)), 'num') + cell('Spent', esc(money$(sumOf(us, 'spent', us.length))), 'num') +
-            cell('Requests', esc(sumOf(us, 'requests', us.length)), 'num') + cell('Tokens', esc(tokens(sumOf(us, 'in', us.length) + sumOf(us, 'out', us.length))), 'num') +
+            cell('Requests', esc(sumOf(us, 'requests', us.length)), 'num') + (atok ? cell('Tokens', esc(tokens(sumOf(us, 'in', us.length) + sumOf(us, 'out', us.length))), 'num') : '') +
             cell('Lease cap', cap) + cell('Lasts', esc(run.n)) + cell('Last used', esc(lastDay ? lastDay.day : 'not in these days')) + '</tr>';
         }).join('') + '</tbody></table>' +
         '<p class="muted">A lease\'s cap and spend are in the provider\'s dollars, before your markup. "Lasts" is the balance at the account\'s spend lately.</p>';
@@ -815,16 +820,24 @@
   // ---- the customer's own views ----
   // the ledger table is the same one the owner reads, so one renderer
   // serves both sides
+  // +tokenCell: a charge's tokens, when it has counts. A lease's charge
+  // is what the provider says the key spent over ten minutes, with no
+  // tokens or model, and printed "0 in, 0 out" as if it were a count.
+  // A table none of whose rows has counts shows no Tokens column at all
+  // (sneagan: "if the value will always be empty don't even show it").
+  function hasTokens(r) { return r.kind === 'debit' && (Number(r['in'] || 0) > 0 || Number(r.out || 0) > 0); }
+  function tokenCell(r) { return hasTokens(r) ? esc(r['in'] + ' in, ' + r.out + ' out') : ''; }
   function ledger(rows) {
     if (!rows.length) return '<p class="muted">Nothing yet.</p>';
-    var out = thead(['At', 'Kind', { name: 'Amount', num: true }, 'Model', { name: 'Tokens', num: true }, 'Ref']);
+    var tok = rows.some(hasTokens);
+    var out = thead(['At', 'Kind', { name: 'Amount', num: true }, 'Model'].concat(tok ? [{ name: 'Tokens', num: true }] : [], ['Ref']));
     rows.forEach(function (r) {
       out += '<tr>' +
         cell('At', fmtTime(r.at)) +
         cell('Kind', esc(r.kind)) +
         cell('Amount', esc(dollars(r.amount)), 'num') +
         cell('Model', esc(r.model)) +
-        cell('Tokens', r.kind === 'debit' ? esc(r.in + ' in, ' + r.out + ' out') : '', 'num') +
+        (tok ? cell('Tokens', tokenCell(r), 'num') : '') +
         cell('Ref', '<code>' + esc(r.ref) + '</code>') +
         '</tr>';
     });
@@ -919,7 +932,7 @@
     var out = '<div class="card"><h2>Usage</h2><div class="stats">' +
       '<div><span class="n">$' + esc(dollars(u.month)) + (u.floor ? '+' : '') + '</span><span class="l">spent, last 30 days</span></div>' +
       '<div><span class="n">' + u.charges + (u.floor ? '+' : '') + '</span><span class="l">requests</span></div>' +
-      '<div><span class="n">' + esc(String(u.tokens)) + (u.floor ? '+' : '') + '</span><span class="l">tokens</span></div>' +
+      (u.tokens ? '<div><span class="n">' + esc(String(u.tokens)) + (u.floor ? '+' : '') + '</span><span class="l">tokens</span></div>' : '') +
       '</div>';
     if (u.models.length) {
       out += thead(['Model', { name: 'Spent', num: true }]);
@@ -1082,7 +1095,7 @@
     subscriptionLine: subscriptionLine,
     myAccount: myAccount, myKeys: myKeys, myLease: myLease, buyCatalog: buyCatalog,
     usage: usage, usageCard: usageCard,
-    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard, braveCard: braveCard, rankModels: rankModels, catalog: catalog, buyCatalog: buyCatalog, myData: myData, vendorData: vendorData, bars: bars, rateOf: rateOf, runway: runway,
+    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard, braveCard: braveCard, rankModels: rankModels, catalog: catalog, buyCatalog: buyCatalog, myData: myData, vendorData: vendorData, ledger: ledger, bars: bars, rateOf: rateOf, runway: runway,
     route: route, sseEvent: sseEvent,
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = render; }

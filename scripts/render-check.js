@@ -77,4 +77,14 @@ var short = r.vendorData({ totals: { series: days }, accounts: [{ account: { shi
   providers: [{ id: 'or', name: 'OpenRouter', credits: { total: '50', used: '10' } }] }, 30);
 is(short.indexOf('the leases may spend $50.00 but the account has $40.00 left') > 0, 'leases that may spend more than the provider account has are called out');
 is(vd.indexOf('may spend') > 0 && vd.indexOf('leases may spend $') < 0, 'and a provider with room for its leases is not');
+// a lease's charge has no token counts, and says so rather than zeros
+var lg = r.ledger([{ kind: 'debit', amount: 1000, model: 'openrouter', 'in': 0, out: 0, mode: 'lease', ref: 'lease-1', at: '2026-10-09T00:00:00Z' },
+  { kind: 'debit', amount: 2000, model: 'a/x', 'in': 12, out: 7, mode: 'proxy', ref: 'r1', at: '2026-10-09T00:00:00Z' }]);
+is(lg.indexOf('12 in, 7 out') > 0 && lg.indexOf('0 in, 0 out') < 0, 'a charge with counts shows them, one without shows none');
+var leaseOnly = r.ledger([{ kind: 'debit', amount: 1000, model: 'openrouter', 'in': 0, out: 0, mode: 'lease', ref: 'lease-1', at: '2026-10-09T00:00:00Z' }]);
+is(leaseOnly.indexOf('Tokens') < 0, 'a ledger with no counts at all has no Tokens column');
+var noTok = days.map(function (x) { return { day: x.day, spent: x.spent, requests: 1, 'in': 0, out: 0, credited: 0 }; });
+var mdl = r.myData({ vendor: '~nisfeb', balance: 1, daily: { days: 10, series: noTok, models: [{ model: 'openrouter', spent: 1, requests: 1, 'in': 0, out: 0 }] }, lease: { usage: 1, limit: 2 } });
+is(mdl.indexOf('Tokens') < 0 && mdl.indexOf('>tokens<') < 0, 'a Data view with no counts shows no tokens anywhere');
+is(r.usageCard({ ledger: [{ kind: 'debit', amount: 5, model: 'openrouter', 'in': 0, out: 0, mode: 'lease', at: new Date().toISOString() }] }).indexOf('>tokens<') < 0, 'the Usage card shows no tokens when none were counted');
 console.log('render-check ok');
