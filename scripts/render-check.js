@@ -54,4 +54,11 @@ is(hits(r.buyCatalog(cat, 'pro')).length === 0, 'a word strewn through the provi
 is(hits(r.buyCatalog(cat, 'openrouter')).length === 3, 'the provider\'s name, whole, finds its models');
 is(r.buyCatalog(cat, 'zzz').indexOf('No model fits') > 0, 'nothing fits nonsense, and says so');
 is(r.catalog(cat, 'opus 5').indexOf('1 of 3 rows') > 0 || r.catalog(cat, 'opus 5').indexOf('2 of 3 rows') > 0, 'the vendor\'s filter counts what fits');
+// a word a word in the id starts with ranks above one inside a word,
+// and a tie goes to the shorter id
+var op = ['anthropic/claude-opus-4.5', 'anthropic/claude-opus-5.5:batch', 'anthropic/claude-opus-5.5', 'anthropic/claude-opus-5'].map(function (i) { return { id: i }; });
+var ord = r.rankModels('opus 5', op).map(function (m) { return m.id; });
+is(ord[0] === 'anthropic/claude-opus-5' && ord[1] === 'anthropic/claude-opus-5.5' && ord[3] === 'anthropic/claude-opus-4.5', 'opus 5 ranks 5 and 5.5 above 4.5, the shorter id first');
+var cv = r.catalog(cat, 'opus');
+is(cv.indexOf('cat-filter') > cv.indexOf('Brave search') && cv.indexOf('cat-filter') < cv.indexOf('<table'), 'the catalog filter sits on its own table, below the two cards');
 console.log('render-check ok');

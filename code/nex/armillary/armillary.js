@@ -120,7 +120,15 @@
   function fuzzyScore(q, names) {
     var best = null;
     names.forEach(function (n) {
-      var s = n.indexOf(q) === 0 ? 0 : n.indexOf(q) >= 0 ? 1 : null;
+      // a word the name starts with, then one a word in it starts with
+      // (after - / _ or a space: "5" fits opus-5.5 before opus-4.5), then
+      // one inside a word, then letters strewn through it
+      var at = n.indexOf(q), s = null;
+      if (at === 0) s = 0;
+      else if (at > 0) {
+        s = 1;
+        for (var j = at; j >= 0 && s === 1; j = n.indexOf(q, j + 1)) if ('-/_ '.indexOf(n[j - 1]) >= 0) s = 0.5;
+      }
       if (s === null) {
         var i = 0, k = 0;
         for (; k < q.length && i >= 0; k++) { i = n.indexOf(q[k], i); if (i >= 0) i++; }
@@ -147,7 +155,7 @@
         score += sc;
       }
       return [m, score];
-    }).filter(Boolean).sort(function (a, b) { return a[1] - b[1]; }).map(function (x) { return x[0]; });
+    }).filter(Boolean).sort(function (a, b) { return a[1] - b[1] || String(a[0].id).length - String(b[0].id).length; }).map(function (x) { return x[0]; });
   }
   // +modelBox: a model id, searched or typed. The box keeps whatever is
   // typed; the list under it is the models that fit, best first, and a
@@ -243,15 +251,18 @@
   function catalog(rows, filter) {
     // the filter is the model search's: fuzzy, best first
     var kept = rankModels(filter, rows);
-    var out = '<h1>Catalog</h1><div class="card">' +
-      '<div class="field"><label for="cat-filter">Filter</label>' +
-      '<input id="cat-filter" type="search" value="' + esc(filter || '') + '" placeholder="search: opus 5, gpt mini, kimi" autocomplete="off" spellcheck="false"></div>' +
-      '<button data-save-catalog="1">Save catalog</button>' +
-      '<span class="muted"> ' + kept.length + ' of ' + rows.length + ' rows</span></div>';
+    var out = '<h1>Catalog</h1>';
     if (!rows.length) return out + '<p class="muted">Nothing in the catalog. Import from a provider first.</p>';
     out += suggestedCard(rows);
     out += braveCard(myBrave);
-    out += '<div class="card">' + thead(['Id', 'Provider',
+    // the filter sits on its own table: above the two cards, what it found
+    // was two screens down, and typing seemed to do nothing
+    out += '<div class="card"><h2>Models</h2><div class="inline">' +
+      '<div class="field"><label for="cat-filter">Filter</label>' +
+      '<input id="cat-filter" type="search" value="' + esc(filter || '') + '" placeholder="search: opus 5, gpt mini, kimi" autocomplete="off" spellcheck="false"></div>' +
+      '<div class="field"><button data-save-catalog="1">Save catalog</button>' +
+      '<span class="muted"> ' + kept.length + ' of ' + rows.length + ' rows</span></div></div>' +
+      thead(['Id', 'Provider',
       { name: 'In $/M', num: true }, { name: 'Out $/M', num: true },
       { name: 'Cost in', num: true }, { name: 'Cost out', num: true },
       { name: 'Margin', num: true }, 'On', 'Tags']);
