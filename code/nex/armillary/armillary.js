@@ -136,8 +136,13 @@
     return models.map(function (m) {
       var id = String(m.id).toLowerCase(), name = String(m.name || m.id).toLowerCase();
       var names = [id, name, id.slice(id.lastIndexOf('/') + 1)], score = 0;
+      // the provider counts whole or in part, never letters strewn
+      // through it: "pro" strewn through "openrouter" took every model
+      var prov = String(m.provider || '').toLowerCase();
       for (var w = 0; w < words.length; w++) {
         var sc = fuzzyScore(words[w], names);
+        var ps = prov.indexOf(words[w]) === 0 ? 0 : prov.indexOf(words[w]) > 0 ? 1 : null;
+        if (ps !== null && (sc === null || ps < sc)) sc = ps;
         if (sc === null) return null;
         score += sc;
       }
@@ -179,7 +184,11 @@
   // of its customers' apps uses. An app following it switches when the
   // revision moves.
   function suggestedCard(rows) {
-    var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return { id: r.id, name: r.name }; });
+    var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider }; });
+    // a model the catalog holds but does not sell is listed too, marked,
+    // so the search never says a model is not there when it is; saving
+    // one is refused until it is switched on
+    var unsold = rows.filter(function (r) { return !r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider, note: 'not for sale: switch it on in the catalog below' }; });
     var tiers = Object.assign({}, mySuggested.tiers || {}, sgDraft.tiers);
     var feats = Object.assign({}, mySuggested.features || {}, sgDraft.features);
     var out = '<div class="card"><h2>Your customers\' AI</h2>' +
@@ -193,7 +202,7 @@
       // chat catalog sells: Jev first, then what is sold
       var models = t[0] === 'decision'
         ? [{ id: 'typesafe/jev-1.13', note: 'decisions' }].concat(sold.filter(function (m) { return m.id !== 'typesafe/jev-1.13'; }))
-        : sold;
+        : sold.concat(unsold);
       var field = modelBox('tier-' + t[0], 'data-tier="' + t[0] + '"', cur, models,
         t[0] === 'decision' ? 'typesafe/jev-1.13' : 'search, or type a model id');
       out += '<div class="field wide"><label for="tier-' + t[0] + '">' + esc(t[1]) + '</label>' + field + '</div>';
@@ -232,13 +241,11 @@
       (rows ? thead(['Ship', 'Searches']) + rows + '</tbody></table>' : '<p class="muted">No searches yet.</p>') + '</div>';
   }
   function catalog(rows, filter) {
-    var f = String(filter || '').toLowerCase();
-    var kept = rows.filter(function (r) {
-      return !f || String(r.id).toLowerCase().indexOf(f) >= 0 || String(r.provider).toLowerCase().indexOf(f) >= 0;
-    });
+    // the filter is the model search's: fuzzy, best first
+    var kept = rankModels(filter, rows);
     var out = '<h1>Catalog</h1><div class="card">' +
       '<div class="field"><label for="cat-filter">Filter</label>' +
-      '<input id="cat-filter" type="search" value="' + esc(filter || '') + '" placeholder="id or provider"></div>' +
+      '<input id="cat-filter" type="search" value="' + esc(filter || '') + '" placeholder="search: opus 5, gpt mini, kimi" autocomplete="off" spellcheck="false"></div>' +
       '<button data-save-catalog="1">Save catalog</button>' +
       '<span class="muted"> ' + kept.length + ' of ' + rows.length + ' rows</span></div>';
     if (!rows.length) return out + '<p class="muted">Nothing in the catalog. Import from a provider first.</p>';
@@ -856,15 +863,12 @@
     return out + '</div>';
   }
   function buyCatalog(rows, filter) {
-    var f = String(filter || '').toLowerCase();
-    var kept = (rows || []).filter(function (r) {
-      return !f || String(r.id).toLowerCase().indexOf(f) >= 0 || String(r.provider).toLowerCase().indexOf(f) >= 0;
-    });
+    var kept = rankModels(filter, rows || []);
     var out = '<h1>Catalog</h1><div class="card">' +
       '<div class="field"><label for="buy-filter">Filter</label>' +
-      '<input id="buy-filter" type="search" value="' + esc(filter || '') + '" placeholder="id or provider"></div>' +
+      '<input id="buy-filter" type="search" value="' + esc(filter || '') + '" placeholder="search: opus 5, gpt mini, kimi" autocomplete="off" spellcheck="false"></div>' +
       '<span class="muted"> ' + kept.length + ' of ' + (rows || []).length + ' models</span></div>';
-    if (!kept.length) return out + '<p class="muted">The vendor offers nothing yet.</p>';
+    if (!kept.length) return out + '<p class="muted">' + ((rows || []).length ? 'No model fits.' : 'The vendor offers nothing yet.') + '</p>';
     out += '<div class="card">' + thead(['Model', 'Provider',
       { name: 'In $/M', num: true }, { name: 'Out $/M', num: true }, 'Tags']);
     kept.forEach(function (r) {
@@ -913,7 +917,7 @@
     subscriptionLine: subscriptionLine,
     myAccount: myAccount, myKeys: myKeys, myLease: myLease, buyCatalog: buyCatalog,
     usage: usage, usageCard: usageCard,
-    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard, braveCard: braveCard, rankModels: rankModels,
+    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard, braveCard: braveCard, rankModels: rankModels, catalog: catalog, buyCatalog: buyCatalog,
     route: route, sseEvent: sseEvent,
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = render; }
@@ -934,6 +938,7 @@
   var providerMode = false;
   var VENDOR_VIEWS = { providers: 1, accounts: 1, account: 1, payments: 1, report: 1 };
   var buyFilter = '';
+  var buyRows = [];                    // what the vendor sells, as last read, for the live filter
   var custMinted = null;               // a fetched secret shown once
   var planEditing = null;              // the plan id whose form is open
   var st0 = null;                      // the settings the Payments view last read
@@ -1219,7 +1224,7 @@
           });
       });
     } else if (r.name === 'catalog' && !providerMode) {
-      p = api('/catalog').then(function (rows) { draw(buyCatalog(rows || [], buyFilter)); });
+      p = api('/catalog').then(function (rows) { buyRows = rows || []; draw(buyCatalog(buyRows, buyFilter)); });
     } else if (r.name === 'catalog') {
       p = api('/catalog').then(function (rows) {
         catRows = rows || [];
@@ -1286,7 +1291,7 @@
   view.addEventListener('input', function (ev) {
     var el = ev.target;
     if (el.id === 'cat-filter') { catFilter = el.value; view.innerHTML = catalog(catRows, catFilter); var f = document.getElementById('cat-filter'); if (f) { f.focus(); f.setSelectionRange(f.value.length, f.value.length); } }
-    else if (el.id === 'buy-filter') { buyFilter = el.value; }
+    else if (el.id === 'buy-filter') { buyFilter = el.value; view.innerHTML = buyCatalog(buyRows, buyFilter); var bf = document.getElementById('buy-filter'); if (bf) { bf.focus(); bf.setSelectionRange(bf.value.length, bf.value.length); } }
     else if (el.id === 'acct-search') { acctSearch = el.value; }
     if (el.dataset.tier) sgDraft.tiers[el.dataset.tier] = el.value;
     if (el.dataset.pick) pickList(el);
@@ -1334,7 +1339,7 @@
     if (ev.target.name === 'kind') {
       var box = document.getElementById('p-prov');
       if (box) box.hidden = ev.target.value !== 'openrouter';
-    } else if (ev.target.id === 'acct-search' || ev.target.id === 'buy-filter') {
+    } else if (ev.target.id === 'acct-search') {
       refresh();
     }
   });

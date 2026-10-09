@@ -43,4 +43,15 @@ is(ids('zzz').length === 0 && ids('').length === 4, 'nothing fits nonsense, and 
 var bc = r.braveCard({ key_set: true, searches: { '~lur': { '2026-10': 2 } } });
 is(bc.indexOf('~lur') > 0 && bc.indexOf('2026-10: 2') > 0 && bc.indexOf('data-clear-brave') > 0, 'the Brave card counts each ship and offers removal');
 is(r.braveCard({}).indexOf('no key set') > 0, 'a vendor without a key is told so');
+// the catalog filters are the same search, live and fuzzy: "opus 5"
+// finds claude-opus-5 among the rest, and the provider's name counts
+var cat = [{ id: 'anthropic/claude-opus-4.1', provider: 'openrouter', enabled: true }, { id: 'anthropic/claude-opus-5', provider: 'openrouter', enabled: false },
+  { id: 'openai/gpt-5-mini', provider: 'openrouter', enabled: true }];
+var hits = function (html) { return (html.match(/<code>[^<]+<\/code>/g) || []).map(function (c) { return c.slice(6, -7); }); };
+is(hits(r.buyCatalog(cat, 'opus 5'))[0] === 'anthropic/claude-opus-5', 'the buyer\'s filter finds opus 5 first');
+is(hits(r.buyCatalog(cat, 'gpt mini')).length === 1, 'and gpt mini alone');
+is(hits(r.buyCatalog(cat, 'pro')).length === 0, 'a word strewn through the provider\'s name is no match');
+is(hits(r.buyCatalog(cat, 'openrouter')).length === 3, 'the provider\'s name, whole, finds its models');
+is(r.buyCatalog(cat, 'zzz').indexOf('No model fits') > 0, 'nothing fits nonsense, and says so');
+is(r.catalog(cat, 'opus 5').indexOf('1 of 3 rows') > 0 || r.catalog(cat, 'opus 5').indexOf('2 of 3 rows') > 0, 'the vendor\'s filter counts what fits');
 console.log('render-check ok');
