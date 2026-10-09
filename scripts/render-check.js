@@ -30,9 +30,16 @@ is(r.checkoutRows(co).indexOf('data-cancel-checkout') < 0, "the owner's view of 
 is(r.freshness({ stale: 120, fetched: 'x', fetch_ms: 2100 }).indexOf('2 min ago, in 2.1 s') > 0, 'the balance says its age and read time');
 is(r.freshness({}).indexOf('Refresh reads it now') > 0, 'a balance never read says so');
 var card = r.suggestedCard([{ id: 'a/b', enabled: true }, { id: 'c/d', enabled: false }]);
-is(card.indexOf('Orrery generator') > 0 && card.indexOf('value="a/b"') > 0, 'the tier pickers offer what is sold');
+is(card.indexOf('Orrery generator') > 0 && (card.match(/data-pick="1"/g) || []).length === 4, 'every tier is a model search box');
 is(card.indexOf('Talon decision gate') > 0 && card.indexOf('data-tier="decision"') > 0, 'every feature and the decision tier are there');
-is(card.indexOf('value="c/d"') < 0, 'and not what is not');
+// Talon's ranking: a word the id starts with, then one inside it, then
+// letters strewn through; every word must fit
+var ms = [{ id: 'anthropic/claude-sonnet-4' }, { id: 'openai/gpt-4o' }, { id: 'moonshotai/kimi-k3' }, { id: 'openai/gpt-4o-mini' }];
+var ids = function (q) { return r.rankModels(q, ms).map(function (m) { return m.id; }); };
+is(ids('cl son')[0] === 'anthropic/claude-sonnet-4', 'cl son finds claude sonnet');
+is(ids('gpt4o').length === 2 && ids('gpt4o')[0] === 'openai/gpt-4o', 'gpt4o finds both, the shorter first');
+is(ids('kimi')[0] === 'moonshotai/kimi-k3' && ids('kimi').length === 1, 'a word the tail starts with');
+is(ids('zzz').length === 0 && ids('').length === 4, 'nothing fits nonsense, and everything fits nothing typed');
 var bc = r.braveCard({ key_set: true, searches: { '~lur': { '2026-10': 2 } } });
 is(bc.indexOf('~lur') > 0 && bc.indexOf('2026-10: 2') > 0 && bc.indexOf('data-clear-brave') > 0, 'the Brave card counts each ship and offers removal');
 is(r.braveCard({}).indexOf('no key set') > 0, 'a vendor without a key is told so');

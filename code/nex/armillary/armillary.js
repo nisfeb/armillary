@@ -113,13 +113,75 @@
     ['orrery_read', 'Orrery read channel'],
     ['orrery_decider', 'Orrery decider'],
   ];
+  // +fuzzyScore, +rankModels: Talon's model search (its rankModels): each
+  // word of the query in the id, its name or the part after the last
+  // slash, fuzzily (its letters in order, gaps allowed); a word the id
+  // starts with ranks before one inside it, before letters strewn through
+  function fuzzyScore(q, names) {
+    var best = null;
+    names.forEach(function (n) {
+      var s = n.indexOf(q) === 0 ? 0 : n.indexOf(q) >= 0 ? 1 : null;
+      if (s === null) {
+        var i = 0, k = 0;
+        for (; k < q.length && i >= 0; k++) { i = n.indexOf(q[k], i); if (i >= 0) i++; }
+        if (i >= 0) s = 2;
+      }
+      if (s !== null && (best === null || s < best)) best = s;
+    });
+    return best;
+  }
+  function rankModels(query, models) {
+    var words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return models.slice();
+    return models.map(function (m) {
+      var id = String(m.id).toLowerCase(), name = String(m.name || m.id).toLowerCase();
+      var names = [id, name, id.slice(id.lastIndexOf('/') + 1)], score = 0;
+      for (var w = 0; w < words.length; w++) {
+        var sc = fuzzyScore(words[w], names);
+        if (sc === null) return null;
+        score += sc;
+      }
+      return [m, score];
+    }).filter(Boolean).sort(function (a, b) { return a[1] - b[1]; }).map(function (x) { return x[0]; });
+  }
+  // +modelBox: a model id, searched or typed. The box keeps whatever is
+  // typed; the list under it is the models that fit, best first, and a
+  // click or Enter on one takes it
+  var pickModels = {};   // each model box's candidates, by the box's id
+  function modelBox(id, attrs, value, models, placeholder) {
+    pickModels[id] = models;
+    return '<div class="pick"><input id="' + id + '" ' + attrs + ' value="' + esc(value) +
+      '" placeholder="' + esc(placeholder || 'search, or type a model id') +
+      '" autocomplete="off" spellcheck="false" data-pick="1" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="' + id + '-list">' +
+      '<ul class="pick-list" id="' + id + '-list" role="listbox" hidden></ul></div>';
+  }
+  function pickList(input) {
+    var list = document.getElementById(input.id + '-list');
+    if (!list) return null;
+    var hits = rankModels(input.value, pickModels[input.id] || []).slice(0, 40);
+    list.innerHTML = hits.length ? hits.map(function (m, i) {
+      return '<li role="option" data-pick-id="' + esc(m.id) + '"' + (i === 0 ? ' class="on"' : '') + '>' + esc(m.id) +
+        (m.note ? ' <span class="muted">' + esc(m.note) + '</span>' : '') + '</li>';
+    }).join('') : '<li class="muted none">No model fits; Save keeps what you typed.</li>';
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    return list;
+  }
+  function pickClose(input) {
+    var list = document.getElementById(input.id + '-list');
+    if (list) list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+  }
+  // what the owner typed and has not saved, so a redraw (the catalog
+  // filter, the minute's refresh) does not lose it
+  var sgDraft = { tiers: {}, features: {} };
   // +suggestedCard: the tiers this vendor fills and the tier each feature
   // of its customers' apps uses. An app following it switches when the
   // revision moves.
   function suggestedCard(rows) {
-    var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return r.id; });
-    var tiers = mySuggested.tiers || {};
-    var feats = mySuggested.features || {};
+    var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return { id: r.id, name: r.name }; });
+    var tiers = Object.assign({}, mySuggested.tiers || {}, sgDraft.tiers);
+    var feats = Object.assign({}, mySuggested.features || {}, sgDraft.features);
     var out = '<div class="card"><h2>Your customers\' AI</h2>' +
       '<p class="muted">Every paying customer\'s apps use these unless the customer picks a model of their own for a feature. A change reaches each customer ship within five minutes. Revision ' +
       esc(mySuggested.rev || 0) + '.</p>' +
@@ -127,17 +189,14 @@
       '<h3>Tiers</h3><div class="inline">';
     TIERS.forEach(function (t) {
       var cur = tiers[t[0]] || '';
-      var field;
-      if (t[0] === 'decision') {
-        field = '<input id="tier-decision" data-tier="decision" value="' + esc(cur) + '" placeholder="typesafe/jev-1.13">';
-      } else {
-        var ids = cur && sold.indexOf(cur) < 0 ? sold.concat([cur]) : sold;
-        field = '<select id="tier-' + t[0] + '" data-tier="' + t[0] + '"><option value="">none</option>' +
-          ids.map(function (id) {
-            return '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc(id) + '</option>';
-          }).join('') + '</select>';
-      }
-      out += '<div class="field"><label for="tier-' + t[0] + '">' + esc(t[1]) + '</label>' + field + '</div>';
+      // the decision tier names a model for the decisions route, which no
+      // chat catalog sells: Jev first, then what is sold
+      var models = t[0] === 'decision'
+        ? [{ id: 'typesafe/jev-1.13', note: 'decisions' }].concat(sold.filter(function (m) { return m.id !== 'typesafe/jev-1.13'; }))
+        : sold;
+      var field = modelBox('tier-' + t[0], 'data-tier="' + t[0] + '"', cur, models,
+        t[0] === 'decision' ? 'typesafe/jev-1.13' : 'search, or type a model id');
+      out += '<div class="field wide"><label for="tier-' + t[0] + '">' + esc(t[1]) + '</label>' + field + '</div>';
     });
     out += '</div><h3>Features</h3><div class="inline">';
     var feList = FEATURES.slice();
@@ -854,7 +913,7 @@
     subscriptionLine: subscriptionLine,
     myAccount: myAccount, myKeys: myKeys, myLease: myLease, buyCatalog: buyCatalog,
     usage: usage, usageCard: usageCard,
-    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard, braveCard: braveCard,
+    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard, braveCard: braveCard, rankModels: rankModels,
     route: route, sseEvent: sseEvent,
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = render; }
@@ -1229,8 +1288,49 @@
     if (el.id === 'cat-filter') { catFilter = el.value; view.innerHTML = catalog(catRows, catFilter); var f = document.getElementById('cat-filter'); if (f) { f.focus(); f.setSelectionRange(f.value.length, f.value.length); } }
     else if (el.id === 'buy-filter') { buyFilter = el.value; }
     else if (el.id === 'acct-search') { acctSearch = el.value; }
+    if (el.dataset.tier) sgDraft.tiers[el.dataset.tier] = el.value;
+    if (el.dataset.pick) pickList(el);
+  });
+  // the model boxes: open on focus, arrows move, Enter or a click takes
+  // the model, Escape or leaving closes
+  view.addEventListener('focusin', function (ev) { if (ev.target.dataset && ev.target.dataset.pick) pickList(ev.target); });
+  view.addEventListener('focusout', function (ev) { if (ev.target.dataset && ev.target.dataset.pick) pickClose(ev.target); });
+  view.addEventListener('keydown', function (ev) {
+    var el = ev.target;
+    if (!el.dataset || !el.dataset.pick) return;
+    var list = document.getElementById(el.id + '-list');
+    if (!list) return;
+    if (ev.key === 'Escape') { pickClose(el); return; }
+    if (list.hidden && (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')) list = pickList(el);
+    var items = Array.prototype.slice.call(list.querySelectorAll('li[data-pick-id]'));
+    var at = items.findIndex(function (li) { return li.classList.contains('on'); });
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      if (!items.length) return;
+      var next = ev.key === 'ArrowDown' ? Math.min(items.length - 1, at + 1) : Math.max(0, at - 1);
+      items.forEach(function (li, i) { li.classList.toggle('on', i === next); });
+      items[next].scrollIntoView({ block: 'nearest' });
+    } else if (ev.key === 'Enter' && !list.hidden && at >= 0) {
+      ev.preventDefault();
+      el.value = items[at].dataset.pickId;
+      if (el.dataset.tier) sgDraft.tiers[el.dataset.tier] = el.value;
+      pickClose(el);
+    }
+  });
+  // mousedown, not click: a click lands after the box has lost focus and
+  // closed its list
+  view.addEventListener('mousedown', function (ev) {
+    var li = ev.target.closest && ev.target.closest('li[data-pick-id]');
+    if (!li) return;
+    ev.preventDefault();
+    var input = document.getElementById(li.parentNode.id.replace(/-list$/, ''));
+    if (!input) return;
+    input.value = li.dataset.pickId;
+    if (input.dataset.tier) sgDraft.tiers[input.dataset.tier] = input.value;
+    pickClose(input);
   });
   view.addEventListener('change', function (ev) {
+    if (ev.target.dataset && ev.target.dataset.feature) sgDraft.features[ev.target.dataset.feature] = ev.target.value;
     if (ev.target.name === 'kind') {
       var box = document.getElementById('p-prov');
       if (box) box.hidden = ev.target.value !== 'openrouter';
@@ -1320,6 +1420,7 @@
       var stopSave = busy('Saving your customers\' AI');
       post('/suggested', { tiers: sgTiers, features: sgFeatures }, 'PUT').then(function () {
         stopSave();
+        sgDraft = { tiers: {}, features: {} };
         say('Suggestion saved; customer ships pick it up within five minutes');
         held = [statusEl.innerHTML, statusEl.className];
         later();
@@ -1583,5 +1684,7 @@
 
   boot();
   stream();
-  setInterval(function () { if (!document.hidden) refresh(); }, 60000);
+  // the minute's refresh waits while a field has focus: a redraw would
+  // take the box from under the owner's typing
+  setInterval(function () { if (!document.hidden && !typing()) refresh(); }, 60000);
 })();

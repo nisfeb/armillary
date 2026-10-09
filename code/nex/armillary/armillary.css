@@ -16,12 +16,16 @@
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
-header { display: flex; align-items: center; gap: 1.5rem; padding: .6rem 1rem; border-bottom: 2px solid var(--gold); background: var(--card); position: sticky; top: 0; z-index: 2; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem 1.5rem; padding: .6rem 1rem; border-bottom: 2px solid var(--gold); background: var(--card); position: sticky; top: 0; z-index: 2; }
 header .brand { font-weight: 700; color: var(--ink); text-decoration: none; letter-spacing: .02em; }
 header nav a { margin-right: 1rem; color: var(--ink); text-decoration: none; }
 header nav a:hover { text-decoration: underline; }
-.status { margin-left: auto; min-width: 0; color: var(--ink); font-weight: 600; }
+/* the status takes the rest of the row, or a row of its own when the
+   rest is too narrow to read: squeezed beside the provider menus it was
+   a column one word wide */
+.status { flex: 1 1 18rem; min-width: 0; color: var(--ink); font-weight: 600; }
 header nav, header .mode { flex-shrink: 0; }
+.navs { display: flex; gap: 1.5rem; flex-shrink: 0; }
 .status:not(:empty) { background: var(--say-bg); padding: .25rem .7rem; border-radius: 6px; }
 .status.bad { color: var(--bad); }
 .status.bad:not(:empty) { background: var(--bad-bg); }
@@ -62,6 +66,13 @@ input.tags { width: 10em; }
 .field .rails input { display: inline; width: auto; }
 .field.wide input { width: 22em; max-width: 100%; }
 .inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .2rem 0; }
+/* a model box: what is typed, and under it the models that fit, best first */
+.pick { position: relative; }
+.pick-list { position: absolute; z-index: 5; left: 0; right: 0; top: 100%; margin: 2px 0 0; padding: .2rem 0; list-style: none;
+  max-height: 18rem; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, .2); }
+.pick-list li { padding: .35rem .6rem; cursor: pointer; overflow-wrap: anywhere; }
+.pick-list li.on, .pick-list li:hover { background: var(--on-bg); }
+.pick-list li.none { cursor: default; }
 .result { color: var(--muted); font-size: .85em; }
 .result.bad { color: var(--bad); }
 .watch { margin: .2rem 0 .4rem; font-weight: 600; }
@@ -74,10 +85,24 @@ a { color: var(--ink); }
    column name in front of each cell, buttons grow to a finger's width and
    inputs stay at 16px so iOS does not zoom into them */
 @media (max-width: 700px) {
-  header { gap: .8rem; flex-wrap: wrap; }
-  header nav { flex-shrink: 1; }
-  header nav a { margin-right: .7rem; }
-  .status { margin-left: 0; width: 100%; }
+  /* the header is two short rows: the brand and the mode, then every view
+     in one row that scrolls sideways; the status line only while it says
+     something. It stays in view, so it has to stay small */
+  header { flex-wrap: wrap; gap: .3rem .8rem; padding: .4rem .8rem; }
+  header .brand { order: 1; }
+  header .mode { order: 2; margin: 0 0 0 auto; padding: .3rem .6rem; }
+  .navs { order: 3; flex: 1 1 100%; gap: 1rem; overflow-x: auto; white-space: nowrap; scrollbar-width: none; padding: .15rem 0; }
+  .navs::-webkit-scrollbar { display: none; }
+  header nav { display: flex; align-items: center; gap: .9rem; }
+  header nav[hidden] { display: none; }
+  header nav a { margin: 0; padding: .2rem 0; }
+  .status { order: 4; margin-left: 0; width: 100%; }
+  .status:empty { display: none; }
+  main { padding: .8rem; }
+  .card { padding: .7rem .8rem; }
+  .inline { display: block; }
+  .field.wide input { width: 100%; }
+  td.num, th.num { text-align: left; }
   table, tbody, tr, td { display: block; width: 100%; }
   thead { display: none; }
   tr { padding: .45rem 0; border-bottom: 1px solid var(--line); }
