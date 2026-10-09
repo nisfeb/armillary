@@ -1008,4 +1008,27 @@
     :-  !>('https://b/res/v1/web/search')
     !>((brave-url:arm 'https://b' ~['res' 'v1' 'web' 'search'] ~))
   ==
+::  ==  ZDR tags from OpenRouter's list
+::
+::  the import tags zdr exactly the rows whose upstream model has a ZDR
+::  endpoint: a stale hand tag goes, a new row gets one, other tags and
+::  other providers stay
+::
+++  test-with-zdr
+  =/  rows=(list model-row:arm)
+    :~  ['a/x' 'or' 'a/x' 1 1 1 1 & ~['fast']]
+        ['a/y' 'or' 'a/y' 1 1 1 1 | ~['zdr']]
+        ['a/y:batch' 'or' 'a/y:batch' 1 1 1 1 | ~]
+        ['b/z' 'other' 'b/z' 1 1 1 1 & ~['zdr']]
+    ==
+  =/  ids=(set @t)
+    (zdr-ids:arm (need (de:json:html '{"data":[{"model_id":"a/x"},{"model_id":"a/x"},{"model_id":"q/r"},{"name":"no id"}]}')))
+  =/  got  (with-zdr:arm rows 'or' ids)
+  ;:  weld
+    (expect-eq !>((silt `(list @t)`~['a/x' 'q/r'])) !>(ids))
+    (expect-eq !>(`(list @t)`~['fast' 'zdr']) !>(tags:(snag 0 got)))
+    (expect-eq !>(`(list @t)`~) !>(tags:(snag 1 got)))
+    (expect-eq !>(`(list @t)`~) !>(tags:(snag 2 got)))
+    (expect-eq !>(`(list @t)`~['zdr']) !>(tags:(snag 3 got)))
+  ==
 --

@@ -582,6 +582,31 @@
   ?:  |(?=(~ ci) ?=(~ co))
     `[id provider id 0 0 0 0 | ~]
   `[id provider id (markup-of u.ci pct) (markup-of u.co pct) u.ci u.co | ~]
+::  +zdr-ids: the models OpenRouter's /endpoints/zdr lists an endpoint
+::  for that keeps nothing, each once
+::
+++  zdr-ids
+  |=  jon=json
+  ^-  (set @t)
+  %-  silt
+  %+  murn  (ga jon 'data')
+  |=  j=json
+  ^-  (unit @t)
+  =/  id=@t  (gs j 'model_id')
+  ?:(=('' id) ~ `id)
+::  +with-zdr: each of .provider's rows tagged zdr exactly while its
+::  upstream model has a ZDR endpoint; its other tags, and every other
+::  provider's rows, as they were. An import sets it, since the tag was
+::  typed by hand and went stale, and a row new from the import had none.
+::
+++  with-zdr
+  |=  [rows=(list model-row) provider=@t ids=(set @t)]
+  ^-  (list model-row)
+  %+  turn  rows
+  |=  r=model-row
+  ?.  =(provider provider.r)  r
+  =/  rest=(list @t)  (skip tags.r |=(t=@t =('zdr' t)))
+  r(tags ?.((~(has in ids) upstream.r) rest (snoc rest 'zdr')))
 ::  +merge-import: fresh rows appended to the catalog, leaving every id
 ::  the owner already priced exactly as it is
 ::

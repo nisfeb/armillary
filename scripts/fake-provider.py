@@ -127,6 +127,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/stub/requests":
             self.send(200, {"count": STATE["count"], "last": STATE["last"]})
             return
+        if self.path.rstrip("/") == "/v1/endpoints/zdr":
+            # OpenRouter's list of endpoints that keep nothing: alpha has one
+            self.send(200, {"data": [{"model_id": "stub/alpha", "provider_name": "Stub ZDR", "name": "stub/alpha-zdr"}]})
+            return
         if self.path.rstrip("/") == "/v1/models":
             if not self.bearer_ok():
                 self.send(401, {"error": {"message": "bad key"}})

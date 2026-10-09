@@ -246,6 +246,7 @@ check('the provider still answers after a blank-key edit', code == 200 and dicti
 print('import')
 code, d = curl('POST', API + '/providers/stub/import')
 check('the first import adds 3', code == 200 and dictish(d).get('added') == 3, (code, d))
+check('and says how many rows OpenRouter\'s ZDR list tagged', dictish(d).get('zdr') == 1, d)
 settle()
 code, d = curl('POST', API + '/providers/stub/import')
 check('a second import adds 0', code == 200 and dictish(d).get('added') == 0, (code, d))
@@ -260,6 +261,9 @@ check('an imported row carries the cost and the marked up price',
       dictish(byid.get('stub/alpha')).get('cost_in') == COST_IN and dictish(byid.get('stub/alpha')).get('in') == IN,
       byid.get('stub/alpha'))
 check('an unpriced row imports as zeros', dictish(byid.get('stub/free')).get('in') == 0, byid.get('stub/free'))
+check('a model with a ZDR endpoint is tagged zdr, one without is not',
+      'zdr' in (dictish(byid.get('stub/alpha')).get('tags') or []) and 'zdr' not in (dictish(byid.get('stub/free')).get('tags') or []),
+      (byid.get('stub/alpha'), byid.get('stub/free')))
 check('every imported row is disabled', all(r.get('enabled') is False for r in cat), cat)
 bad = cat + [{'id': 'other/one', 'provider': 'nope', 'in': 1, 'out': 1}]
 code, d = curl('PUT', API + '/catalog', bad)

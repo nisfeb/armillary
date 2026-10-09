@@ -192,11 +192,12 @@
   // of its customers' apps uses. An app following it switches when the
   // revision moves.
   function suggestedCard(rows) {
-    var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider }; });
+    var zdrNote = function (r) { return (r.tags || []).indexOf('zdr') >= 0 ? 'ZDR' : ''; };
+    var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider, note: zdrNote(r) }; });
     // a model the catalog holds but does not sell is listed too, marked,
     // so the search never says a model is not there when it is; saving
     // one is refused until it is switched on
-    var unsold = rows.filter(function (r) { return !r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider, note: 'not for sale: switch it on in the catalog below' }; });
+    var unsold = rows.filter(function (r) { return !r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider, note: (zdrNote(r) ? 'ZDR, ' : '') + 'not for sale: switch it on in the catalog below' }; });
     var tiers = Object.assign({}, mySuggested.tiers || {}, sgDraft.tiers);
     var feats = Object.assign({}, mySuggested.features || {}, sgDraft.features);
     var out = '<div class="card"><h2>Your customers\' AI</h2>' +
@@ -1368,7 +1369,7 @@
     } else if (d['import']) {
       say('importing from ' + d['import']);
       post('/providers/' + seg(d['import']) + '/import').then(function (r) {
-        tests[d['import']] = { text: 'added ' + r.added, bad: false };
+        tests[d['import']] = { text: 'added ' + r.added + (r.zdr != null ? '; ' + r.zdr + ' tagged zdr from its ZDR list' : ''), bad: false };
         refresh();
       }).catch(function (e) { tests[d['import']] = { text: e.message, bad: true }; refresh(); });
     } else if (d.edit) {

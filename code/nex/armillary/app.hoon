@@ -3961,10 +3961,20 @@
   ;<  cat=(list model-row:arm)  bind:m  (catalog-of 1)
   =/  merged=(list model-row:arm)  (merge-import:arm cat fresh)
   =/  added=@ud  (sub (lent merged) (lent cat))
+  ::  OpenRouter says which models have an endpoint that keeps nothing;
+  ::  its rows are tagged zdr by that list. No answer leaves the tags.
+  ;<  zres=[status=@ud body=@t]  bind:m
+    ?.  ?=(%openrouter kind.u.p)  (pure:(fiber:fiber:nexus ,[status=@ud body=@t]) [0 ''])
+    (get-json (join-url base-url.u.p '/endpoints/zdr') api-key.u.p)
+  =/  zdr=(set @t)  (zdr-ids:arm (fall (de:json:html body.zres) ~))
+  =?  merged  &((gte status.zres 200) (lth status.zres 300) !=(~ zdr))
+    (with-zdr:arm merged `@t`id zdr)
   =/  op=json
     (pairs:enjs:format ~[['op' s+'set-catalog'] ['catalog' (en-catalog:arm merged)]])
   ;<  ~  bind:m  (poke-writer 1 op)
-  (send-json eyre-id 200 (pairs:enjs:format ~[['added' (numb:enjs:format added)]]))
+  =/  tagged=@ud  (lent (skim merged |=(r=model-row:arm (lien tags.r |=(t=@t =('zdr' t))))))
+  %^  send-json  eyre-id  200
+  (pairs:enjs:format ~[['added' (numb:enjs:format added)] ['zdr' (numb:enjs:format tagged)]])
 ::  ==  the catalog
 ::
 ::  +serve-catalog: our own catalog when this ship is nobody's customer
