@@ -666,6 +666,74 @@
       note=@t
       at=@da
   ==
+::  ==  usage by day, for the Data view
+::
++$  day-sum  [spent=@ud cost=@ud reqs=@ud in=@ud out=@ud credit=@ud]
++$  model-sum  [spent=@ud reqs=@ud in=@ud out=@ud]
+::  +daily-usage: ledger rows as one row per UTC day over the last
+::  .days, oldest first: what was spent, how many requests, the tokens
+::  each way and what was credited, with the provider's cost when
+::  .vendor; a day with nothing is zeros. And a total per model over the
+::  same days, most spent first. A lease's spend arrives every ten
+::  minutes as one debit with no tokens, model openrouter.
+::
+++  daily-usage
+  |=  [rows=(list row) now=@da days=@ud vendor=?]
+  ^-  json
+  =/  n=@ud  (max 1 days)
+  =/  day0=@da  (sub (sub now (mod now ~d1)) (mul ~d1 (dec n)))
+  =/  acc=[d=(map @ud day-sum) m=(map @t model-sum)]
+    %+  roll  rows
+    |=  [r=row acc=[d=(map @ud day-sum) m=(map @t model-sum)]]
+    ?:  (lth at.r day0)  acc
+    =/  i=@ud  (div (sub at.r day0) ~d1)
+    ?:  (gte i n)  acc
+    =/  cur=day-sum  (~(gut by d.acc) i *day-sum)
+    ?:  ?=(%credit kind.r)
+      acc(d (~(put by d.acc) i cur(credit (add credit.cur amount.r))))
+    ?.  ?=(%debit kind.r)  acc
+    =/  ms=model-sum  (~(gut by m.acc) model.r *model-sum)
+    %=  acc
+      d  %+  ~(put by d.acc)  i
+         cur(spent (add spent.cur amount.r), cost (add cost.cur cost.r), reqs +(reqs.cur), in (add in.cur in.r), out (add out.cur out.r))
+      m  %+  ~(put by m.acc)  model.r
+         ms(spent (add spent.ms amount.r), reqs +(reqs.ms), in (add in.ms in.r), out (add out.ms out.r))
+    ==
+  =/  series=(list json)
+    %+  turn  (gulf 0 (dec n))
+    |=  i=@ud
+    =/  s=day-sum  (~(gut by d.acc) i *day-sum)
+    %-  pairs:enjs:format
+    %+  weld
+      ^-  (list [@t json])
+      :~  ['day' s+(end [3 10] (en-iso (add day0 (mul ~d1 i))))]
+          ['spent' (en-num spent.s)]
+          ['requests' (en-num reqs.s)]
+          ['in' (en-num in.s)]
+          ['out' (en-num out.s)]
+          ['credited' (en-num credit.s)]
+      ==
+    ^-  (list [@t json])
+    ?.(vendor ~ ~[['cost' (en-num cost.s)]])
+  =/  ranked=(list [k=@t v=model-sum])
+    %+  sort  ~(tap by m.acc)
+    |=([a=[k=@t v=model-sum] b=[k=@t v=model-sum]] (gth spent.v.a spent.v.b))
+  =/  models=(list json)
+    %+  turn  (scag 12 ranked)
+    |=  [k=@t v=model-sum]
+    %-  pairs:enjs:format
+    :~  ['model' s+k]
+        ['spent' (en-num spent.v)]
+        ['requests' (en-num reqs.v)]
+        ['in' (en-num in.v)]
+        ['out' (en-num out.v)]
+    ==
+  %-  pairs:enjs:format
+  :~  ['from' s+(end [3 10] (en-iso day0))]
+      ['days' (en-num n)]
+      ['series' a+series]
+      ['models' a+models]
+  ==
 ::  what a ledger grub holds: a version head in front of the shape, so
 ::  a later shape is told apart by the reader instead of clamming by
 ::  luck

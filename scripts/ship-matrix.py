@@ -960,6 +960,21 @@ check('it shows what the lease spent', r.get('lease_spend', 0) >= WANT, (WANT, r
 check('it counts the proxy request', r.get('requests', 0) >= 1, r.get('requests'))
 check('it splits the credits by rail',
       c.get('stub', 0) > 0 and c.get('stripe', 0) > 0 and c.get('btcpay', 0) > 0, c)
+
+print('the data view')
+code, dv = curl('GET', api(HOST) + '/data?days=30', jar=JAR)
+dv = dictish(dv)
+mine = [x for x in (dv.get('accounts') or []) if dictish(dictish(x).get('account')).get('ship') == CUST]
+today = (dictish(dictish(mine[0]).get('usage')).get('series') or [{}])[-1] if mine else {}
+check('the vendor\'s data names the customer with today\'s spend', mine and dictish(today).get('spent', 0) > 0 and 'cost' in dictish(today), today)
+stub_credits = [dictish(p).get('credits') for p in (dv.get('providers') or []) if dictish(p).get('id') == 'stub']
+check('and what the provider\'s account has left, read with its provisioning key',
+      stub_credits and dictish(stub_credits[0]).get('total') == 50 and dictish(stub_credits[0]).get('used') == 10.5, stub_credits)
+view = fresh(PEER, PJAR)
+daily = dictish(view.get('daily'))
+check('the customer\'s view carries ninety days of its use, today\'s spend in the last',
+      daily.get('days') == 90 and len(daily.get('series') or []) == 90 and dictish((daily.get('series') or [{}])[-1]).get('spent', 0) > 0, {k: daily.get(k) for k in ('days', 'from')})
+check('and never the provider\'s cost', 'cost' not in dictish((daily.get('series') or [{}])[-1]), (daily.get('series') or [{}])[-1])
 models = [t.get('model') for t in (r.get('top_models') or [])]
 check('and names the models that were charged for',
       'stub/alpha' in models and 'openrouter' in models, models)

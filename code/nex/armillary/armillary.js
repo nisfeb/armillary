@@ -606,6 +606,147 @@
   // ---- the report ----
   // one window of the ledger, in dollars. No charts: a table of eleven
   // numbers reads faster than any picture of them.
+  // ==  the Data view (version 25): use by day as charts, by model, and
+  // what it comes to. A customer sees its own, from the ninety days its
+  // vendor puts in its view; a provider sees every account, its leases
+  // and what its OpenRouter account has left.
+  //
+  // +bars: a series of days as bars scaled to the largest day, each
+  // titled with its day and value, first and last day under it
+  function bars(series, key, fmt, label) {
+    var vals = (series || []).map(function (d) { return Number(d[key] || 0); });
+    var max = Math.max.apply(null, vals.concat([0]));
+    var n = vals.length || 1, W = 600, H = 120, gap = n > 60 ? 1 : 2, bw = (W - gap * (n - 1)) / n;
+    var out = '<figure class="chart"><figcaption>' + esc(label) +
+      ' <span class="muted">' + (max ? 'most in a day ' + esc(fmt(max)) : 'nothing yet') + '</span></figcaption>' +
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="' + esc(label) + '">';
+    vals.forEach(function (v, i) {
+      var h = max ? Math.max(v ? 1.5 : 0, v / max * H) : 0;
+      out += '<rect x="' + (i * (bw + gap)).toFixed(2) + '" y="' + (H - h).toFixed(2) + '" width="' + bw.toFixed(2) +
+        '" height="' + h.toFixed(2) + '"><title>' + esc(series[i].day + ': ' + fmt(v)) + '</title></rect>';
+    });
+    var first = series && series.length ? series[0].day : '', last = series && series.length ? series[series.length - 1].day : '';
+    return out + '</svg><div class="chart-days"><span>' + esc(first) + '</span><span>' + esc(last) + '</span></div></figure>';
+  }
+  function sumOf(series, key, n) {
+    return (series || []).slice(-n).reduce(function (a, d) { return a + Number(d[key] || 0); }, 0);
+  }
+  // +rateOf: the average a day over the .n whole days before today
+  // (today is not over), or over fewer when the series is shorter
+  function rateOf(series, key, n) {
+    var done = (series || []).slice(0, -1).slice(-n);
+    return done.length ? sumOf(done, key, n) / done.length : 0;
+  }
+  function tokens(n) {
+    n = Number(n || 0);
+    return n >= 1e9 ? (n / 1e9).toFixed(1) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : String(n);
+  }
+  function stat(n, l) { return '<div><span class="n">' + esc(String(n)) + '</span><span class="l">' + esc(l) + '</span></div>'; }
+  function money$(m) { return '$' + dollars(m); }
+  // +runway: how long .balance lasts at .rate a day, in words
+  function runway(balance, rate) {
+    if (balance <= 0) return { n: 'empty', l: 'balance' };
+    if (!(rate > 0)) return { n: 'no spend', l: 'lately, so the balance holds' };
+    var days = balance / rate;
+    if (days > 365) return { n: 'over a year', l: 'the balance lasts at that rate' };
+    var when = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    var whole = Math.floor(days);
+    return { n: whole < 1 ? 'under a day' : whole + (whole === 1 ? ' day' : ' days'), l: 'the balance lasts at that rate, to ' + when };
+  }
+  function modelRows(models) {
+    if (!models || !models.length) return '<p class="muted">Nothing used yet.</p>';
+    return thead(['Model', { name: 'Spent', num: true }, { name: 'Requests', num: true }, { name: 'Tokens', num: true }]) +
+      models.map(function (m) {
+        return '<tr>' + cell('Model', '<code>' + esc(m.model) + '</code>') + cell('Spent', esc(money$(m.spent)), 'num') +
+          cell('Requests', esc(m.requests), 'num') + cell('Tokens', esc(tokens(Number(m['in'] || 0) + Number(m.out || 0))), 'num') + '</tr>';
+      }).join('') + '</tbody></table>';
+  }
+  var LEASE_NOTE = '<p class="muted">Under a lease your calls go straight to the provider, which reports what was spent every ten minutes but not the tokens or the model; that spend shows as <code>openrouter</code> with no tokens.</p>';
+  // +myData: a customer's own use, from its account view
+  function myData(d) {
+    var out = '<h1>Data</h1>';
+    if (!d || !d.vendor) return out + '<div class="card"><p class="muted">Name a vendor on Account first; your use shows here once you buy from one.</p></div>';
+    var u = d.daily;
+    if (!u || !u.series) return out + '<div class="card"><p class="muted">Your vendor\'s Armillary does not send use by day yet. It will once it runs version 25.</p></div>';
+    var s = u.series, bal = Number(d.balance || 0);
+    var rate = rateOf(s, 'spent', 7) || rateOf(s, 'spent', 30);
+    var run = runway(bal, rate);
+    out += '<div class="card"><h2>The last 30 days</h2><div class="stats">' +
+      stat(money$(sumOf(s, 'spent', 30)), 'spent') + stat(sumOf(s, 'requests', 30), 'requests') +
+      stat(tokens(sumOf(s, 'in', 30) + sumOf(s, 'out', 30)), 'tokens') + stat(money$(sumOf(s, 'credited', 30)), 'credited') + '</div></div>';
+    out += '<div class="card"><h2>Ahead</h2><div class="stats">' +
+      stat(money$(bal), 'balance now') + stat(money$(rate), 'a day lately') + stat(money$(rate * 30), 'the next 30 days at that rate') +
+      stat(run.n, run.l) + '</div>' +
+      '<p class="muted">"Lately" is the average of the last seven whole days, or of the last thirty when the week was idle.</p>';
+    var l = d.lease;
+    if (l && l.limit !== undefined) {
+      out += '<p>Lease: spent $' + esc(dollars(l.usage)) + ' of a $' + esc(dollars(l.limit)) + ' cap' +
+        (l.disabled ? ' <span class="neg">(disabled: top up to spend again)</span>' : '') + '.</p>';
+    }
+    out += '</div><div class="card"><h2>By day, the last ' + esc(u.days) + ' days</h2>' +
+      bars(s, 'spent', money$, 'Spent') + bars(s, 'requests', String, 'Requests') +
+      bars(s.map(function (x) { return { day: x.day, t: Number(x['in'] || 0) + Number(x.out || 0) }; }), 't', tokens, 'Tokens') + '</div>';
+    out += '<div class="card"><h2>By model, the last ' + esc(u.days) + ' days</h2>' + modelRows(u.models) + (l ? LEASE_NOTE : '') + '</div>';
+    return out;
+  }
+  // +vendorData: every account's use, the leases' caps, the day totals
+  // with the provider's cost, and what each provider has left
+  function vendorData(d, days) {
+    d = d || {};
+    var pick = [7, 30, 90].map(function (n) {
+      return '<button data-data-days="' + n + '"' + (Number(days) === n ? ' class="on"' : '') + '>' + n + ' days</button>';
+    }).join(' ');
+    var t = d.totals || {}, s = t.series || [];
+    var spent = sumOf(s, 'spent', s.length), cost = sumOf(s, 'cost', s.length);
+    var rate = rateOf(s, 'spent', 7) || rateOf(s, 'spent', 30), costRate = rateOf(s, 'cost', 7) || rateOf(s, 'cost', 30);
+    var out = '<h1>Data</h1><div class="card"><p>' + pick + '</p><div class="stats">' +
+      stat(money$(spent), 'charged') + stat(money$(cost), 'cost') + stat(money$(spent - cost), 'margin') +
+      stat(sumOf(s, 'requests', s.length), 'requests') + stat(tokens(sumOf(s, 'in', s.length) + sumOf(s, 'out', s.length)), 'tokens') +
+      stat(money$(sumOf(s, 'credited', s.length)), 'credited') + '</div>' +
+      '<div class="stats">' + stat(money$(rate), 'charged a day lately') + stat(money$(rate * 30), 'charged the next 30 days') +
+      stat(money$(costRate * 30), 'cost the next 30 days') + '</div></div>';
+    // what each provider has left, and how long it lasts at the cost lately
+    var provs = (d.providers || []).filter(function (p) { return p.credits; });
+    if (provs.length) {
+      out += '<div class="card"><h2>Provider credits</h2>' +
+        thead(['Provider', { name: 'Bought', num: true }, { name: 'Used', num: true }, { name: 'Left', num: true }, 'Lasts']) +
+        provs.map(function (p) {
+          var c = p.credits;
+          if (c.error) return '<tr>' + cell('Provider', esc(p.name || p.id)) + '<td colspan="4" class="neg">' + esc(c.error) + '</td></tr>';
+          var left = (Number(c.total || 0) - Number(c.used || 0)) * 1000000;
+          var lasts = costRate > 0 ? Math.floor(left / costRate) + ' days at the cost lately' : 'no cost lately';
+          return '<tr>' + cell('Provider', esc(p.name || p.id)) + cell('Bought', esc(money$(Number(c.total || 0) * 1000000)), 'num') +
+            cell('Used', esc(money$(Number(c.used || 0) * 1000000)), 'num') + cell('Left', '<strong>' + esc(money$(left)) + '</strong>', 'num') +
+            cell('Lasts', esc(lasts)) + '</tr>';
+        }).join('') + '</tbody></table>' +
+        '<p class="muted">Read live from OpenRouter with each provider\'s provisioning key. The cost counts what the proxy charged and what the leases spent.</p></div>';
+    }
+    out += '<div class="card"><h2>By day</h2>' + bars(s, 'spent', money$, 'Charged') + bars(s, 'cost', money$, 'Cost') +
+      bars(s, 'requests', String, 'Requests') + '</div>';
+    var accts = (d.accounts || []).slice().sort(function (a, b) {
+      return sumOf((b.usage || {}).series, 'spent', 999) - sumOf((a.usage || {}).series, 'spent', 999);
+    });
+    out += '<div class="card"><h2>Customers</h2>';
+    if (!accts.length) out += '<p class="muted">No accounts yet.</p>';
+    else {
+      out += thead(['Ship', { name: 'Balance', num: true }, { name: 'Spent', num: true }, { name: 'Requests', num: true },
+        { name: 'Tokens', num: true }, 'Lease cap', 'Lasts', 'Last used']) +
+        accts.map(function (x) {
+          var a = x.account || {}, us = (x.usage || {}).series || [], l = x.lease;
+          var r = rateOf(us, 'spent', 7) || rateOf(us, 'spent', 30), run = runway(Number(a.balance || 0), r);
+          var lastDay = us.slice().reverse().filter(function (dd) { return Number(dd.spent || 0) > 0; })[0];
+          var cap = l ? '$' + dollars(l.usage_seen) + ' of $' + dollars(l.limit) + (l.disabled ? ' <span class="neg">off</span>' : '') : '<span class="muted">none</span>';
+          return '<tr' + (a.closed ? ' class="closed"' : '') + '>' +
+            cell('Ship', '<a href="#accounts/' + esc(a.ship) + '"><code>' + esc(a.ship) + '</code></a>') +
+            cell('Balance', esc(money$(a.balance)), 'num') + cell('Spent', esc(money$(sumOf(us, 'spent', us.length))), 'num') +
+            cell('Requests', esc(sumOf(us, 'requests', us.length)), 'num') + cell('Tokens', esc(tokens(sumOf(us, 'in', us.length) + sumOf(us, 'out', us.length))), 'num') +
+            cell('Lease cap', cap) + cell('Lasts', esc(run.n)) + cell('Last used', esc(lastDay ? lastDay.day : 'not in these days')) + '</tr>';
+        }).join('') + '</tbody></table>' +
+        '<p class="muted">A lease\'s cap and spend are in the provider\'s dollars, before your markup. "Lasts" is the balance at the account\'s spend lately.</p>';
+    }
+    out += '</div><div class="card"><h2>By model</h2>' + modelRows(t.models) + '</div>';
+    return out;
+  }
   function report(d, days) {
     var r = d || {};
     var c = r.credits || {};
@@ -929,7 +1070,7 @@
     subscriptionLine: subscriptionLine,
     myAccount: myAccount, myKeys: myKeys, myLease: myLease, buyCatalog: buyCatalog,
     usage: usage, usageCard: usageCard,
-    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard, braveCard: braveCard, rankModels: rankModels, catalog: catalog, buyCatalog: buyCatalog,
+    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard, braveCard: braveCard, rankModels: rankModels, catalog: catalog, buyCatalog: buyCatalog, myData: myData, vendorData: vendorData, bars: bars, rateOf: rateOf, runway: runway,
     route: route, sseEvent: sseEvent,
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = render; }
@@ -950,6 +1091,7 @@
   var providerMode = false;
   var VENDOR_VIEWS = { providers: 1, accounts: 1, account: 1, payments: 1, report: 1 };
   var buyFilter = '';
+  var dataDays = 30;                   // the provider's Data window
   var buyRows = [];                    // what the vendor sells, as last read, for the live filter
   var custMinted = null;               // a fetched secret shown once
   var planEditing = null;              // the plan id whose form is open
@@ -1224,6 +1366,10 @@
           });
         });
       });
+    } else if (r.name === 'data' && !providerMode) {
+      p = api('/account').then(function (d) { draw(myData(d)); });
+    } else if (r.name === 'data') {
+      p = api('/data?days=' + encodeURIComponent(dataDays)).then(function (d) { draw(vendorData(d, dataDays)); });
     } else if (r.name === 'report') {
       p = api('/report?days=' + encodeURIComponent(reportDays))
         .then(function (d) { draw(report(d, reportDays)); });
@@ -1485,6 +1631,9 @@
       if (!confirm('Revoke "' + d.name + '"? Its next request is refused.')) return;
       api('/keys/' + seg(d.dropKey), { method: 'DELETE' })
         .then(later).catch(function (e) { say(e.message, true); });
+    } else if (d.dataDays) {
+      dataDays = Number(d.dataDays) || 30;
+      refresh();
     } else if (d.days) {
       reportDays = Number(d.days) || 30;
       refresh();

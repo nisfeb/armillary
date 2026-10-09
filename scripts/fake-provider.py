@@ -127,6 +127,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/stub/requests":
             self.send(200, {"count": STATE["count"], "last": STATE["last"]})
             return
+        if self.path.rstrip("/") == "/v1/credits":
+            # OpenRouter's account credits, management key only
+            if not self.provisioning_ok():
+                self.send(401, {"error": {"message": "no provisioning key"}})
+                return
+            self.send(200, {"data": {"total_credits": 50, "total_usage": 10.5}})
+            return
         if self.path.rstrip("/") == "/v1/endpoints/zdr":
             # OpenRouter's list of endpoints that keep nothing: alpha has one
             self.send(200, {"data": [{"model_id": "stub/alpha", "provider_name": "Stub ZDR", "name": "stub/alpha-zdr"}]})

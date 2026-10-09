@@ -1487,7 +1487,14 @@
   ;<  bj=json  bind:m  (read-json (rf 0 / %'brave.json'))
   =/  vj=json  (en-view:arm v)
   =?  vj  ?=([%o *] vj)
-    [%o (~(gas by p.vj) ~[['suggested' sug] ['search_offered' b+!=('' (gs:arm bj 'key'))]])]
+    :-  %o
+    %-  ~(gas by p.vj)
+    :~  ['suggested' sug]
+        ['search_offered' b+!=('' (gs:arm bj 'key'))]
+        ::  ninety days of the account's use, a row a day, for its Data
+        ::  view: the ledger in the view is the newest fifty rows only
+        ['daily' (daily-usage:arm (turn rows |=([n=@ta r=row:arm] r)) now 90 |)]
+    ==
   (over:io (rf 0 (acct-dir who) %'view.json') [[/ %json] vj])
 ::  +do-set-suggested: the vendor's suggested models, with a revision
 ::  that moves on every change, then every account's view written
@@ -3168,6 +3175,7 @@
     ?.  &(!closed.a (syn:si balance.a) !=(--0 balance.a))  ~
     `ship.a
   ;<  ~  bind:m  (tick-leases ships now force paying)
+  ;<  ~  bind:m  (tick-views ships now)
   ;<  ~  bind:m
     (poke-writer 0 (pairs:enjs:format ~[['op' s+'expire-checkouts']]))
   ;<  ~  bind:m
@@ -3204,6 +3212,22 @@
     (tick-leases t.ships now force paying)
   ;<  *  bind:m  (reconcile 0 i.ships)
   (tick-leases t.ships now force paying)
+::  +tick-views: a view whose ninety days do not end today is written
+::  again, so a quiet account's Data view still runs to today: every
+::  view once a day, and on the first tick after an update that added
+::  the days
+::
+++  tick-views
+  |=  [ships=(list @p) now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  ships  (pure:m ~)
+  ;<  vj=json  bind:m  (read-json (rf 0 (acct-dir i.ships) %'view.json'))
+  =/  want=@t  (end [3 10] (en-iso:arm (sub (sub now (mod now ~d1)) (mul ~d1 89))))
+  ;<  ~  bind:m
+    ?:  =(want (gs:arm (gj:arm vj 'daily') 'from'))  (pure:m ~)
+    (poke-writer 0 (ship-op 'write-view' i.ships))
+  (tick-views t.ships now)
 ++  tick-compact
   |=  ships=(list @p)
   =/  m  (fiber:fiber:nexus ,~)
@@ -3751,6 +3775,7 @@
   ?:  &(=('GET' meth) ?=([%api %log ~] suffix))          (own (serve-log eyre-id))
   ?:  &(=('POST' meth) ?=([%api %tick ~] suffix))        (own (serve-tick eyre-id))
   ?:  &(=('GET' meth) ?=([%api %report ~] suffix))       (own (serve-report eyre-id args))
+  ?:  &(=('GET' meth) ?=([%api %data ~] suffix))         (own (serve-data eyre-id args))
   ::  the customer's routes, what Talon calls on its own ship
   ?:  &(=('GET' meth) ?=([%api %account ~] suffix))      (own (serve-my-account eyre-id args))
   ?:  &(=('PUT' meth) ?=([%api %vendor ~] suffix))       (own (serve-set-vendor eyre-id jon))
@@ -4661,6 +4686,73 @@
     |=(r=row:arm (gte at.r since))
   =/  next=report:arm  (report-add:arm rep mine since)
   (report-each t.ships since next ?~(mine n +(n)))
+::  +serve-data: the owner's Data view over the last ?days (30 unless
+::  given, 365 at most): every account with its use, a row a day, and
+::  its lease's cap and spend; the days summed across accounts with the
+::  provider's cost; and what each OpenRouter provider says of its own
+::  credits, read live with its provisioning key
+::
+++  serve-data
+  |=  [eyre-id=@ta args=quay:eyre]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  raw=@t  (fall (get-key:kv:html-utils 'days' args) '')
+  =/  days=@ud  (min 365 (max 1 ?:(=('' raw) 30 (fall (rush raw dem) 30))))
+  ;<  now=@da  bind:m  get-time:io
+  ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 1)
+  ;<  per=(list [a=account:arm k=@ud rows=(list row:arm) lj=json])  bind:m  (data-each all ~)
+  ;<  provs=(list json)  bind:m  provider-credits
+  =/  every=(list row:arm)  (zing (turn per |=([a=account:arm k=@ud rows=(list row:arm) lj=json] rows)))
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['days' (en-num:arm days)]
+      ['totals' (daily-usage:arm every now days &)]
+      :-  'accounts'
+      :-  %a
+      %+  turn  per
+      |=  [a=account:arm k=@ud rows=(list row:arm) lj=json]
+      =/  held=(unit lease:arm)  (de-lease:arm lj)
+      %-  pairs:enjs:format
+      :~  ['account' (en-account:arm a)]
+          ['keys' (en-num:arm k)]
+          ['lease' ?~(held ~ (en-lease-owner:arm u.held))]
+          ['usage' (daily-usage:arm rows now days &)]
+      ==
+      ['providers' a+provs]
+  ==
+++  data-each
+  |=  [all=(list [=account:arm keys=@ud]) acc=(list [a=account:arm k=@ud rows=(list row:arm) lj=json])]
+  =/  m  (fiber:fiber:nexus ,(list [a=account:arm k=@ud rows=(list row:arm) lj=json]))
+  ^-  form:m
+  ?~  all  (pure:m (flop acc))
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 1 ship.account.i.all)
+  ;<  lj=json  bind:m  (read-json (rf 1 (acct-dir ship.account.i.all) %'lease.json'))
+  %+  data-each  t.all
+  [[account.i.all keys.i.all (turn rows |=([n=@ta r=row:arm] r)) lj] acc]
+::  +provider-credits: each OpenRouter provider holding a provisioning
+::  key, with what OpenRouter says of the account's credits (dollars
+::  bought and used), or why it could not say; a provider of another
+::  kind, or with no provisioning key, has no such figure to read
+::
+++  provider-credits
+  =/  m  (fiber:fiber:nexus ,(list json))
+  ^-  form:m
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  =/  todo=(list provider:arm)  ~(val by pm)
+  =|  out=(list json)
+  |-
+  ?~  todo  (pure:m (flop out))
+  =/  p=provider:arm  i.todo
+  =/  head=(list [@t json])  ~[['id' s+id.p] ['name' s+name.p] ['kind' s+`@t`kind.p]]
+  ?.  &(?=(%openrouter kind.p) !=('' provisioning-key.p))
+    $(todo t.todo, out [(pairs:enjs:format (snoc head ['credits' ~])) out])
+  ;<  res=[status=@ud body=@t]  bind:m  (get-json (join-url base-url.p '/credits') provisioning-key.p)
+  =/  data=json  (gj:arm (fall (de:json:html body.res) ~) 'data')
+  =/  credits=json
+    ?.  &((gte status.res 200) (lth status.res 300) ?=([%o *] data))
+      (pairs:enjs:format ~[['error' s+?:(=(0 status.res) 'no answer' (cat 3 'the provider answered ' (crip (a-co:co status.res))))]])
+    (pairs:enjs:format ~[['total' (gj:arm data 'total_credits')] ['used' (gj:arm data 'total_usage')]])
+  $(todo t.todo, out [(pairs:enjs:format (snoc head ['credits' credits])) out])
 ::  ==  the inference API
 ::
 ::  +serve-models: the enabled catalog, rows whose provider still

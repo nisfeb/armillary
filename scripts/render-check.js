@@ -61,4 +61,16 @@ var ord = r.rankModels('opus 5', op).map(function (m) { return m.id; });
 is(ord[0] === 'anthropic/claude-opus-5' && ord[1] === 'anthropic/claude-opus-5.5' && ord[3] === 'anthropic/claude-opus-4.5', 'opus 5 ranks 5 and 5.5 above 4.5, the shorter id first');
 var cv = r.catalog(cat, 'opus');
 is(cv.indexOf('cat-filter') > cv.indexOf('Brave search') && cv.indexOf('cat-filter') < cv.indexOf('<table'), 'the catalog filter sits on its own table, below the two cards');
+// the Data view: a rate a day leaves today out, the balance's runway
+// is in words, and each view draws its charts and tables
+var days = []; for (var di = 0; di < 10; di++) days.push({ day: '2026-10-0' + di, spent: di === 9 ? 999000000 : 1000000, requests: 2, 'in': 10, out: 5, credited: 0, cost: 400000 });
+is(r.rateOf(days, 'spent', 7) === 1000000, 'the rate a day leaves out today, which is not over');
+is(r.runway(30000000, 1000000).n === '30 days' && r.runway(0, 1).n === 'empty' && r.runway(5, 0).n === 'no spend', 'the runway says how long the balance lasts');
+is(r.runway(1500000, 1000000).n === '1 day' && r.runway(500000, 1000000).n === 'under a day', 'one day is a day, and less is under a day');
+var md = r.myData({ vendor: '~nisfeb', balance: 30000000, daily: { days: 10, series: days, models: [{ model: 'a/x', spent: 3000000, requests: 6, 'in': 30, out: 15 }] }, lease: { usage: 1000000, limit: 5000000 } });
+is(md.indexOf('<svg') > 0 && md.indexOf('a/x') > 0 && md.indexOf('30 days') > 0 && md.indexOf('of a $5.00 cap') > 0, 'the customer\'s Data view charts its days, its models, its runway and its lease');
+is(r.myData({ vendor: '~nisfeb' }).indexOf('version 25') > 0, 'a vendor not yet on 25 is named as the reason');
+var vd = r.vendorData({ totals: { series: days, models: [] }, accounts: [{ account: { ship: '~lur', balance: '5000000' }, usage: { series: days }, lease: { usage_seen: 100000, limit: 900000 } }],
+  providers: [{ id: 'or', name: 'OpenRouter', credits: { total: '50', used: '10.5' } }, { id: 'x', name: 'Other', credits: null }] }, 30);
+is(vd.indexOf('~lur') > 0 && vd.indexOf('$39.50') > 0 && vd.indexOf('Other') < 0 && vd.indexOf('$0.10 of $0.90') > 0, 'the provider\'s Data view lists customers, leases and what OpenRouter has left');
 console.log('render-check ok');

@@ -1031,4 +1031,39 @@
     (expect-eq !>(`(list @t)`~) !>(tags:(snag 2 got)))
     (expect-eq !>(`(list @t)`~['zdr']) !>(tags:(snag 3 got)))
   ==
+::  ==  usage by day, for the Data view
+::
+::  one row a day over the window, oldest first, zeros for a quiet day;
+::  credits apart from spend, refunds and older rows left out; the cost
+::  only for the vendor; a total per model, most spent first
+::
+++  test-daily-usage
+  =/  now=@da  ~2026.10.9..12.00.00
+  =/  rows=(list row:arm)
+    :~  [%debit 1.000 400 'a/x' 10 20 'proxy' '' '' '' ~2026.10.9..08.00.00]
+        [%debit 2.000 800 'a/x' 5 5 'proxy' '' '' '' ~2026.10.8..23.00.00]
+        [%debit 7.000 3.000 'b/y' 1 1 'proxy' '' '' '' ~2026.10.9..09.30.00]
+        [%credit 5.000.000 0 '' 0 0 '' 'stripe' '' '' ~2026.10.9..09.00.00]
+        [%debit 9.000 0 'old' 0 0 'proxy' '' '' '' ~2026.10.1..00.00.00]
+        [%refund 1 0 '' 0 0 '' '' '' '' ~2026.10.9..10.00.00]
+    ==
+  =/  j  (daily-usage:arm rows now 3 |)
+  =/  v  (daily-usage:arm rows now 3 &)
+  =/  series=(list json)  (ga:arm j 'series')
+  =/  last=json  (rear series)
+  =/  models=(list json)  (ga:arm j 'models')
+  ;:  weld
+    (expect-eq !>('2026-10-07') !>((gs:arm j 'from')))
+    (expect-eq !>(3) !>((lent series)))
+    (expect-eq !>(`@ud`0) !>((gn:arm (snag 0 series) 'spent')))
+    (expect-eq !>(`@ud`2.000) !>((gn:arm (snag 1 series) 'spent')))
+    (expect-eq !>(`@ud`8.000) !>((gn:arm last 'spent')))
+    (expect-eq !>(`@ud`2) !>((gn:arm last 'requests')))
+    (expect-eq !>(`@ud`5.000.000) !>((gn:arm last 'credited')))
+    (expect-eq !>(`json`~) !>((gj:arm last 'cost')))
+    (expect-eq !>(`@ud`3.400) !>((gn:arm (rear (ga:arm v 'series')) 'cost')))
+    (expect-eq !>('b/y') !>((gs:arm (snag 0 models) 'model')))
+    (expect-eq !>(`@ud`2) !>((gn:arm (snag 1 models) 'requests')))
+    (expect-eq !>(2) !>((lent models)))
+  ==
 --

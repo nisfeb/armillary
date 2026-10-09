@@ -198,6 +198,15 @@ check('the report names every rail', sorted(c.keys()) == ['btcpay', 'other', 'ow
 for field in ('charged', 'cost', 'margin', 'refunds', 'requests', 'tokens_in',
               'tokens_out', 'lease_spend', 'accounts'):
     check('the report carries ' + field, field in r, sorted(r.keys()))
+
+print('the data view')
+code, dv = curl('GET', API + '/data')
+dv = dictish(dv)
+check('GET /api/data answers 200 over thirty days, a row a day',
+      code == 200 and dv.get('days') == 30 and len(dictish(dv.get('totals')).get('series') or []) == 30, (code, dv.get('days')))
+check('it lists the accounts and the providers', isinstance(dv.get('accounts'), list) and isinstance(dv.get('providers'), list), sorted(dv.keys()))
+code, dv = curl('GET', API + '/data?days=4000')
+check('a window past a year is a year', dictish(dv).get('days') == 365, dictish(dv).get('days'))
 check('an empty ship reports zeros',
       r.get('charged') == 0 and r.get('cost') == 0 and r.get('requests') == 0
       and r.get('accounts') == 0 and r.get('top_models') == [], r)
