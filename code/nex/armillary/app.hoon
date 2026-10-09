@@ -105,6 +105,8 @@
           [%fall %& [/ %'suggested.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'vendor-suggested.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'app-inference.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/ %'brave.json'] [[/ %json] [%o ~]]]
+          [%fall %& [/ %'searches.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'vendor.json'] [[/ %json] vendor-starter]]
           [%fall %& [/ %'key-index.json'] [[/ %json] [%o ~]]]
           [%fall %& [/ %'keys.json'] [[/ %json] [%o ~]]]
@@ -378,6 +380,8 @@
   ?:  =('answer-op' op)      (do-answer-op jon)
   ?:  =('forget-vendor' op)  do-forget-vendor
   ?:  =('set-suggested' op)  (do-set-suggested jon)
+  ?:  =('set-brave' op)      (do-set-brave jon)
+  ?:  =('count-search' op)   (do-count-search jon)
   (refuse op 'unknown op' '')
 ::  +refuse: a refusal that leaves the writer standing
 ::
@@ -1490,17 +1494,62 @@
   |=  jon=json
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  =/  got  (de-suggested:arm jon)
+  =/  got  (de-suggestion:arm jon)
   ?:  ?=(%| -.got)  (refuse 'set-suggested' p.got '')
   ;<  old=json  bind:m  (read-json (rf 0 / %'suggested.json'))
-  =/  doc=json  (en-suggested:arm +((gn:arm old 'rev')) p.got)
-  ?:  =((gj:arm old 'models') (gj:arm doc 'models'))
+  =/  doc=json  (en-suggestion:arm +((gn:arm old 'rev')) p.got)
+  ?:  ?&  =((gj:arm old 'tiers') (gj:arm doc 'tiers'))
+          =((gj:arm old 'features') (gj:arm doc 'features'))
+      ==
     (note-then-no 'set-suggested' 'unchanged' '')
   ;<  ~  bind:m  (over:io (rf 0 / %'suggested.json') [[/ %json] doc])
   ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 0)
   ;<  ~  bind:m  (write-views (turn all |=([a=account:arm n=@ud] ship.a)))
   ;<  ~  bind:m  (note 'set-suggested' & (scot %ud (gn:arm doc 'rev')) '' --0)
   (pure:m &)
+::  +do-set-brave: the vendor's Brave key and address. An absent key
+::  keeps the stored one and a JSON null clears it; a blank address is
+::  Brave's own.
+::
+++  do-set-brave
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  doc=json  (gj:arm jon 'doc')
+  ?.  ?=([%o *] doc)  (refuse 'set-brave' 'doc: an object' '')
+  ;<  old=json  bind:m  (read-json (rf 0 / %'brave.json'))
+  =/  kj=json  (gj:arm doc 'key')
+  =/  key=@t
+    ?.  (has-key:arm doc 'key')  (gs:arm old 'key')
+    ?:  ?=(~ kj)  ''
+    ?.  ?=([%s *] kj)  (gs:arm old 'key')
+    ?:(=('' p.kj) (gs:arm old 'key') p.kj)
+  =/  url=@t  ?:((has-key:arm doc 'url') (gs:arm doc 'url') (gs:arm old 'url'))
+  ;<  ~  bind:m
+    %+  over:io  (rf 0 / %'brave.json')
+    [[/ %json] (pairs:enjs:format ~[['key' s+key] ['url' s+url]])]
+  ::  the audit row says whether a key is set, never the key
+  ;<  ~  bind:m  (note 'set-brave' & ?:(=('' key) 'no key' 'key set') '' --0)
+  (pure:m &)
+::  +do-count-search: one Brave search on an account, counted by month.
+::  The beacon does not move: a count is not something the page redraws.
+::
+++  do-count-search
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  who=(unit @p)  (slaw %p (gs:arm jon 'ship'))
+  ?~  who  (refuse 'count-search' 'ship: not an @p' '')
+  ;<  now=@da  bind:m  get-time:io
+  =/  month=@t  (end [3 7] (en-iso:arm now))
+  ;<  sj=json  bind:m  (read-json (rf 0 / %'searches.json'))
+  =/  all=(map @t json)  ?:(?=([%o *] sj) p.sj ~)
+  =/  name=@t  (scot %p u.who)
+  =/  mine=json  (~(gut by all) name [%o ~])
+  =/  next=json
+    [%o (~(put by ?:(?=([%o *] mine) p.mine ~)) month (en-num:arm +((gn:arm mine month))))]
+  ;<  ~  bind:m  (over:io (rf 0 / %'searches.json') [[/ %json] [%o (~(put by all) name next)]])
+  (pure:m |)
 ++  write-views
   |=  ships=(list @p)
   =/  m  (fiber:fiber:nexus ,~)
@@ -1900,12 +1949,13 @@
   ;<  doc=json  bind:m  (read-json (rf 0 / %'view.json'))
   ;<  held=(list held-key:arm)  bind:m  (held-keys 0)
   =/  sug=json  (gj:arm doc 'suggested')
-  =?  sug  !?=([%o *] sug)  (en-suggested:arm 0 ~)
+  =?  sug  !?=([%o *] (gj:arm sug 'tiers'))  (en-suggestion:arm (gn:arm sug 'rev') [~ ~])
+  =/  search=json  (search-of doc held)
   =/  leased=@t  (gs:arm lj 'key')
   =/  out=json
     ?:  &(!=('' leased) !(gb:arm lj 'disabled'))
-      (app-inference 'lease' (gs:arm lj 'base_url') leased sug)
-    ?~  held  (app-inference 'none' '' '' sug)
+      (app-inference 'lease' (gs:arm lj 'base_url') leased sug search)
+    ?~  held  (app-inference 'none' '' '' sug search)
     =/  newest=held-key:arm
       %+  roll  `(list held-key:arm)`t.held
       |=([k=held-key:arm best=_i.held] ?:((gth made.k made.best) k best))
@@ -1914,18 +1964,20 @@
       (rap 3 (public-url-of doc) '/apps/armillary/v1' ~)
       (rap 3 id.newest '.' secret.newest ~)
       sug
+      search
     ==
   ;<  was=json  bind:m  (read-json (rf 0 / %'app-inference.json'))
   ?:  =(was out)  (pure:m ~)
   (over:io (rf 0 / %'app-inference.json') [[/ %json] out])
 ++  app-inference
-  |=  [mode=@t base=@t key=@t sug=json]
+  |=  [mode=@t base=@t key=@t sug=json search=json]
   ^-  json
   %-  pairs:enjs:format
   :~  ['mode' s+mode]
       ['base_url' s+base]
       ['key' s+key]
       ['suggested' sug]
+      ['search' search]
   ==
 ::  +do-store-lease: the lease object out of the vendor's view, kept as
 ::  it came. This is the one place on a customer ship that holds a
@@ -2355,7 +2407,8 @@
   ^-  form:m
   =/  who=@t  (scot %p src)
   ;<  got=[ok=? why=@t]  bind:m  (kill-lease 0 src)
-  ;<  ~  bind:m  (lease-error 0 src '')
+  ::  the tick gives no lease over this; the customer's own ask does
+  ;<  ~  bind:m  (lease-error 0 src 'given back')
   (note-inbox 'drop-lease' ok.got why.got who)
 ::  ==  the inbox: what other ships ask of this vendor
 ::
@@ -3082,7 +3135,8 @@
   ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
   ;<  ~  bind:m  (cancel-timer:io /tick)
   (tick-round =([/ %json] p.sage))
-::  +tick-pass: reconcile every lease that has not been read lately,
+::  +tick-pass: give every paying account a lease when this vendor
+::  offers them, reconcile every lease that has not been read lately,
 ::  expire the checkouts whose window has run out, and fold the ledger
 ::  rows that are too old to read one at a time.
 ::
@@ -3093,7 +3147,16 @@
   ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 0)
   =/  ships=(list @p)  (turn all |=([a=account:arm n=@ud] ship.a))
   ;<  now=@da  bind:m  get-time:io
-  ;<  ~  bind:m  (tick-leases ships now force)
+  ;<  s=settings:arm  bind:m  (settings-of 0)
+  ::  the open accounts with money, when this vendor offers leases
+  =/  paying=(set @p)
+    ?:  =('' lease-provider.s)  ~
+    %-  silt
+    %+  murn  all
+    |=  [a=account:arm n=@ud]
+    ?.  &(!closed.a (syn:si balance.a) !=(--0 balance.a))  ~
+    `ship.a
+  ;<  ~  bind:m  (tick-leases ships now force paying)
   ;<  ~  bind:m
     (poke-writer 0 (pairs:enjs:format ~[['op' s+'expire-checkouts']]))
   ;<  ~  bind:m
@@ -3104,17 +3167,32 @@
 ::  provider again for nothing. A forced pass reads every one.
 ::
 ++  tick-leases
-  |=  [ships=(list @p) now=@da force=?]
+  |=  [ships=(list @p) now=@da force=? paying=(set @p)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?~  ships  (pure:m ~)
   ;<  lj=json  bind:m  (read-json (rf 0 (acct-dir i.ships) %'lease.json'))
   =/  held=(unit lease:arm)  (de-lease:arm lj)
-  ?~  held  (tick-leases t.ships now force)
+  ?~  held
+    ::  a paying account with no lease is given one, so its apps call
+    ::  the provider on their own capped key and the proxy carries
+    ::  nothing. One whose last mint failed shows the error on its page
+    ::  and waits for the owner's tick; one given back or dropped by the
+    ::  owner waits for the customer to ask. "not offered" is from before
+    ::  this vendor named a lease provider, and no longer true.
+    =/  err=@t  (gs:arm lj 'error')
+    ?.  ?&  (~(has in paying) i.ships)
+        ?|  =('' err)
+            =('not offered' err)
+            &(force !=('given back' err) !=('dropped by the owner' err))
+        ==  ==
+      (tick-leases t.ships now force paying)
+    ;<  ~  bind:m  (inbox-lease i.ships)
+    (tick-leases t.ships now force paying)
   ?:  &(!force (lth now (add checked.u.held ~m9)))
-    (tick-leases t.ships now force)
+    (tick-leases t.ships now force paying)
   ;<  *  bind:m  (reconcile 0 i.ships)
-  (tick-leases t.ships now force)
+  (tick-leases t.ships now force paying)
 ++  tick-compact
   |=  ships=(list @p)
   =/  m  (fiber:fiber:nexus ,~)
@@ -3509,6 +3587,11 @@
   ^-  form:m
   ?:  &(authenticated.req =(src our))  (pure:m `[& our ~])
   =/  au=(unit @t)  (get-header:http 'authorization' header-list.request.req)
+  ::  Brave's own header carries the same key, so an app pointed at the
+  ::  search proxy sends its armillary key where it sent Brave's
+  =?  au  ?=(~ au)
+    %+  bind  (get-header:http 'x-subscription-token' header-list.request.req)
+    |=(t=@t (rap 3 'Bearer ' t ~))
   ?~  au  (pure:m ~)
   =/  tok=(unit [id=@t secret=@t])  (parse-bearer:arm u.au)
   ?~  tok  (pure:m ~)
@@ -3596,6 +3679,9 @@
     (serve-proxy eyre-id act jon %chat)
   ?:  &(=('POST' meth) ?=([%v1 %embeddings ~] suffix))
     (serve-proxy eyre-id act jon %embeddings)
+  ::  Brave search on the vendor's key
+  ?:  &(=('GET' meth) ?=([%brave *] suffix))
+    (serve-brave eyre-id act (turn t.suffix |=(a=@ta `@t`a)) args)
   ::  the owner's routes
   ?:  &(=('GET' meth) ?=([%api %settings ~] suffix))     (own (serve-settings eyre-id))
   ?:  &(=('PUT' meth) ?=([%api %settings ~] suffix))     (own (serve-set-settings eyre-id jon))
@@ -3611,6 +3697,9 @@
   ?:  &(=('GET' meth) ?=([%api %catalog ~] suffix))      (own (serve-catalog eyre-id))
   ?:  &(=('PUT' meth) ?=([%api %catalog ~] suffix))      (own (serve-set-catalog eyre-id jon))
   ?:  &(=('GET' meth) ?=([%api %suggested ~] suffix))    (own (serve-suggested eyre-id))
+  ?:  &(=('GET' meth) ?=([%api %brave ~] suffix))        (own (serve-brave-settings eyre-id))
+  ?:  &(=('PUT' meth) ?=([%api %brave ~] suffix))
+    (own (serve-poke-ok eyre-id (pairs:enjs:format ~[['op' s+'set-brave'] ['doc' jon]])))
   ?:  &(=('PUT' meth) ?=([%api %suggested ~] suffix))    (own (serve-set-suggested eyre-id jon))
   ::  the plans. GET serves both halves: our own list on a vendor, the
   ::  vendor's list on a customer ship, since nothing on a plan is secret
@@ -3923,8 +4012,54 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  doc=json  bind:m  (read-json (rf 1 / %'suggested.json'))
-  =?  doc  !?=([%o *] (gj:arm doc 'models'))  (en-suggested:arm (gn:arm doc 'rev') ~)
+  =?  doc  !?=([%o *] (gj:arm doc 'tiers'))  (en-suggestion:arm (gn:arm doc 'rev') [~ ~])
   (send-json eyre-id 200 doc)
+::  +serve-brave: a customer's Brave search on the vendor's key. Only
+::  the two searches the apps make pass; each is counted on the account
+::  that made it. The owner may search too, uncounted.
+::
+++  serve-brave
+  |=  [eyre-id=@ta act=actor p=(list @t) args=quay:eyre]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  (brave-path-ok:arm p)
+    (send-err eyre-id 404 'brave: only web search and place search pass')
+  ;<  bj=json  bind:m  (read-json (rf 1 / %'brave.json'))
+  =/  key=@t  (gs:arm bj 'key')
+  ?:  =('' key)  (send-err eyre-id 503 'brave: the vendor has no Brave key')
+  =/  api=@t  =/(u=@t (gs:arm bj 'url') ?:(=('' u) 'https://api.search.brave.com' u))
+  =/  url=@t  (brave-url:arm api p (turn args |=([k=@t v=@t] [k v])))
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch [%'GET' url ~[['x-subscription-token' key] ['accept' 'application/json']] ~])
+  ;<  ~  bind:m
+    ?:  owner.act  (pure:(fiber:fiber:nexus ,~) ~)
+    %+  poke-writer  1
+    (pairs:enjs:format ~[['op' s+'count-search'] ['ship' s+(scot %p ship.act)]])
+  ?:  =(0 status.res)  (send-err eyre-id 502 'brave: no answer')
+  (send-raw eyre-id status.res body.res)
+::  +serve-brave-settings: the Brave settings without the key, and the
+::  searches each account made, by month
+::
+++  serve-brave-settings
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  bj=json  bind:m  (read-json (rf 1 / %'brave.json'))
+  ;<  sj=json  bind:m  (read-json (rf 1 / %'searches.json'))
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['key_set' b+!=('' (gs:arm bj 'key'))]
+      ['url' s+(gs:arm bj 'url')]
+      ['searches' ?:(?=([%o *] sj) sj [%o ~])]
+  ==
+::  +serve-poke-ok: one op to the writer, answered ok at once
+::
+++  serve-poke-ok
+  |=  [eyre-id=@ta op=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (poke-writer 1 op)
+  (send-json eyre-id 200 (pairs:enjs:format ~[['ok' b+&]]))
 ::  +serve-set-suggested: the owner names a model per role. Every one
 ::  must be a model the catalog sells, so a customer is never pointed at
 ::  something it cannot buy.
@@ -3933,16 +4068,22 @@
   |=  [eyre-id=@ta jon=json]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  got  (de-suggested:arm jon)
+  =/  got  (de-suggestion:arm jon)
   ?:  ?=(%| -.got)  (send-err eyre-id 400 p.got)
   ;<  cat=(list model-row:arm)  bind:m  (catalog-of 1)
   =/  sold=(set @t)
     (silt (turn (skim cat |=(r=model-row:arm enabled.r)) |=(r=model-row:arm id.r)))
-  =/  bad=@t  (unsold:arm p.got sold)
-  ?.  =('' bad)  (send-err eyre-id 400 (rap 3 'models: ' bad ' is not in the catalog' ~))
+  ::  the decision tier names a model for the decisions API, which no
+  ::  chat catalog lists; every other tier must be a model sold here
+  =/  bad=@t  (unsold:arm (~(del by tiers.p.got) 'decision') sold)
+  ?.  =('' bad)  (send-err eyre-id 400 (rap 3 'tiers: ' bad ' is not in the catalog' ~))
   ;<  ~  bind:m
     %+  poke-writer  1
-    (pairs:enjs:format ~[['op' s+'set-suggested'] ['models' (gj:arm jon 'models')]])
+    %-  pairs:enjs:format
+    :~  ['op' s+'set-suggested']
+        ['tiers' (gj:arm jon 'tiers')]
+        ['features' (gj:arm jon 'features')]
+    ==
   (send-json eyre-id 200 (pairs:enjs:format ~[['ok' b+&]]))
 ++  serve-plans
   |=  eyre-id=@ta
@@ -4361,7 +4502,7 @@
   ;<  ex=?  bind:m  (peek-exists:io (rf 1 (acct-dir u.who) %'account.json'))
   ?.  ex  (send-err eyre-id 404 'no such account')
   ;<  got=[ok=? why=@t]  bind:m  (kill-lease 1 u.who)
-  ;<  ~  bind:m  (lease-error 1 u.who '')
+  ;<  ~  bind:m  (lease-error 1 u.who 'dropped by the owner')
   %^  send-json  eyre-id  200
   %-  pairs:enjs:format
   :~  ['ship' s+(scot %p u.who)]
@@ -5009,16 +5150,16 @@
   ;<  lj=json  bind:m  (read-json (rf 1 / %'lease.json'))
   =/  leased=@t  (gs:arm lj 'key')
   ;<  doc=json  bind:m  (read-json (rf 1 / %'view.json'))
+  ;<  held=(list held-key:arm)  bind:m  (held-keys 1)
   ?:  &(!=('' leased) !(gb:arm lj 'disabled'))
     %^  send-json  eyre-id  200
-    %+  with-suggested  doc
+    %^  with-suggested  doc  held
     %-  inference-json:arm
     :*  'lease'
         (gs:arm lj 'base_url')
         leased
         (strings:arm (ga:arm lj 'models'))
     ==
-  ;<  held=(list held-key:arm)  bind:m  (held-keys 1)
   ?~  held  (send-err eyre-id 404 'no key yet')
   =/  newest=held-key:arm
     %+  roll  `(list held-key:arm)`t.held
@@ -5030,17 +5171,33 @@
     ?.  ?=([~ %a *] cat)  ~
     (turn p.u.cat |=(j=json ^-(@t (gs:arm j 'id'))))
   =/  key=@t  (rap 3 id.newest '.' secret.newest ~)
-  (send-json eyre-id 200 (with-suggested doc (inference-json:arm 'proxy' base key models)))
+  (send-json eyre-id 200 (with-suggested doc held (inference-json:arm 'proxy' base key models)))
 ::  +with-suggested: an inference answer with the vendor's suggested
-::  models from the view, rev 0 and no roles before any arrive
+::  models from the view (rev 0 and nothing before any arrive) and where
+::  to search: the vendor's Brave proxy with this ship's newest armillary
+::  key, which a lease does not replace
 ::
 ++  with-suggested
-  |=  [doc=json inf=json]
+  |=  [doc=json held=(list held-key:arm) inf=json]
   ^-  json
   ?.  ?=([%o *] inf)  inf
   =/  sug=json  (gj:arm doc 'suggested')
-  =?  sug  !?=([%o *] sug)  (en-suggested:arm 0 ~)
-  [%o (~(put by p.inf) 'suggested' sug)]
+  =?  sug  !?=([%o *] (gj:arm sug 'tiers'))  (en-suggestion:arm (gn:arm sug 'rev') [~ ~])
+  [%o (~(gas by p.inf) ~[['suggested' sug] ['search' (search-of doc held)]])]
+::  +search-of: the vendor's Brave proxy and the key an app sends it, or
+::  an empty object while this ship holds no armillary key
+::
+++  search-of
+  |=  [doc=json held=(list held-key:arm)]
+  ^-  json
+  ?~  held  [%o ~]
+  =/  newest=held-key:arm
+    %+  roll  `(list held-key:arm)`t.held
+    |=([k=held-key:arm best=_i.held] ?:((gth made.k made.best) k best))
+  %-  pairs:enjs:format
+  :~  ['url' s+(rap 3 (public-url-of doc) '/apps/armillary/brave' ~)]
+      ['key' s+(rap 3 id.newest '.' secret.newest ~)]
+  ==
 ::  +serve-take-lease: ask the vendor for a lease and wait for the
 ::  answer to show in the view. The ship's own view carries the key,
 ::  and the caller here is this ship's owner or a client on the

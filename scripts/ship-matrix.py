@@ -262,6 +262,11 @@ check('the view names the vendor', view.get('vendor') == VENDOR, view.get('vendo
 ships = ball(HOST, JAR, '/sys/ames/usergroups/' + GROUP + '.grp/who.ships')
 check('the vendor made a group holding only that ship', CUST in ships and ships.count('~') == 1,
       (GROUP, ships[:200]))
+noke = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR, instance(PEER) + '/app-inference.json?raw=1'],
+                      capture_output=True, text=True).stdout
+check('a customer with no key yet offers other apps nothing to call',
+      dictish(json.loads(noke or '{}')).get('mode') in ('none', None) and not dictish(json.loads(noke or '{}')).get('key'),
+      noke[:200])
 
 print('a key over the channel')
 code, k = curl('POST', api(PEER) + '/keys', {'name': 'phone'}, jar=PJAR, timeout=120)
@@ -289,22 +294,29 @@ check('the inference config names the proxy and what it sells',
       str(dictish(inf).get('base_url', '')).endswith('/apps/armillary/v1')
       and 'stub/alpha' in dictish(inf).get('models', []), inf)
 
-print('suggested models')
-code, d = curl('PUT', api(HOST) + '/suggested', {'models': {'default': 'nope/never'}}, jar=JAR)
-check('a suggestion the catalog does not sell is 400', code == 400 and 'catalog' in err_of(d), (code, d))
-code, d = curl('PUT', api(HOST) + '/suggested',
-               {'models': {'default': 'stub/alpha', 'orrery_generator': 'stub/alpha'}}, jar=JAR)
-check('the vendor suggests stub/alpha', code == 200, (code, d))
+print("the vendor's AI for its customers")
+code, d = curl('PUT', api(HOST) + '/suggested', {'tiers': {'frontier': 'nope/never'}}, jar=JAR)
+check('a tier the catalog does not sell is 400', code == 400 and 'catalog' in err_of(d), (code, d))
+code, d = curl('PUT', api(HOST) + '/suggested', {'tiers': {'frontier': 'stub/alpha'}, 'features': {'assistant': 'zdr'}}, jar=JAR)
+check('a feature on a tier with no model is 400', code == 400 and 'no model' in err_of(d), (code, d))
+TIERS = {'frontier': 'stub/alpha', 'decision': 'typesafe/jev-1.13'}
+FEATS = {'orrery_generator': 'frontier', 'assistant': 'frontier', 'orrery_decider': 'decision'}
+code, d = curl('PUT', api(HOST) + '/suggested', {'tiers': TIERS, 'features': FEATS}, jar=JAR)
+check('the vendor sets its tiers and the features on them, the decision tier outside the catalog', code == 200, (code, d))
 settle(2)
 code, sug = curl('GET', api(HOST) + '/suggested', jar=JAR)
 REV = dictish(sug).get('rev', 0)
-check('the suggestion has a revision and its roles',
-      REV >= 1 and dictish(dictish(sug).get('models')).get('orrery_generator') == 'stub/alpha', sug)
+ms = dictish(dictish(sug).get('models'))
+check('each feature resolves through its tier, default the frontier model',
+      REV >= 1 and ms.get('orrery_generator') == 'stub/alpha' and ms.get('orrery_decider') == 'typesafe/jev-1.13'
+      and ms.get('default') == 'stub/alpha', sug)
 view = wait_view(PEER, PJAR, lambda v: dictish(v.get('suggested')).get('rev') == REV)
 check('the customer view carries it', dictish(view.get('suggested')).get('rev') == REV, view.get('suggested'))
 code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
-check('the inference config carries it for clients',
-      dictish(dictish(inf).get('suggested')).get('rev') == REV, dictish(inf).get('suggested'))
+check('the inference config carries it and where to search',
+      dictish(dictish(inf).get('suggested')).get('rev') == REV
+      and str(dictish(dictish(inf).get('search')).get('url', '')).endswith('/apps/armillary/brave')
+      and dictish(dictish(inf).get('search')).get('key') == secret, {'suggested': dictish(inf).get('suggested')})
 filed = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR,
                         instance(PEER) + '/vendor-suggested.json?raw=1'],
                        capture_output=True, text=True).stdout
@@ -314,16 +326,46 @@ appinf = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR,
                          instance(PEER) + '/app-inference.json?raw=1'],
                         capture_output=True, text=True).stdout
 ai = dictish(json.loads(appinf or '{}'))
-check('the app inference file holds the proxy, its key and the suggestion',
+check('the app inference file holds the proxy, its key, the suggestion and the search proxy',
       ai.get('mode') == 'proxy' and ai.get('key') == secret
       and str(ai.get('base_url', '')).endswith('/apps/armillary/v1')
-      and dictish(ai.get('suggested')).get('rev') == REV,
-      {k: (v if k != 'key' else (v == secret)) for k, v in ai.items()})
-code, d = curl('PUT', api(HOST) + '/suggested',
-               {'models': {'default': 'stub/alpha', 'orrery_generator': 'stub/alpha'}}, jar=JAR)
+      and dictish(ai.get('suggested')).get('rev') == REV
+      and dictish(ai.get('search')).get('key') == secret,
+      {k: v for k, v in ai.items() if k not in ('key', 'search')})
+code, d = curl('PUT', api(HOST) + '/suggested', {'tiers': TIERS, 'features': FEATS}, jar=JAR)
 settle(2)
 code, sug = curl('GET', api(HOST) + '/suggested', jar=JAR)
-check('saving the same suggestion again keeps the revision', dictish(sug).get('rev') == REV, sug)
+check('saving the same again keeps the revision', dictish(sug).get('rev') == REV, sug)
+
+print('Brave search through the vendor')
+BRAVE = 'http://127.0.0.1:' + os.environ.get('BRAVE_PORT', '3402')
+code, d = curl('PUT', api(HOST) + '/brave', {'key': 'brave-gate-key', 'url': BRAVE}, jar=JAR)
+check('the vendor sets its Brave key', code == 200, (code, d))
+settle(2)
+code, d = curl('GET', api(HOST) + '/brave', jar=JAR)
+check('the key is never read back', dictish(d).get('key_set') is True and 'key' not in dictish(d), d)
+BPROXY = HOST + '/apps/armillary/brave'
+out = subprocess.run(['curl', '-s', '-m', '60', '-H', 'x-subscription-token: ' + secret,
+                      BPROXY + '/res/v1/web/search?q=hello%20world%20%26%20more&count=3'],
+                     capture_output=True, text=True).stdout
+got = dictish(json.loads(out or '{}'))
+check('a web search reaches Brave with its query whole and the vendor key',
+      got.get('path') == '/res/v1/web/search' and dictish(got.get('query')).get('q') == 'hello world & more'
+      and got.get('token') == 'brave-gate-key', {k: v for k, v in got.items() if k != 'token'})
+code, d = curl('GET', BPROXY + '/res/v1/local/place_search?q=Diner&latitude=40.1&longitude=-74.2', bearer=secret)
+check('a place search passes on the bearer key', code == 200 and dictish(d).get('path') == '/res/v1/local/place_search', (code, d))
+code, d = curl('GET', BPROXY + '/res/v1/news/search?q=x', bearer=secret)
+check('any other Brave path is 404', code == 404, (code, d))
+code, d = curl('GET', BPROXY + '/res/v1/web/search?q=x')
+check('a search without a key is 403', code == 403, (code, d))
+settle(2)
+code, d = curl('GET', api(HOST) + '/brave', jar=JAR)
+counts = dictish(dictish(d).get('searches')).get(CUST, {})
+check('the searches are counted on the account', sum(dictish(counts).values() or [0]) >= 2, d)
+curl('PUT', api(HOST) + '/brave', {'key': None}, jar=JAR)
+settle(2)
+code, d = curl('GET', BPROXY + '/res/v1/web/search?q=x', bearer=secret)
+check('with the key removed a search is 503', code == 503, (code, d))
 
 print('no credit, no answer')
 code, d = curl('POST', v1(HOST) + '/chat/completions',
@@ -721,11 +763,23 @@ code, k = curl('POST', api(PEER) + '/keys', {'name': 'lease-gate'}, jar=PJAR, ti
 PSECRET = dictish(k).get('secret', '')
 check('the customer holds an inference key again', code == 200 and '.' in PSECRET, (code, k))
 
+tick()
+inf = {}
+for _ in range(15):
+    fresh(PEER, PJAR)
+    code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
+    if dictish(inf).get('mode') == 'lease':
+        break
+    settle(2)
+check('the tick gives the paying account a lease and the customer runs on it without asking',
+      dictish(inf).get('mode') == 'lease' and str(dictish(inf).get('key', '')).startswith('sk-or-stub-'),
+      {k: v for k, v in dictish(inf).items() if k != 'key'})
+
 BASE3 = dictish(fresh(PEER, PJAR)).get('balance', 0)
 code, lease = curl('POST', api(PEER) + '/lease', {}, jar=PJAR, timeout=120)
 LKEY = dictish(lease).get('key', '')
-check('a lease answers a provider key',
-      code == 200 and LKEY.startswith('sk-or-stub-'), (code, lease))
+check('a lease asked for answers the provider key the tick gave',
+      code == 200 and LKEY.startswith('sk-or-stub-') and LKEY == dictish(inf).get('key'), (code, lease))
 check('the lease names the provider base url and what it sells',
       dictish(lease).get('base_url') == STUB + '/v1'
       and 'stub/alpha' in dictish(lease).get('models', []), lease)
@@ -881,6 +935,10 @@ for _ in range(10):
     settle(2)
 check('the inference config is back to the proxy',
       code == 200 and dictish(inf).get('mode') == 'proxy', (code, inf))
+tick()
+row, acct = lease_row()
+check('the tick gives no lease over one given back, and the owner sees why',
+      row == {} and dictish(acct).get('lease_error') == 'given back', (row, dictish(acct).get('lease_error')))
 
 print('the report')
 code, rep = curl('GET', api(HOST) + '/report?days=30', jar=JAR)

@@ -943,35 +943,45 @@
     (expect-eq !>('placing') !>((ph 'n5')))
     (expect-eq !>('placing') !>((gs:arm (checkout-phase:arm ~ ~ 'n1') 'phase')))
   ==
-::  ==  suggested models
+::  ==  the AI a vendor drives
 ::
-::  roles map to models, a blank model drops its role, and a role name
-::  is checked like a nonce with _ allowed
+::  tiers name models, features name tiers, a blank drops either, and a
+::  feature naming a tier with no model is refused
 ::
-++  test-de-suggested
-  =/  ok  (de-suggested:arm (jo '{"models":{"default":"a/b","catch_up":"c/d","assistant":""}}'))
+++  test-de-suggestion
+  =/  ok  (de-suggestion:arm (jo '{"tiers":{"frontier":"a/b","zdr":"c/d","private":""},"features":{"catch_up":"zdr","assistant":"frontier","orrery_mail":""}}'))
   ;:  weld
     (expect-eq !>(%.y) !>(?=(%& -.ok)))
-    (expect-eq !>(`(unit @t)``'a/b') !>(?.(?=(%& -.ok) ~ (~(get by p.ok) 'default'))))
-    (expect-eq !>(`(unit @t)`~) !>(?.(?=(%& -.ok) ~ (~(get by p.ok) 'assistant'))))
+    (expect-eq !>(`(unit @t)``'zdr') !>(?.(?=(%& -.ok) ~ (~(get by features.p.ok) 'catch_up'))))
+    (expect-eq !>(`(unit @t)`~) !>(?.(?=(%& -.ok) ~ (~(get by tiers.p.ok) 'private'))))
+    (expect-eq !>(`(unit @t)`~) !>(?.(?=(%& -.ok) ~ (~(get by features.p.ok) 'orrery_mail'))))
     %-  expect-eq
-    :-  !>('models: an object of role to model id')
-    !>((why (de-suggested:arm (jo '{"models":[]}'))))
+    :-  !>('tiers: an object of tier to model id')
+    !>((why (de-suggestion:arm (jo '{"features":{}}'))))
     %-  expect-eq
-    :-  !>('role Bad: 1 to 64 of a-z, 0-9, _ and -')
-    !>((why (de-suggested:arm (jo '{"models":{"Bad":"x"}}'))))
+    :-  !>('tier huge: frontier, decision, zdr or private')
+    !>((why (de-suggestion:arm (jo '{"tiers":{"huge":"x"}}'))))
     %-  expect-eq
-    :-  !>('models.default: a model id')
-    !>((why (de-suggested:arm (jo '{"models":{"default":3}}'))))
+    :-  !>('features.assistant: tier zdr has no model')
+    !>((why (de-suggestion:arm (jo '{"tiers":{"frontier":"a/b"},"features":{"assistant":"zdr"}}'))))
+    %-  expect-eq
+    :-  !>('feature Bad: 1 to 64 of a-z, 0-9, _ and -')
+    !>((why (de-suggestion:arm (jo '{"tiers":{"frontier":"a/b"},"features":{"Bad":"frontier"}}'))))
   ==
-++  test-en-suggested
-  =/  j=json  (en-suggested:arm 4 (my ~[['default' 'a/b']]))
+::  an app reads .models: each feature's model through its tier, and
+::  default the frontier model, so version 18's readers keep working
+::
+++  test-en-suggestion
+  =/  s=suggestion:arm  [(my ~[['frontier' 'a/b'] ['zdr' 'c/d']]) (my ~[['catch_up' 'zdr'] ['orrery_generator' 'frontier']])]
+  =/  j=json  (en-suggestion:arm 5 s)
+  =/  ms=json  (gj:arm j 'models')
   ;:  weld
-    (expect-eq !>(`@ud`4) !>((gn:arm j 'rev')))
-    (expect-eq !>('a/b') !>((gs:arm (gj:arm j 'models') 'default')))
-    %-  expect-eq
-    :-  !>(`(each (map @t @t) @t)`[%& (my ~[['default' 'a/b']])])
-    !>((de-suggested:arm j))
+    (expect-eq !>(`@ud`5) !>((gn:arm j 'rev')))
+    (expect-eq !>('c/d') !>((gs:arm ms 'catch_up')))
+    (expect-eq !>('a/b') !>((gs:arm ms 'orrery_generator')))
+    (expect-eq !>('a/b') !>((gs:arm ms 'default')))
+    (expect-eq !>('zdr') !>((gs:arm (gj:arm j 'features') 'catch_up')))
+    (expect-eq !>(`(each suggestion:arm @t)`[%& s]) !>((de-suggestion:arm j)))
   ==
 ++  test-unsold
   =/  sold=(set @t)  (sy ~['a/b' 'c/d'])
@@ -979,5 +989,23 @@
     (expect-eq !>('') !>((unsold:arm (my ~[['default' 'a/b'] ['assistant' 'c/d']]) sold)))
     (expect-eq !>('x/y') !>((unsold:arm (my ~[['default' 'x/y']]) sold)))
     (expect-eq !>('') !>((unsold:arm ~ sold)))
+  ==
+::  ==  Brave search, on the vendor's key
+::
+::  only the two searches the apps make pass, and every name and value
+::  is encoded twice for the ship's HTTP client
+::
+++  test-brave
+  ;:  weld
+    (expect-eq !>(%.y) !>((brave-path-ok:arm ~['res' 'v1' 'web' 'search'])))
+    (expect-eq !>(%.y) !>((brave-path-ok:arm ~['res' 'v1' 'local' 'place_search'])))
+    (expect-eq !>(%.n) !>((brave-path-ok:arm ~['res' 'v1' 'news' 'search'])))
+    (expect-eq !>(%.n) !>((brave-path-ok:arm ~)))
+    %-  expect-eq
+    :-  !>('https://b/res/v1/web/search?q=a%2520b&count=3')
+    !>((brave-url:arm 'https://b' ~['res' 'v1' 'web' 'search'] ~[['q' 'a b'] ['count' '3']]))
+    %-  expect-eq
+    :-  !>('https://b/res/v1/web/search')
+    !>((brave-url:arm 'https://b' ~['res' 'v1' 'web' 'search'] ~))
   ==
 --

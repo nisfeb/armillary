@@ -105,7 +105,8 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 | `POST /api/providers/<id>/test` | one tiny chat completion; answers `{"status", "model", "text"}` |
 | `POST /api/providers/<id>/import` | pull `GET <base_url>/models` and fold the new ids in as disabled rows; answers `{"added": <n>}` |
 | `GET` and `PUT /api/catalog` | the whole catalog, replaced whole. A row on an unknown provider is 400 `row <i> provider: unknown` |
-| `GET` and `PUT /api/suggested` | the models this vendor suggests by role, `{"rev", "models": {role: model id}}`. Roles a client knows: `default`, `catch_up`, `assistant`, `orrery_generator`, or its own (1 to 64 of a-z, 0-9, _ and -). PUT `{"models"}` replaces them; a blank model drops a role; a model the catalog does not sell is 400. The revision moves only when the roles change, and every account's view is written again, so each customer ship has it within five minutes |
+| `GET` and `PUT /api/suggested` | the AI this vendor drives for its customers: `{"rev", "tiers", "features", "models"}`. `tiers` names a model for `frontier`, `decision`, `zdr` and `private`; `features` names a tier for each feature (`catch_up`, `assistant`, `decision`, `orrery_generator`, `orrery_mail`, `orrery_chat`, `orrery_telegram`, `orrery_read`, `orrery_decider`, or a client's own name); `models` is the result an app reads, feature to model through its tier, with `default` the frontier model. PUT `{"tiers", "features"}` replaces both; a blank drops an entry; a tier model the catalog does not sell is 400, except the decision tier, which names a model for the decisions API; a feature on a tier with no model is 400. The revision moves only on a change, and every account's view is written again, so each customer ship has it within five minutes |
+| `GET` and `PUT /api/brave` | the vendor's Brave Search key, which never leaves this ship: GET answers `key_set`, an optional `url` (blank is Brave's own) and `searches`, each account's searches by month. PUT `{"key"}` sets it; a JSON null removes it |
 | `GET /api/plans` | every plan, by id. On a customer ship this is the vendor's list instead, read live |
 | `POST /api/plans` | a new plan; 409 when the id is taken |
 | `PUT /api/plans/<id>` | an edit; 409 when the id is unknown. A blank `stripe_price` keeps the stored one |
@@ -124,10 +125,12 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 | `GET /api/refunds-due` | bitcoin payments that landed on accounts being deleted, for the owner to refund by hand |
 | `POST /api/refunds-due/done` | `{"id"}`: one of them is refunded |
 | `GET /api/report?days=30` | what the vendor made over a window: credits by rail, charged, cost, margin, refunds, requests, tokens, lease spend, accounts and the top ten models |
-| `POST /api/tick` | prod the housekeeping fiber: reconcile every lease, expire stale checkouts, fold old ledger rows. It runs itself every ten minutes; this is for when ten minutes is too long to wait |
+| `POST /api/tick` | prod the housekeeping fiber: give every paying account without a lease one (version 19, when a lease provider is set), reconcile every lease, expire stale checkouts, fold old ledger rows. It runs itself every ten minutes; this is for when ten minutes is too long to wait, and it also retries a mint that failed |
 | `GET /api/log` | the audit ring, the last 500 writer outcomes, newest first. No secret ever reaches it |
 
 ### Public, no cookie
+
+`GET /brave/res/v1/web/search` and `GET /brave/res/v1/local/place_search`, with the query Brave takes, forward a customer's search to Brave on the vendor's key and answer Brave's own body. The customer sends its armillary inference key as `Authorization: Bearer` or as Brave's own `X-Subscription-Token`, so Talon's web search and Orrery's place lookups only change their address. No other Brave path passes. Each search is counted on the account.
 
 | route | answers |
 |---|---|
@@ -153,10 +156,10 @@ These are what a client on the customer's own ship calls, over the cookie it alr
 | `POST /api/checkout/<nonce>/cancel` | ask the vendor to cancel a `pending` checkout: its Stripe session expires or its BTCPay invoice goes Invalid, and the row turns `cancelled` with no url. Waits up to thirty seconds and answers `{"status", "note"}`; a payment that landed first keeps the row with a `not cancelled: ...` note. 404 for an unknown checkout, 409 for one not pending. `"wait": false` answers 202 at once. `docs/payments.md` |
 | `POST /api/cancel-subscription` | ask the vendor to stop the subscription renewing; 202, and the view says when Stripe confirms |
 | `POST /api/delete-account` | delete this ship's account on the vendor, record and data both, and forget the vendor here. 200 `deleted`, 202 `queued` with the nonce after thirty seconds, 409 `vendor: not set`, 502 with the vendor's reason and nothing deleted. `docs/channel.md` |
-| `GET /api/inference` | everything a client needs: `{"mode", "base_url", "key", "models", "suggested"}`, where `suggested` is the vendor's `{"rev", "models"}` (rev 0 before any arrive). `lease` mode with the provider's own key when this ship holds a lease that can still spend, `proxy` mode with the vendor's base URL and the newest inference key otherwise. 404 `no key yet` when this ship holds neither |
+| `GET /api/inference` | everything a client needs: `{"mode", "base_url", "key", "models", "suggested", "search"}`, where `suggested` is the vendor's `{"rev", "tiers", "features", "models"}` (rev 0 and nothing before any arrive) and `search` is `{"url", "key"}`, the vendor's Brave search and this ship's newest inference key, or `{}` while it holds none. `lease` mode with the provider's own key when this ship holds a lease that can still spend, `proxy` mode with the vendor's base URL and the newest inference key otherwise. 404 `no key yet` when this ship holds neither |
 | `GET /api/catalog` | the vendor's public catalog with prices, read live; 502 `vendor unreachable` when the vendor does not answer. On a ship that is nobody's customer this is the owner's own catalog instead |
 | `POST /api/lease` | ask the vendor for a lease and wait for it. Answers the lease, or 404 `no lease for this account` when the vendor offers none, 502 with the vendor's reason when the provider refused, 202 with the nonce after thirty seconds |
-| `DELETE /api/lease` | give it back: this ship forgets the key at once and the vendor deletes it upstream. `docs/leases.md` is how a lease works |
+| `DELETE /api/lease` | give it back: this ship forgets the key at once and the vendor deletes it upstream, and gives no other until this ship asks with `POST /api/lease`. `docs/leases.md` is how a lease works |
 
 ### Being a customer
 

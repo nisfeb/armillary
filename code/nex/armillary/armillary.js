@@ -94,35 +94,83 @@
       '</div>';
   }
 
-  // the roles a client follows; a role stored that is not here still shows
-  var ROLES = [
-    ['default', 'Default, for anything without its own'],
-    ['catch_up', 'Catch-up (Talon)'],
-    ['assistant', 'Assistant (Talon)'],
-    ['orrery_generator', 'Orrery generator'],
+  // the four tiers a vendor fills, and the features of its customers'
+  // apps it maps onto them; a feature stored that is not here still shows
+  var TIERS = [
+    ['frontier', 'Frontier'],
+    ['decision', 'Decision (the decisions API)'],
+    ['zdr', 'ZDR (keeps no data)'],
+    ['private', 'Private'],
   ];
-  // +suggestedCard: the models this vendor suggests by role. An app that
-  // follows the suggestion switches when the revision moves.
+  var FEATURES = [
+    ['catch_up', 'Talon catch-up'],
+    ['assistant', 'Talon assistant'],
+    ['decision', 'Talon decision gate'],
+    ['orrery_generator', 'Orrery generator, refine and brief'],
+    ['orrery_mail', 'Orrery mail reader'],
+    ['orrery_chat', 'Orrery chat reader'],
+    ['orrery_telegram', 'Orrery Telegram reader'],
+    ['orrery_read', 'Orrery read channel'],
+    ['orrery_decider', 'Orrery decider'],
+  ];
+  // +suggestedCard: the tiers this vendor fills and the tier each feature
+  // of its customers' apps uses. An app following it switches when the
+  // revision moves.
   function suggestedCard(rows) {
     var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return r.id; });
-    var models = mySuggested.models || {};
-    var roles = ROLES.slice();
-    Object.keys(models).forEach(function (k) {
-      if (!roles.some(function (r) { return r[0] === k; })) roles.push([k, k]);
+    var tiers = mySuggested.tiers || {};
+    var feats = mySuggested.features || {};
+    var out = '<div class="card"><h2>Your customers\' AI</h2>' +
+      '<p class="muted">Every paying customer\'s apps use these unless the customer picks a model of their own for a feature. A change reaches each customer ship within five minutes. Revision ' +
+      esc(mySuggested.rev || 0) + '.</p>' +
+      '<p class="muted">Every feature below reads your customers\' own messages, mail or notes. A feature on a tier whose model keeps data sends that content to the model\'s provider; the ZDR and private tiers are for them.</p>' +
+      '<h3>Tiers</h3><div class="inline">';
+    TIERS.forEach(function (t) {
+      var cur = tiers[t[0]] || '';
+      var field;
+      if (t[0] === 'decision') {
+        field = '<input id="tier-decision" data-tier="decision" value="' + esc(cur) + '" placeholder="typesafe/jev-1.13">';
+      } else {
+        var ids = cur && sold.indexOf(cur) < 0 ? sold.concat([cur]) : sold;
+        field = '<select id="tier-' + t[0] + '" data-tier="' + t[0] + '"><option value="">none</option>' +
+          ids.map(function (id) {
+            return '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc(id) + '</option>';
+          }).join('') + '</select>';
+      }
+      out += '<div class="field"><label for="tier-' + t[0] + '">' + esc(t[1]) + '</label>' + field + '</div>';
     });
-    var out = '<div class="card"><h2>Suggested models</h2>' +
-      '<p class="muted">What your customers\' apps use when they follow your suggestion. A change reaches each customer ship within five minutes. Revision ' +
-      esc(mySuggested.rev || 0) + '.</p><div class="inline">';
-    roles.forEach(function (r) {
-      var cur = models[r[0]] || '';
-      var ids = cur && sold.indexOf(cur) < 0 ? sold.concat([cur]) : sold;
-      var opts = '<option value="">none</option>' + ids.map(function (id) {
-        return '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc(id) + '</option>';
-      }).join('');
-      out += '<div class="field"><label for="sg-' + esc(r[0]) + '">' + esc(r[1]) + '</label>' +
-        '<select id="sg-' + esc(r[0]) + '" data-role="' + esc(r[0]) + '">' + opts + '</select></div>';
+    out += '</div><h3>Features</h3><div class="inline">';
+    var feList = FEATURES.slice();
+    Object.keys(feats).forEach(function (k) {
+      if (!feList.some(function (f) { return f[0] === k; })) feList.push([k, k]);
     });
-    return out + '<div class="field"><label>&nbsp;</label><button data-save-suggested="1">Save suggestion</button></div></div></div>';
+    feList.forEach(function (f) {
+      var cur = feats[f[0]] || '';
+      out += '<div class="field"><label for="feat-' + esc(f[0]) + '">' + esc(f[1]) + '</label>' +
+        '<select id="feat-' + esc(f[0]) + '" data-feature="' + esc(f[0]) + '"><option value="">none</option>' +
+        TIERS.map(function (t) {
+          return '<option value="' + t[0] + '"' + (t[0] === cur ? ' selected' : '') + '>' + esc(t[0]) + '</option>';
+        }).join('') + '</select></div>';
+    });
+    return out + '</div><p><button data-save-suggested="1">Save</button></p></div>';
+  }
+  // +braveCard: the vendor's Brave key, never shown, and the searches
+  // each customer ship made through it, by month
+  function braveCard(b) {
+    b = b || {};
+    var counts = b.searches || {};
+    var rows = Object.keys(counts).map(function (ship) {
+      var months = counts[ship] || {};
+      var line = Object.keys(months).sort().reverse().map(function (mo) { return esc(mo) + ': ' + esc(months[mo]); }).join(', ');
+      return '<tr>' + cell('Ship', '<code>' + esc(ship) + '</code>') + cell('Searches', line) + '</tr>';
+    }).join('');
+    return '<div class="card"><h2>Brave search</h2>' +
+      '<p class="muted">Your customers\' apps search through you: Talon\'s web search and Orrery\'s place lookups. The key stays on this ship and each search is counted on the account that made it.</p>' +
+      '<div class="inline"><div class="field"><label for="brave-key">Brave API key</label>' +
+      '<input id="brave-key" type="password" placeholder="' + (b.key_set ? 'a key is set; blank keeps it' : 'no key set') + '"></div>' +
+      '<div class="field"><label>&nbsp;</label><button data-save-brave="1">Save key</button>' +
+      (b.key_set ? ' <button class="danger" data-clear-brave="1">Remove key</button>' : '') + '</div></div>' +
+      (rows ? thead(['Ship', 'Searches']) + rows + '</tbody></table>' : '<p class="muted">No searches yet.</p>') + '</div>';
   }
   function catalog(rows, filter) {
     var f = String(filter || '').toLowerCase();
@@ -136,6 +184,7 @@
       '<span class="muted"> ' + kept.length + ' of ' + rows.length + ' rows</span></div>';
     if (!rows.length) return out + '<p class="muted">Nothing in the catalog. Import from a provider first.</p>';
     out += suggestedCard(rows);
+    out += braveCard(myBrave);
     out += '<div class="card">' + thead(['Id', 'Provider',
       { name: 'In $/M', num: true }, { name: 'Out $/M', num: true },
       { name: 'Cost in', num: true }, { name: 'Cost out', num: true },
@@ -378,7 +427,7 @@
   function leaseSetting(s, provs) {
     var rows = (provs || []).filter(function (p) { return p.kind === 'openrouter'; });
     var out = '<div class="card"><h2>Leases</h2>' +
-      '<p class="muted">A lease is a real provider key capped at the customer\'s balance, so a client calls the provider directly. Pick the OpenRouter provider whose provisioning key mints them; none means this vendor offers no leases.</p>';
+      '<p class="muted">A lease is a real provider key capped at the customer\'s balance, so a client calls the provider directly. Pick the OpenRouter provider whose provisioning key mints them, and every paying customer is given one within ten minutes; none means this vendor offers no leases and customers go through the proxy.</p>';
     if (!rows.length) {
       return out + '<p class="muted">No OpenRouter provider yet. Add one with a provisioning key under Providers.</p></div>';
     }
@@ -700,7 +749,9 @@
     var err = (d && d.lease_error) || '';
     var out = '<div class="card"><h2>Lease</h2>' +
       '<p class="muted">A lease is a real provider key capped at your balance, so a client calls the provider directly: streaming, tools and the provider\'s own latency.</p>';
-    if (err) out += '<p class="neg">' + esc(err) + '</p>';
+    if (err === 'given back') out += '<p class="muted">You gave your lease back, so your vendor will not give you another until you take one.</p>';
+    else if (err === 'dropped by the owner') out += '<p class="muted">Your vendor took this lease back. You can take another.</p>';
+    else if (err) out += '<p class="neg">' + esc(err) + '</p>';
     if (!l) {
       return out + '<p class="muted">No lease.</p>' +
         '<button data-take-lease="1">Take a lease</button></div>';
@@ -792,7 +843,8 @@
   // scripts/render-check.js sees it too
   var myVendor = '';                   // the vendor the account view last named
   var myCheckouts = {};                // the checkout rows that view last held
-  var mySuggested = { rev: 0, models: {} };   // the models this vendor suggests, by role
+  var mySuggested = { rev: 0, tiers: {}, features: {}, models: {} };   // the AI this vendor drives
+  var myBrave = { key_set: false, searches: {} };   // the vendor's Brave settings, without the key
   var watchSaid = { text: '', cls: '' };    // the line the Balance card shows
   var render = {
     esc: esc, dollars: dollars, micro: micro, margin: margin,
@@ -802,7 +854,7 @@
     subscriptionLine: subscriptionLine,
     myAccount: myAccount, myKeys: myKeys, myLease: myLease, buyCatalog: buyCatalog,
     usage: usage, usageCard: usageCard,
-    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard,
+    checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard, braveCard: braveCard,
     route: route, sseEvent: sseEvent,
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = render; }
@@ -1114,7 +1166,10 @@
         catRows = rows || [];
         return api('/suggested').catch(function () { return mySuggested; }).then(function (sg) {
           mySuggested = sg || mySuggested;
-          draw(catalog(catRows, catFilter));
+          return api('/brave').catch(function () { return myBrave; }).then(function (bv) {
+            myBrave = bv || myBrave;
+            draw(catalog(catRows, catFilter));
+          });
         });
       });
     } else if (r.name === 'accounts') {
@@ -1259,15 +1314,27 @@
       post('/vendor', { ship: v }, 'PUT').then(function () { boot(); })
         .catch(function (e) { say(e.message, true); });
     } else if (d.saveSuggested) {
-      var roleModels = {};
-      view.querySelectorAll('select[data-role]').forEach(function (el) { roleModels[el.dataset.role] = el.value; });
-      var stopSave = busy('Saving the suggestion');
-      post('/suggested', { models: roleModels }, 'PUT').then(function () {
+      var sgTiers = {}, sgFeatures = {};
+      view.querySelectorAll('[data-tier]').forEach(function (el) { sgTiers[el.dataset.tier] = el.value.trim(); });
+      view.querySelectorAll('select[data-feature]').forEach(function (el) { sgFeatures[el.dataset.feature] = el.value; });
+      var stopSave = busy('Saving your customers\' AI');
+      post('/suggested', { tiers: sgTiers, features: sgFeatures }, 'PUT').then(function () {
         stopSave();
         say('Suggestion saved; customer ships pick it up within five minutes');
         held = [statusEl.innerHTML, statusEl.className];
         later();
       }).catch(function (e) { stopSave(); say(e.message, true); });
+    } else if (d.saveBrave || d.clearBrave) {
+      var bk = document.getElementById('brave-key');
+      var braveBody = d.clearBrave ? { key: null } : { key: bk ? bk.value.trim() : '' };
+      if (!d.clearBrave && !braveBody.key) { say('paste a Brave API key first', true); return; }
+      var stopBrave = busy(d.clearBrave ? 'Removing the Brave key' : 'Saving the Brave key');
+      post('/brave', braveBody, 'PUT').then(function () {
+        stopBrave();
+        say(d.clearBrave ? 'Brave key removed; your customers\' searches stop' : 'Brave key saved; your customers\' apps search through it');
+        held = [statusEl.innerHTML, statusEl.className];
+        later();
+      }).catch(function (e) { stopBrave(); say(e.message, true); });
     } else if (d.cancelCheckout) {
       cancelCheckout(d.cancelCheckout, b);
     } else if (d.refreshView) {

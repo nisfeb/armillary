@@ -38,6 +38,12 @@ Each pass does this:
 
 A closed account's reconcile deletes the key upstream and drops the row. So does the owner's Close account button, the owner's hard delete of an account, and the customer's own Drop.
 
+## Who takes a lease
+
+Since version 19 nobody has to ask. Every ten minutes the tick gives a lease to each open account with money in it and no lease, while the vendor names a lease provider. So a paying customer's apps call the provider on their own capped key, and the proxy carries nothing for them. A customer can still ask (`POST /api/lease`), which mints at once.
+
+A mint that fails leaves its error on the account's lease, shown on the owner's account page, and the periodic tick does not try that account again; the owner's tick (`POST /api/tick`) does. "not offered", left by an ask from before the vendor named a lease provider, is no bar. Two marks wait for the customer's own ask, whatever the owner's tick: "given back", when the customer dropped the lease, and "dropped by the owner", when the owner's Drop lease button did.
+
 ## What the client does
 
 Exactly what it does for the proxy: read `GET /api/inference` on its own ship.

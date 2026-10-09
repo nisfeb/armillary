@@ -30,6 +30,10 @@ is(r.checkoutRows(co).indexOf('data-cancel-checkout') < 0, "the owner's view of 
 is(r.freshness({ stale: 120, fetched: 'x', fetch_ms: 2100 }).indexOf('2 min ago, in 2.1 s') > 0, 'the balance says its age and read time');
 is(r.freshness({}).indexOf('Refresh reads it now') > 0, 'a balance never read says so');
 var card = r.suggestedCard([{ id: 'a/b', enabled: true }, { id: 'c/d', enabled: false }]);
-is(card.indexOf('Orrery generator') > 0 && card.indexOf('value="a/b"') > 0, 'the suggestion card offers what is sold');
+is(card.indexOf('Orrery generator') > 0 && card.indexOf('value="a/b"') > 0, 'the tier pickers offer what is sold');
+is(card.indexOf('Talon decision gate') > 0 && card.indexOf('data-tier="decision"') > 0, 'every feature and the decision tier are there');
 is(card.indexOf('value="c/d"') < 0, 'and not what is not');
+var bc = r.braveCard({ key_set: true, searches: { '~lur': { '2026-10': 2 } } });
+is(bc.indexOf('~lur') > 0 && bc.indexOf('2026-10: 2') > 0 && bc.indexOf('data-clear-brave') > 0, 'the Brave card counts each ship and offers removal');
+is(r.braveCard({}).indexOf('no key set') > 0, 'a vendor without a key is told so');
 console.log('render-check ok');

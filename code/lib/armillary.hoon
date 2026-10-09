@@ -1746,32 +1746,67 @@
       ['key' s+key]
       ['models' a+(turn models |=(t=@t ^-(json s+t)))]
   ==
-::  ==  suggested models
+::  ==  the AI a vendor drives
 ::
-::  The vendor suggests a model per role: default, catch_up, assistant,
-::  orrery_generator, or any role a client of its own knows. It travels
-::  in every account's view, so a customer reads it on its next pass, and
-::  a client that follows it switches when .rev moves.
+::  The vendor names a model for each of four tiers and says which tier
+::  each feature of its customers' apps uses. It travels in every
+::  account's view, so a customer reads it on its next pass. An app reads
+::  .models, the map resolved to feature -> model with default the
+::  frontier model, and switches when .rev moves; version 18 answered
+::  .models alone, so an app reading models[feature] works with both.
 ::
-::  +de-suggested: the roles from an owner's PUT, or the field that
-::  failed. A blank model drops its role.
+++  tier-names
+  ^-  (list @t)
+  ~['frontier' 'decision' 'zdr' 'private']
+++  feature-names
+  ^-  (list @t)
+  :~  'catch_up'  'assistant'  'decision'
+      'orrery_generator'  'orrery_mail'  'orrery_chat'
+      'orrery_telegram'  'orrery_read'  'orrery_decider'
+  ==
++$  suggestion  [tiers=(map @t @t) features=(map @t @t)]
+::  +de-suggestion: the tiers and the mapping from an owner's PUT, or the
+::  field that failed. A blank model drops its tier and a blank tier its
+::  feature; a feature must name a tier that has a model. A feature name
+::  beyond the known ones is any role a client of the vendor knows.
 ::
-++  de-suggested
+++  de-suggestion
   |=  jon=json
-  ^-  (each (map @t @t) @t)
-  =/  ms=json  (gj jon 'models')
-  ?.  ?=([%o *] ms)  [%| 'models: an object of role to model id']
-  =/  rows=(list [k=@t v=json])  ~(tap by p.ms)
-  ?:  (gth (lent rows) 32)  [%| 'models: 32 roles at most']
+  ^-  (each suggestion @t)
+  =/  tj=json  (gj jon 'tiers')
+  ?.  ?=([%o *] tj)  [%| 'tiers: an object of tier to model id']
+  =/  fj=json  (gj jon 'features')
+  ?.  |(?=(~ fj) ?=([%o *] fj))  [%| 'features: an object of feature to tier']
+  =/  t  (de-tiers ~(tap by p.tj))
+  ?:  ?=(%| -.t)  [%| p.t]
+  =/  f  (de-features ?:(?=([%o *] fj) ~(tap by p.fj) ~) p.t)
+  ?:  ?=(%| -.f)  [%| p.f]
+  [%& p.t p.f]
+++  de-tiers
+  |=  rows=(list [k=@t v=json])
   =|  out=(map @t @t)
   |-  ^-  (each (map @t @t) @t)
   ?~  rows  [%& out]
   =/  k=@t  k.i.rows
-  ?.  (role-ok k)  [%| (rap 3 'role ' k ': 1 to 64 of a-z, 0-9, _ and -' ~)]
-  ?.  ?=([%s *] v.i.rows)  [%| (rap 3 'models.' k ': a model id' ~)]
+  ?~  (find ~[k] tier-names)  [%| (rap 3 'tier ' k ': frontier, decision, zdr or private' ~)]
+  ?.  ?=([%s *] v.i.rows)  [%| (rap 3 'tiers.' k ': a model id' ~)]
   =/  id=@t  p.v.i.rows
-  ?:  (gth (met 3 id) max-name)  [%| (rap 3 'models.' k ': 200 bytes at most' ~)]
+  ?:  (gth (met 3 id) max-name)  [%| (rap 3 'tiers.' k ': 200 bytes at most' ~)]
   $(rows t.rows, out ?:(=('' id) out (~(put by out) k id)))
+++  de-features
+  |=  [rows=(list [k=@t v=json]) tiers=(map @t @t)]
+  ^-  (each (map @t @t) @t)
+  ?:  (gth (lent rows) 32)  [%| 'features: 32 at most']
+  =|  out=(map @t @t)
+  |-  ^-  (each (map @t @t) @t)
+  ?~  rows  [%& out]
+  =/  k=@t  k.i.rows
+  ?.  (role-ok k)  [%| (rap 3 'feature ' k ': 1 to 64 of a-z, 0-9, _ and -' ~)]
+  ?.  ?=([%s *] v.i.rows)  [%| (rap 3 'features.' k ': a tier' ~)]
+  =/  tier=@t  p.v.i.rows
+  ?:  =('' tier)  $(rows t.rows)
+  ?.  (~(has by tiers) tier)  [%| (rap 3 'features.' k ': tier ' tier ' has no model' ~)]
+  $(rows t.rows, out (~(put by out) k tier))
 ++  role-ok
   |=  r=@t
   ^-  ?
@@ -1784,20 +1819,62 @@
       =('_' c)
       =('-' c)
   ==
-++  en-suggested
-  |=  [rev=@ud models=(map @t @t)]
+::  +resolve: feature -> model through the tiers, and default the
+::  frontier model: what an app reads
+::
+++  resolve
+  |=  s=suggestion
+  ^-  (map @t @t)
+  =/  out=(map @t @t)
+    %-  ~(gas by *(map @t @t))
+    %+  murn  ~(tap by features.s)
+    |=  [f=@t t=@t]
+    ^-  (unit [@t @t])
+    =/  m=(unit @t)  (~(get by tiers.s) t)
+    ?~(m ~ `[f u.m])
+  =/  front=(unit @t)  (~(get by tiers.s) 'frontier')
+  ?~(front out (~(put by out) 'default' u.front))
+++  en-suggestion
+  |=  [rev=@ud s=suggestion]
   ^-  json
+  =/  str  |=(m=(map @t @t) ^-(json [%o (~(run by m) |=(t=@t ^-(json s+t)))]))
   %-  pairs:enjs:format
   :~  ['rev' (en-num rev)]
-      ['models' [%o (~(run by models) |=(t=@t ^-(json s+t)))]]
+      ['tiers' (str tiers.s)]
+      ['features' (str features.s)]
+      ['models' (str (resolve s))]
   ==
-::  +unsold: the first suggested model the catalog does not sell, or ''
+::  +unsold: the first tier model the catalog does not sell, or ''
 ::
 ++  unsold
   |=  [models=(map @t @t) sold=(set @t)]
   ^-  @t
   =/  bad=(list @t)  (skip ~(val by models) |=(t=@t (~(has in sold) t)))
   ?~(bad '' i.bad)
+::  ==  Brave search, on the vendor's key
+::
+::  A customer's apps search through the vendor, which holds the Brave
+::  key: Talon's web search and Orrery's place lookups, the two paths
+::  that pass. The key never leaves the vendor, and each search is
+::  counted on the account that made it.
+::
+++  brave-path-ok
+  |=  p=(list @t)
+  ^-  ?
+  ?|  =(p `(list @t)`~['res' 'v1' 'web' 'search'])
+      =(p `(list @t)`~['res' 'v1' 'local' 'place_search'])
+  ==
+::  +brave-url: the forwarded search. Every name and value is encoded
+::  twice, since the ship's HTTP client decodes a query once before it
+::  sends (orrery's +place-search-url says the same).
+::
+++  brave-url
+  |=  [api=@t p=(list @t) args=(list [k=@t v=@t])]
+  ^-  @t
+  =/  enc  |=(t=@t ^-(tape (en-urlt:html (en-urlt:html (trip t)))))
+  =/  pairs=(list tape)  (turn args |=([k=@t v=@t] "{(enc k)}={(enc v)}"))
+  =/  qs=tape  ?~(pairs "" ['?' (zing (join "&" pairs))])
+  (crip "{(trip api)}/{(trip (rap 3 (join '/' p)))}{qs}")
 ::  ==  the channel's writer ops, on the vendor
 ::
 ::  +de-op-view: the write-view payload
