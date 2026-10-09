@@ -705,21 +705,33 @@
       stat(money$(sumOf(s, 'credited', s.length)), 'credited') + '</div>' +
       '<div class="stats">' + stat(money$(rate), 'charged a day lately') + stat(money$(rate * 30), 'charged the next 30 days') +
       stat(money$(costRate * 30), 'cost the next 30 days') + '</div></div>';
-    // what each provider has left, and how long it lasts at the cost lately
+    // what each provider's account has left, against what the leases on
+    // it may still spend. OpenRouter's figures are the whole account's,
+    // which may pay for keys outside Armillary too, so no "lasts": a
+    // rate from Armillary's cost alone said thousands of days.
     var provs = (d.providers || []).filter(function (p) { return p.credits; });
     if (provs.length) {
+      var headroom = function (pid) {
+        return (d.accounts || []).reduce(function (sum, x) {
+          var l = x.lease;
+          if (!l || l.provider !== pid || l.disabled || (x.account || {}).closed) return sum;
+          return sum + Math.max(0, Number(l.limit || 0) - Number(l.usage_seen || 0));
+        }, 0);
+      };
+      var short = [];
       out += '<div class="card"><h2>Provider credits</h2>' +
-        thead(['Provider', { name: 'Bought', num: true }, { name: 'Used', num: true }, { name: 'Left', num: true }, 'Lasts']) +
+        thead(['Provider', { name: 'Bought', num: true }, { name: 'Used', num: true }, { name: 'Left', num: true }, { name: 'Leases may spend', num: true }]) +
         provs.map(function (p) {
           var c = p.credits;
           if (c.error) return '<tr>' + cell('Provider', esc(p.name || p.id)) + '<td colspan="4" class="neg">' + esc(c.error) + '</td></tr>';
-          var left = (Number(c.total || 0) - Number(c.used || 0)) * 1000000;
-          var lasts = costRate > 0 ? Math.floor(left / costRate) + ' days at the cost lately' : 'no cost lately';
+          var left = (Number(c.total || 0) - Number(c.used || 0)) * 1000000, may = headroom(p.id);
+          if (may > left) short.push((p.name || p.id) + ': the leases may spend ' + money$(may) + ' but the account has ' + money$(left) + ' left');
           return '<tr>' + cell('Provider', esc(p.name || p.id)) + cell('Bought', esc(money$(Number(c.total || 0) * 1000000)), 'num') +
             cell('Used', esc(money$(Number(c.used || 0) * 1000000)), 'num') + cell('Left', '<strong>' + esc(money$(left)) + '</strong>', 'num') +
-            cell('Lasts', esc(lasts)) + '</tr>';
+            cell('Leases may spend', '<span class="' + (may > left ? 'neg' : '') + '">' + esc(money$(may)) + '</span>', 'num') + '</tr>';
         }).join('') + '</tbody></table>' +
-        '<p class="muted">Read live from OpenRouter with each provider\'s provisioning key. The cost counts what the proxy charged and what the leases spent.</p></div>';
+        short.map(function (t) { return '<p class="neg">' + esc(t) + '. Top up the provider account, or customers\' calls are refused before their caps stop them.</p>'; }).join('') +
+        '<p class="muted">Read live from the provider with its provisioning key. Its figures are the whole provider account\'s, which may also pay for keys outside Armillary. "Leases may spend" is each open lease\'s cap less what it has spent, in the provider\'s dollars.</p></div>';
     }
     out += '<div class="card"><h2>By day</h2>' + bars(s, 'spent', money$, 'Charged') + bars(s, 'cost', money$, 'Cost') +
       bars(s, 'requests', String, 'Requests') + '</div>';

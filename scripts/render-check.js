@@ -73,4 +73,8 @@ is(r.myData({ vendor: '~nisfeb' }).indexOf('version 25') > 0, 'a vendor not yet 
 var vd = r.vendorData({ totals: { series: days, models: [] }, accounts: [{ account: { ship: '~lur', balance: '5000000' }, usage: { series: days }, lease: { usage_seen: 100000, limit: 900000 } }],
   providers: [{ id: 'or', name: 'OpenRouter', credits: { total: '50', used: '10.5' } }, { id: 'x', name: 'Other', credits: null }] }, 30);
 is(vd.indexOf('~lur') > 0 && vd.indexOf('$39.50') > 0 && vd.indexOf('Other') < 0 && vd.indexOf('$0.10 of $0.90') > 0, 'the provider\'s Data view lists customers, leases and what OpenRouter has left');
+var short = r.vendorData({ totals: { series: days }, accounts: [{ account: { ship: '~lur', balance: '0' }, usage: { series: days }, lease: { provider: 'or', usage_seen: 1000000, limit: 51000000 } }],
+  providers: [{ id: 'or', name: 'OpenRouter', credits: { total: '50', used: '10' } }] }, 30);
+is(short.indexOf('the leases may spend $50.00 but the account has $40.00 left') > 0, 'leases that may spend more than the provider account has are called out');
+is(vd.indexOf('may spend') > 0 && vd.indexOf('leases may spend $') < 0, 'and a provider with room for its leases is not');
 console.log('render-check ok');
