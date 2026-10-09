@@ -112,7 +112,11 @@
     ['orrery_telegram', 'Orrery Telegram reader'],
     ['orrery_read', 'Orrery read channel'],
     ['orrery_decider', 'Orrery decider'],
+    ['orrery_browsing', 'Orrery browsing reader (ZDR only)'],
   ];
+  // features only a model that keeps nothing may run: the server refuses
+  // any other tier for them, so their pickers offer only zdr
+  var ZDR_ONLY = ['orrery_browsing'];
   // +fuzzyScore, +rankModels: Talon's model search (its rankModels): each
   // word of the query in the id, its name or the part after the last
   // slash, fuzzily (its letters in order, gaps allowed); a word the id
@@ -225,7 +229,7 @@
       var cur = feats[f[0]] || '';
       out += '<div class="field"><label for="feat-' + esc(f[0]) + '">' + esc(f[1]) + '</label>' +
         '<select id="feat-' + esc(f[0]) + '" data-feature="' + esc(f[0]) + '"><option value="">none</option>' +
-        TIERS.map(function (t) {
+        TIERS.filter(function (t) { return ZDR_ONLY.indexOf(f[0]) < 0 || t[0] === 'zdr'; }).map(function (t) {
           return '<option value="' + t[0] + '"' + (t[0] === cur ? ' selected' : '') + '>' + esc(t[0]) + '</option>';
         }).join('') + '</select></div>';
     });

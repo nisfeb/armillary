@@ -87,4 +87,7 @@ var noTok = days.map(function (x) { return { day: x.day, spent: x.spent, request
 var mdl = r.myData({ vendor: '~nisfeb', balance: 1, daily: { days: 10, series: noTok, models: [{ model: 'openrouter', spent: 1, requests: 1, 'in': 0, out: 0 }] }, lease: { usage: 1, limit: 2 } });
 is(mdl.indexOf('Tokens') < 0 && mdl.indexOf('>tokens<') < 0, 'a Data view with no counts shows no tokens anywhere');
 is(r.usageCard({ ledger: [{ kind: 'debit', amount: 5, model: 'openrouter', 'in': 0, out: 0, mode: 'lease', at: new Date().toISOString() }] }).indexOf('>tokens<') < 0, 'the Usage card shows no tokens when none were counted');
+var bcard = r.suggestedCard([{ id: 'a/b', enabled: true }]);
+var bsel = bcard.slice(bcard.indexOf('id="feat-orrery_browsing"'), bcard.indexOf('</select>', bcard.indexOf('id="feat-orrery_browsing"')));
+is(bsel.indexOf('value="zdr"') > 0 && bsel.indexOf('value="frontier"') < 0, 'the browsing reader can be put on the zdr tier only');
 console.log('render-check ok');

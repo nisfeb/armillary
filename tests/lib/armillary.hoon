@@ -1066,4 +1066,26 @@
     (expect-eq !>(`@ud`2) !>((gn:arm (snag 1 models) 'requests')))
     (expect-eq !>(2) !>((lent models)))
   ==
+::  ==  a feature only the zdr tier may run
+::
+::  Orrery's browsing reader may be mapped to the zdr tier and no other,
+::  and left unmapped it takes the zdr model rather than the default
+::
+++  test-zdr-only
+  =/  tiers=(map @t @t)  (my ~[['frontier' 'f/1'] ['zdr' 'z/1']])
+  =/  bad  (de-features:arm ~[['orrery_browsing' s+'frontier']] tiers)
+  =/  ok   (de-features:arm ~[['orrery_browsing' s+'zdr']] tiers)
+  ;:  weld
+    (expect-eq !>(%.n) !>(?=(%& -.bad)))
+    (expect-eq !>(%.y) !>(?=(%& -.ok)))
+    %-  expect-eq
+    :-  !>(`(unit @t)``'z/1')
+    !>((~(get by (resolve:arm [tiers ~])) 'orrery_browsing'))
+    %-  expect-eq
+    :-  !>(`(unit @t)`~)
+    !>((~(get by (resolve:arm [(my ~[['frontier' 'f/1']]) ~])) 'orrery_browsing'))
+    %-  expect-eq
+    :-  !>(`(unit @t)``'f/1')
+    !>((~(get by (resolve:arm [tiers ~])) 'default'))
+  ==
 --

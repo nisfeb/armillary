@@ -1856,7 +1856,13 @@
   :~  'catch_up'  'assistant'  'decision'
       'orrery_generator'  'orrery_mail'  'orrery_chat'
       'orrery_telegram'  'orrery_read'  'orrery_decider'
+      'orrery_browsing'
   ==
+::  +zdr-only: the features that read what the owner never chose to send
+::  anywhere (Orrery's browsing reader reads their pages), which only a
+::  model that keeps nothing may run: the zdr tier, mapped or not
+::
+++  zdr-only  ^-  (list @t)  ~['orrery_browsing']
 +$  suggestion  [tiers=(map @t @t) features=(map @t @t)]
 ::  +de-suggestion: the tiers and the mapping from an owner's PUT, or the
 ::  field that failed. A blank model drops its tier and a blank tier its
@@ -1898,6 +1904,8 @@
   ?.  ?=([%s *] v.i.rows)  [%| (rap 3 'features.' k ': a tier' ~)]
   =/  tier=@t  p.v.i.rows
   ?:  =('' tier)  $(rows t.rows)
+  ?:  &(?=(^ (find ~[k] zdr-only)) !=('zdr' tier))
+    [%| (rap 3 'features.' k ': the zdr tier only, since it reads what the owner browses' ~)]
   ?.  (~(has by tiers) tier)  [%| (rap 3 'features.' k ': tier ' tier ' has no model' ~)]
   $(rows t.rows, out (~(put by out) k tier))
 ++  role-ok
@@ -1925,6 +1933,13 @@
     ^-  (unit [@t @t])
     =/  m=(unit @t)  (~(get by tiers.s) t)
     ?~(m ~ `[f u.m])
+  ::  a zdr-only feature left unmapped takes the zdr model, never the
+  ::  frontier default an app falls back to
+  =/  zdr=(unit @t)  (~(get by tiers.s) 'zdr')
+  =?  out  ?=(^ zdr)
+    %-  ~(gas by out)
+    %+  turn  (skip zdr-only |=(f=@t (~(has by out) f)))
+    |=(f=@t [f u.zdr])
   =/  front=(unit @t)  (~(get by tiers.s) 'frontier')
   ?~(front out (~(put by out) 'default' u.front))
 ++  en-suggestion
