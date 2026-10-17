@@ -43,7 +43,7 @@ import json
 import sys
 import time
 from email.parser import BytesParser
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SPEECH = [{"id": "stub/whisper", "pricing": {"prompt": "0.0001", "completion": "0"}}]
 MODELS = [
@@ -297,6 +297,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if model == "stub/slow":
             time.sleep(130)
+        if model == "stub/slow5":
+            time.sleep(5)
         if model in ("stub/decider", "stub/badjson"):
             # a chat model asked for decisions: the answers as JSON after
             # a think block and among prose, the way a local model writes
@@ -391,7 +393,8 @@ def main():
         print(__doc__)
         return 2
     port = int(sys.argv[1])
-    server = HTTPServer(("127.0.0.1", port), Handler)
+    # threaded, so a slow model does not hold the next call behind it
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.key = sys.argv[2]
     print("stub provider on 127.0.0.1:%d" % port, flush=True)
     server.serve_forever()

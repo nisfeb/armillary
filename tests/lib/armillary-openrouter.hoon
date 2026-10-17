@@ -29,7 +29,16 @@
   ;:  weld
     (expect-eq !>(`(unit @ud)`[~ 12.300]) !>((micro-of:ao [%n '0.0123'])))
     (expect-eq !>(`(unit @ud)`[~ 1.000.000]) !>((micro-of:ao [%n '1'])))
-    (expect-eq !>(`(unit @ud)`[~ 0]) !>((micro-of:ao [%n '0.00000049'])))
+    ::  a fraction of a microdollar rounds up, never down
+    (expect-eq !>(`(unit @ud)`[~ 1]) !>((micro-of:ao [%n '0.00000049'])))
+    (expect-eq !>(`(unit @ud)`[~ 2]) !>((micro-of:ao [%n '0.0000019'])))
+    (expect-eq !>(`(unit @ud)`[~ 0]) !>((micro-of:ao [%n '0'])))
+    (expect-eq !>(`(unit @ud)`[~ 0]) !>((micro-of:ao [%n '-0'])))
+    ::  and an exponent is a number too
+    (expect-eq !>(`(unit @ud)`[~ 1]) !>((micro-of:ao [%n '5e-7'])))
+    (expect-eq !>(`(unit @ud)`[~ 3]) !>((micro-of:ao [%n '3E-6'])))
+    (expect-eq !>(`(unit @ud)`[~ 150.000.000]) !>((micro-of:ao [%n '1.5e2'])))
+    (expect-eq !>(`(unit @ud)`[~ 20.000]) !>((micro-of:ao [%n '2e-2'])))
   ==
 ++  test-micro-of-junk
   ::  OpenRouter sends numbers; a string where a number belongs is not
@@ -38,6 +47,8 @@
     (expect-eq !>(`(unit @ud)`~) !>((micro-of:ao s+'0.75')))
     (expect-eq !>(`(unit @ud)`~) !>((micro-of:ao ~)))
     (expect-eq !>(`(unit @ud)`~) !>((micro-of:ao [%n 'x'])))
+    (expect-eq !>(`(unit @ud)`~) !>((micro-of:ao [%n '-0.5'])))
+    (expect-eq !>(`(unit @ud)`~) !>((micro-of:ao [%n '1e'])))
   ==
 ::  ==  where the keys live
 ::
@@ -49,6 +60,10 @@
     %+  expect-eq
       !>('http://127.0.0.1:3399/api/v1/keys')
     !>((keys-base:ao 'http://127.0.0.1:3399/v1'))
+    ::  a trailing slash is the same base
+    %+  expect-eq
+      !>('https://openrouter.ai/api/v1/keys')
+    !>((keys-base:ao 'https://openrouter.ai/api/v1/'))
   ==
 ::  ==  the builders
 ::
@@ -152,6 +167,15 @@
     (expect-eq !>(`@ud`750.000) !>(usage.u.got))
     (expect-eq !>(`@ud`2.000.000) !>(limit.u.got))
     (expect !>(!disabled.u.got))
+  ==
+::  a key read with no usage says nothing about spending: refused,
+::  not read as zero, which moved the recorded usage backwards
+::
+++  test-read-key-no-usage
+  ;:  weld
+    (expect-eq !>(`?`&) !>(?=(~ (read-key:ao '{"data":{"hash":"h7","usage":null,"limit":5}}'))))
+    (expect-eq !>(`?`&) !>(?=(~ (read-key:ao '{"data":{"hash":"h7","limit":5}}'))))
+    (expect-eq !>(`?`&) !>(?=(^ (read-key:ao '{"data":{"hash":"h7","usage":0,"limit":5}}'))))
   ==
 ++  test-read-junk
   =/  a=@ud  ?~((read-key:ao 'not json') 0 1)

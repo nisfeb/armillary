@@ -196,8 +196,7 @@
 ::  ship is in the metadata, which is what makes the payment an account.
 ::
 ::    A blank customer sends no customer at all, which is what a vendor
-::    whose Customer create failed falls back to. With one, Checkout is
-::    also allowed to write back the name it collects.
+::    whose Customer create failed falls back to.
 ::
 ++  topup-request
   |=  $:  base=@t
@@ -370,6 +369,24 @@
   =/  id=@t  (gs jon 'id')
   ?:  =('' id)  ~
   `[id (gs jon 'payment_intent') (gn jon 'amount') (gs jon 'status')]
+::  +charge-request: read a charge back, for a refund made on Stripe
+::
+++  charge-request
+  |=  [base=@t key=@t id=@t]
+  ^-  request:http
+  =/  url=@t  (at base (rap 3 '/v1/charges/' (url-encode id) ~))
+  [%'GET' url (auth-only key) ~]
+::  +read-charge: the charge's payment and how much of it has been
+::  refunded so far, in cents
+::
+++  read-charge
+  |=  body=@t
+  ^-  (unit [id=@t intent=@t refunded=@ud])
+  =/  jon=json  (de-body body)
+  ?.  ?=([%o *] jon)  ~
+  =/  id=@t  (gs jon 'id')
+  ?:  =('' id)  ~
+  `[id (gs jon 'payment_intent') (gn jon 'amount_refunded')]
 ::  ==  events
 ::
 ::  +event-of: the only two things a webhook body is trusted for. The
@@ -469,5 +486,20 @@
   =/  gap=@ud  ?:((gth now t.u.got) (sub now t.u.got) (sub t.u.got now))
   ?:  (gth gap 300)  |
   =/  signed=@t  (rap 3 (num t.u.got) '.' body ~)
-  (same-hex (hex-of (hmac-sha256 secret signed)) v1.u.got)
+  =/  mine=@t  (hex-of (hmac-sha256 secret signed))
+  (lien (stripe-v1s header) |=(v=@t (same-hex mine v)))
+::  +stripe-v1s: every v1 in the header. Stripe sends one per signing
+::  secret in force, two while a secret is rolled, and any one that
+::  matches is enough.
+::
+++  stripe-v1s
+  |=  h=@t
+  ^-  (list @t)
+  %+  murn  (chop ',' (trip h))
+  |=  part=tape
+  ^-  (unit @t)
+  =/  kv=(list tape)  (chop '=' part)
+  ?.  ?=([* * *] kv)  ~
+  ?.  =("v1" i.kv)  ~
+  `(crip i.t.kv)
 --

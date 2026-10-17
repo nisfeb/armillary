@@ -10,7 +10,7 @@ the same ship url, 3401 by default. It starts nothing: the runner
 starts all three stubs first. Exits 1 on any failure. Safe to rerun: it
 deletes the account, the provider and the plans it made, both before it
 starts and after it finishes."""
-import base64, hashlib, hmac, json, os, subprocess, sys, time
+import base64, hashlib, hmac, json, os, subprocess, sys, threading, time
 
 HOST, JAR, PORT = sys.argv[1], sys.argv[2], sys.argv[3]
 SPORT = sys.argv[4] if len(sys.argv) > 4 else '3400'
@@ -289,7 +289,8 @@ code, d = curl('POST', API + '/providers', {'id': 'box', 'name': 'Box', 'kind': 
 settle()
 code, d = curl('POST', API + '/providers/box/import')
 check('another server\'s import says its whisper model is speech to text',
-      code == 200 and dictish(d).get('added') == 2 and dictish(d).get('transcription') == 2, (code, d))
+      code == 200 and dictish(d).get('added') == 2 and dictish(d).get('transcription') == 1
+      and dictish(d).get('zdr') == 0, (code, d))
 settle()
 code, boxed = curl('GET', API + '/catalog')
 bb = {r['id']: r for r in (boxed if isinstance(boxed, list) else [])}
@@ -442,6 +443,28 @@ check('a chat is charged at the cost OpenRouter reports, not a stale catalog pri
       (code, rows[:1]))
 curl('PUT', API + '/catalog', cat)
 settle()
+
+# a call in flight holds its worst case: a slow call asking for more
+# output than the dollar buys holds it all, so a second call waits
+slow = [r for r in cat if r['id'] == 'stub/alpha'][0]
+code, d = curl('PUT', API + '/catalog', cat + [dict(slow, id='stub/slow5', upstream='stub/slow5', enabled=True)])
+settle()
+first = {}
+def slow_call():
+    first['r'] = curl('POST', V1 + '/chat/completions',
+                      {'model': 'stub/slow5', 'messages': message('hi'), 'max_tokens': 60000}, jar=None, bearer=SEC1)
+t = threading.Thread(target=slow_call)
+t.start()
+time.sleep(2)
+code, d = curl('POST', V1 + '/chat/completions', {'model': 'stub/alpha', 'messages': message('hi')}, jar=None, bearer=SEC1)
+check('a second call while the first holds the balance is 402', code == 402 and 'in flight' in err_of(d), (code, d))
+t.join()
+check('the first call answers', first.get('r', (0,))[0] == 200, first.get('r'))
+settle(2)
+code, d = curl('POST', V1 + '/chat/completions', {'model': 'stub/alpha', 'messages': message('hi')}, jar=None, bearer=SEC1)
+check('once it has, the hold is gone and a call passes', code == 200, (code, d))
+curl('PUT', API + '/catalog', cat)
+settle(2)
 
 print('decisions')
 DEC = HOST + '/apps/armillary/alpha/decisions'
@@ -897,11 +920,15 @@ check('the return page with cancelled=1 is 200 and says cancelled',
 code, text = page(RETURN + '?ship=' + SHIP)
 check('the return page without a sid says pending',
       code == 200 and 'pending' in text.lower(), (code, text[:200]))
-# a sid the stub never issued: the page stays pending and the ring gets
-# its stripe.return entry from this run, not from an earlier one
-code, text = page(RETURN + '?sid=cs_stub_never_issued')
+# a sid none of the ship's checkouts holds: the page stays pending and
+# Stripe is never asked, so a stranger cannot spend the vendor's calls
+gets = stub_state().get('session_gets', 0)
+code, text = page(RETURN + '?ship=' + SHIP + '&sid=cs_stub_never_issued')
 check('the return page with an unknown sid says pending',
       code == 200 and 'pending' in text.lower(), (code, text[:200]))
+code, text = page(RETURN + '?ship=' + SHIP + '&sid=cs_x/../../v1/customers')
+check('and a sid with a slash says pending too', code == 200 and 'pending' in text.lower(), (code, text[:200]))
+check('and neither asked Stripe anything', stub_state().get('session_gets', 0) == gets, (gets, stub_state().get('session_gets')))
 settings()
 settle()
 
@@ -979,7 +1006,7 @@ text = json.dumps(log)
 ops = set(r.get('op') for r in (log if isinstance(log, list) else []))
 check('GET /api/log answers the ring', code == 200 and isinstance(log, list) and len(log) > 0, (code, str(log)[:200]))
 for op in ('set-provider', 'set-catalog', 'set-plan', 'drop-plan',
-           'stripe.webhook', 'stripe.return', 'btcpay.webhook'):
+           'stripe.webhook', 'btcpay.webhook'):
     check('the ring holds an entry for ' + op, op in ops, sorted(ops))
 check('the ring never carries a secret', 'stub-key' not in text and 'prov-key' not in text and
       STRIPE_KEY not in text and WHSEC not in text and BTC_KEY not in text
@@ -1164,6 +1191,29 @@ code, d = btc_hook('InvoiceSettled', INV1)
 settle(2)
 code, d = curl('GET', API + '/accounts/' + SELF)
 check('a late bitcoin webhook opens no account', code == 404, (code, d))
+
+print('keys belong to their vendor')
+settings()
+settle()
+curl('PUT', API + '/vendor', {'ship': SELF})
+settle(3)
+code, k = curl('POST', API + '/keys', {'name': 'own'}, timeout=120)
+kid = dictish(k).get('secret', '').split('.')[0]
+check('a key from this ship', code == 200 and kid != '', (code, k))
+code, d = curl('GET', API + '/inference')
+check('the inference answer carries it', code == 200 and dictish(d).get('key', '').startswith(kid + '.'), (code, str(d)[:80]))
+curl('PUT', API + '/vendor', {'ship': '~zod'})
+settle(2)
+code, d = curl('GET', API + '/inference')
+check('another vendor is not handed this ship\'s key', code == 404 and 'no key' in err_of(d), (code, str(d)[:80]))
+code, d = curl('GET', API + '/keys')
+check('and its Keys view lists none', d == [], d)
+curl('PUT', API + '/vendor', {'ship': SELF})
+settle(2)
+code, d = curl('GET', API + '/inference')
+check('switching back finds the key again', code == 200 and dictish(d).get('key', '').startswith(kid + '.'), (code, str(d)[:80]))
+curl('POST', API + '/delete-account', timeout=120)
+settle(2)
 
 broom()
 print()

@@ -45,7 +45,7 @@
 ::
 ++  test-invoice-request-head
   =/  req=request:http
-    (invoice-request:ab url store key '~feb' 'n1' 1.000.000 back)
+    (invoice-request:ab url store key '~feb' 'n1' 1.000.000 back 240)
   ;:  weld
     (expect-eq !>(%'POST') !>(method.req))
     %+  expect-eq
@@ -60,7 +60,7 @@
   ==
 ++  test-invoice-request-body
   =/  req=request:http
-    (invoice-request:ab url store key '~feb' 'n1' 1.000.000 back)
+    (invoice-request:ab url store key '~feb' 'n1' 1.000.000 back 240)
   =/  jon=json  (body-json req)
   =/  meta=json  (gj:ab jon 'metadata')
   =/  check=json  (gj:ab jon 'checkout')
@@ -70,15 +70,15 @@
     (expect-eq !>('~feb') !>((gs:ab meta 'ship')))
     (expect-eq !>('n1') !>((gs:ab meta 'nonce')))
     (expect-eq !>(back) !>((gs:ab check 'redirectURL')))
-    (expect-eq !>(`@ud`60) !>((gn:ab check 'expirationMinutes')))
+    (expect-eq !>(`@ud`240) !>((gn:ab check 'expirationMinutes')))
   ==
 ++  test-invoice-request-rounds
   =/  req=request:http
-    (invoice-request:ab url store key '~feb' 'n2' 1.505.000 back)
+    (invoice-request:ab url store key '~feb' 'n2' 1.505.000 back 60)
   (expect-eq !>('1.51') !>((gs:ab (body-json req) 'amount')))
 ++  test-invoice-request-slash
   =/  req=request:http
-    (invoice-request:ab 'http://127.0.0.1:3401/' store key '~feb' 'n1' 5.000 back)
+    (invoice-request:ab 'http://127.0.0.1:3401/' store key '~feb' 'n1' 5.000 back 60)
   %+  expect-eq
     !>('http://127.0.0.1:3401/api/v1/stores/store1/invoices')
   !>(url.req)

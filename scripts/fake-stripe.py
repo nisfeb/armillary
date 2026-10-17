@@ -52,6 +52,7 @@ STORE = {
     'refunds': {},
     'hooks': [],
     'n': 0,
+    'session_gets': 0,
     'broken': False,
     'delay': 0,
 }
@@ -268,6 +269,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/v1/checkout/sessions/'):
             if not self.bearer_ok():
                 return None
+            STORE['session_gets'] += 1
             s = STORE['sessions'].get(path[len('/v1/checkout/sessions/'):])
             return self.send(200, s) if s else self.miss()
         if path.startswith('/v1/invoices/'):

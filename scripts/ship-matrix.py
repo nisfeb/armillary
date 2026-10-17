@@ -41,7 +41,6 @@ BTC_STORE = 'gatestore'
 PLAN = {'id': 'gate-pro', 'name': 'Gate Pro', 'kind': 'subscription',
         'price': 2500000, 'credit': 3000000, 'interval': 'month'}
 PLAN_CREDIT = PLAN['credit']
-SESSION_CREDIT = 2500000                       # the plan's price, paid once
 MARKUP = 130
 COST_IN, COST_OUT = 3000000, 15000000
 IN, OUT = 3900000, 19500000
@@ -574,7 +573,7 @@ check('a subscription checkout answers a session url',
       code == 200 and suburl.startswith(SSTUB + '/stub/pay/'), (code, co))
 code, d = stub_post(suburl)
 check('paying the subscription answers the record', code == 200, (code, str(d)[:120]))
-want = BASE + CARD + SESSION_CREDIT + PLAN_CREDIT
+want = BASE + CARD + PLAN_CREDIT
 view = wait_view(PEER, PJAR, lambda v: dictish(v.get('subscription')).get('active'), tries=15)
 check('the view shows the subscription active',
       dictish(view.get('subscription')).get('active') is True, view.get('subscription'))
@@ -582,7 +581,7 @@ check('the view never carries the Stripe ids',
       'id' not in dictish(view.get('subscription')), view.get('subscription'))
 check('the view names the plan', view.get('plan') == PLAN['id'], view.get('plan'))
 view = wait_view(PEER, PJAR, lambda v: v.get('balance') == want, tries=15)
-check('the session and the first invoice both credited',
+check('the first period is credited once, by its invoice',
       view.get('balance') == want, (want, view.get('balance')))
 code, acct = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR)
 SUB = dictish(dictish(acct).get('subscription')).get('id', '')

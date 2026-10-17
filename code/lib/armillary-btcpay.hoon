@@ -150,7 +150,8 @@
 ::
 ::  +invoice-request: one invoice for one top-up. The ship and the
 ::  nonce ride in the metadata, which is what makes a payment an
-::  account: the webhook body is never trusted for either.
+::  account: the webhook body is never trusted for either. It lives as
+::  long as the vendor's btcpay_minutes, the same as its checkout row.
 ::
 ++  invoice-request
   |=  $:  url=@t
@@ -160,6 +161,7 @@
           nonce=@t
           micro=@ud
           redirect=@t
+          minutes=@ud
       ==
   ^-  request:http
   =/  meta=json
@@ -168,7 +170,7 @@
     %-  pairs:enjs:format
     :~  ['redirectURL' s+redirect]
         ['redirectAutomatically' b+&]
-        ['expirationMinutes' (numb:enjs:format 60)]
+        ['expirationMinutes' (numb:enjs:format (max 1 minutes))]
     ==
   =/  doc=json
     %-  pairs:enjs:format

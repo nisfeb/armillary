@@ -202,9 +202,9 @@ Fake ships derive every keypair from the `@p`, so anything key-dependent behaves
 10. `git push origin main`, then on `~wex`: `POST /grubbery/forge/api/run {"repo":"armillary.git_repo","command":"pull"}`, and within a minute the desk's root `version.json` reads the new number and the instance's `bang` is `null`. The ask changes whenever the weir does, so re-approve it on `/apps/grubbery/permits` and reload after a release that added a road.
 11. The ricsul steps are sneagan's: the catalog line, the kernel commit, the sync, the consent, the publish.
 
-##  9. Ricsul before publishing: not there yet
+##  9. Ricsul before publishing: the history
 
-As of 2026-09-19 armillary runs on `~wex` only. Nothing about it exists on `~ricsul-bilwyt`: no forge repo, no desk, no `published` line in `gub/nex/shell.hoon`, no entry in `permit/share.json`. Phase 1 is the vendor half against a stub provider, and the ship it is proved on is the dev ship.
+Since 2026-09-21 armillary is published from `~ricsul-bilwyt`, and every ship installs it from there (`docs/install.md`). What follows is how it got there. As of 2026-09-19 armillary ran on `~wex` only, and nothing about it existed on `~ricsul-bilwyt`: no forge repo, no desk, no `published` line in `gub/nex/shell.hoon`, no entry in `permit/share.json`. Phase 1 is the vendor half against a stub provider, and the ship it is proved on is the dev ship.
 
 Putting it on ricsul as an ordinary, unpublished desk, when a phase is ready for it, is the same three steps every other app in the family took:
 

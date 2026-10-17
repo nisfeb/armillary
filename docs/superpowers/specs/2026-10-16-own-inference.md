@@ -14,15 +14,25 @@ We do not hand provider keys to apps. The app's header says secrets never leave,
 - The proxy's refusal of transcription on a provider that is not OpenRouter exists because other providers report no cost. A free call needs no cost, so the refusal is lifted for it. The request shape is still OpenRouter's JSON until version 34.
 - The proxy waits ten minutes for an upstream instead of two. A local model on modest hardware, and Orrery's generator, which itself allows ten, need the time.
 - An import that finds a model id another provider's row already holds adds it as `<provider id>/<model id>` instead of dropping it. Two servers offering `llama3.1:8b` are both in the catalog.
-- The page's Settings card shows the switch, labelled for what it does.
+- The page's Payments view has a "Your own use" card for the switch.
 
 A ship with no `public_url` answers `http://localhost:8080` as its base, which a phone cannot reach. An owner running their own inference sets `public_url`. Talon can also rewrite that origin to the ship address it already uses when the vendor is the ship itself.
 
 ## Version 34: decisions and transcription everywhere
 
-- `POST /apps/armillary/alpha/decisions` forwards to OpenRouter's decisions route. The model must be the vendor's suggested decision tier, since that model is in no chat catalog and an open model field would make the route a gateway to anything. It goes to the lease provider when one is set, else the only OpenRouter provider. The charge is the `usage.cost` OpenRouter reports, at the markup. An answer without a cost is answered 502 and charged nothing. An app finds the route from its base URL: a trailing `/v1` becomes `/alpha/decisions`. That turns OpenRouter's `https://openrouter.ai/api/v1` into its own decisions URL and the proxy's base into this route, so one rule serves a lease and the proxy. Orrery's `decider-url` and Talon's `Decider` take that rule.
+- `POST /apps/armillary/alpha/decisions` forwards to OpenRouter's decisions route. The model must be the vendor's suggested decision tier, since an open model field would make the route a gateway to anything. It goes to the lease provider when one is set, else the only OpenRouter provider. The charge is the `usage.cost` OpenRouter reports, at the markup. An answer without a cost is answered 502 and charged nothing. An app finds the route from its base URL: a trailing `/v1` becomes `/alpha/decisions`. That turns OpenRouter's `https://openrouter.ai/api/v1` into its own decisions URL and the proxy's base into this route, so one rule serves a lease and the proxy. Orrery's `decider-url` and Talon's `Decider` take that rule.
 - Transcription on an `openai-compatible` provider: the ship takes the same JSON body, decodes the base64 audio and sends the upstream the multipart form OpenAI's API, Groq, whisper.cpp's server and speaches all read. Only a free call may take it. A paying customer stays refused there until a catalog row can carry a price per second, since such a provider reports no cost. Decoding on the ship is slow: a 3.6 MB clip took 11.4 s on a dev ship, so the 16 MB cap is near a minute.
 - `GET /api/inference` and `app-inference.json` gain `free`, true when the ship is its own vendor with `own_free` on. Talon turns a cloud feature on only once there is a balance, and a free ship's balance stays at zero, so this is what tells it the features may run.
+
+## Version 35: any provider's models for speech and decisions
+
+- An import tags a model whose id says `whisper` or `transcribe` as speech to text on any provider, Talon's own rule, so an owner's whisper server can be the Transcription tier.
+- Jev is offered for the decision tier only where there is an OpenRouter provider.
+- A decision tier may name any chat model the catalog sells. The route then asks that model through its own provider in one chat completion for the answers as JSON, read back into the decisions shape, every question checked against its type; a reply that fails is 502 and charges nothing. The answers are the model's stated probabilities, rougher than Jev's.
+
+## Version 36: the review
+
+The fixes a full review found on 2026-10-17 are listed in the README under "Version 36". Two bear on this spec: a free ship's account view has no balance or top-up, and the Payments view's "Your own use" card shows each step with a Use this ship button, which is most of the one step below.
 
 ## Next: one step to your own key
 

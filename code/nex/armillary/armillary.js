@@ -185,17 +185,20 @@
     if (!list) return null;
     var hits = rankModels(input.value, pickModels[input.id] || []).slice(0, 40);
     list.innerHTML = hits.length ? hits.map(function (m, i) {
-      return '<li role="option" data-pick-id="' + esc(m.id) + '"' + (i === 0 ? ' class="on"' : '') + '>' + esc(m.id) +
+      return '<li role="option" id="' + input.id + '-o' + i + '" aria-selected="' + (i === 0) + '" data-pick-id="' + esc(m.id) + '"' + (i === 0 ? ' class="on"' : '') + '>' + esc(m.id) +
         (m.note ? ' <span class="muted">' + esc(m.note) + '</span>' : '') + '</li>';
     }).join('') : '<li class="muted none">No model fits; Save keeps what you typed.</li>';
     list.hidden = false;
     input.setAttribute('aria-expanded', 'true');
+    if (hits.length) input.setAttribute('aria-activedescendant', input.id + '-o0');
+    else input.removeAttribute('aria-activedescendant');
     return list;
   }
   function pickClose(input) {
     var list = document.getElementById(input.id + '-list');
     if (list) list.hidden = true;
     input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
   }
   // what the owner typed and has not saved, so a redraw (the catalog
   // filter, the minute's refresh) does not lose it
@@ -261,12 +264,18 @@
       var line = Object.keys(months).sort().reverse().map(function (mo) { return esc(mo) + ': ' + esc(months[mo]); }).join(', ');
       return '<tr>' + cell('Ship', '<code>' + esc(ship) + '</code>') + cell('Searches', line) + '</tr>';
     }).join('');
+    // cost is microdollars a search; the field reads Brave's own terms,
+    // dollars per thousand searches
+    var per1k = (Number(b.cost == null ? 5000 : b.cost) / 1000).toFixed(2);
     return '<div class="card"><h2>Brave search</h2>' +
-      '<p class="muted">Your customers\' apps search through you: Talon\'s web search and Orrery\'s place lookups. The key stays on this ship and each search is counted on the account that made it.</p>' +
+      '<p class="muted">Your customers\' apps search through you: Talon\'s web search and Orrery\'s place lookups. The key stays on this ship. Each search needs credit and is charged to the account that made it at Brave\'s price times your markup; your own searches are free.</p>' +
       '<div class="inline"><div class="field"><label for="brave-key">Brave API key</label>' +
       '<input id="brave-key" type="password" placeholder="' + (b.key_set ? 'a key is set; blank keeps it' : 'no key set') + '"></div>' +
       '<div class="field"><label>&nbsp;</label><button data-save-brave="1">Save key</button>' +
-      (b.key_set ? ' <button class="danger" data-clear-brave="1">Remove key</button>' : '') + '</div></div>' +
+      (b.key_set ? ' <button class="danger" data-clear-brave="1">Remove key</button>' : '') + '</div>' +
+      '<div class="field"><label for="brave-cost">Brave\'s price, dollars per 1,000 searches</label>' +
+      '<input id="brave-cost" inputmode="decimal" value="' + esc(per1k) + '"></div>' +
+      '<div class="field"><label>&nbsp;</label><button data-save-brave-cost="1">Save price</button></div></div>' +
       (rows ? thead(['Ship', 'Searches']) + rows + '</tbody></table>' : '<p class="muted">No searches yet.</p>') + '</div>';
   }
   function catalog(rows, filter) {
@@ -291,13 +300,13 @@
       out += '<tr>' +
         cell('Id', '<code>' + esc(r.id) + '</code>') +
         cell('Provider', esc(r.provider)) +
-        cell('In', '<input class="price" data-row="' + esc(r.id) + '" data-field="in" value="' + esc(dollars(r.in, 4)) + '">', 'num') +
-        cell('Out', '<input class="price" data-row="' + esc(r.id) + '" data-field="out" value="' + esc(dollars(r.out, 4)) + '">', 'num') +
+        cell('In', '<input class="price" aria-label="' + esc(r.id) + ' input price, dollars per million tokens" data-row="' + esc(r.id) + '" data-field="in" value="' + esc(dollars(r.in, 4)) + '">', 'num') +
+        cell('Out', '<input class="price" aria-label="' + esc(r.id) + ' output price, dollars per million tokens" data-row="' + esc(r.id) + '" data-field="out" value="' + esc(dollars(r.out, 4)) + '">', 'num') +
         cell('Cost in', esc(dollars(r.cost_in, 4)), 'num') +
         cell('Cost out', esc(dollars(r.cost_out, 4)), 'num') +
         cell('Margin', esc(margin(r)), 'num') +
-        cell('On', '<input type="checkbox" data-row="' + esc(r.id) + '" data-field="enabled"' + (r.enabled ? ' checked' : '') + '>') +
-        cell('Tags', '<input class="tags" data-row="' + esc(r.id) + '" data-field="tags" value="' + esc((r.tags || []).join(', ')) + '">') +
+        cell('On', '<input type="checkbox" aria-label="sell ' + esc(r.id) + '" data-row="' + esc(r.id) + '" data-field="enabled"' + (r.enabled ? ' checked' : '') + '>') +
+        cell('Tags', '<input class="tags" aria-label="' + esc(r.id) + ' tags" data-row="' + esc(r.id) + '" data-field="tags" value="' + esc((r.tags || []).join(', ')) + '">') +
         '</tr>';
     });
     return out + '</tbody></table></div>';
@@ -306,8 +315,8 @@
   function accounts(rows, search) {
     var f = String(search || '').toLowerCase();
     var kept = rows.filter(function (a) { return !f || String(a.ship).toLowerCase().indexOf(f) >= 0; });
-    // an account opens when its first key is minted, so the way in to a
-    // ship with no account yet is its own detail page
+    // an account opens when its ship says hello over ames, which it does
+    // when it names this ship its vendor; the owner opens none
     var open_form = '<div class="card"><h2>Open an account</h2>' +
       '<div class="inline"><div class="field"><label for="acct-open">Ship</label>' +
       '<input id="acct-open" value="" placeholder="~feb"></div>' +
@@ -315,7 +324,7 @@
     var out = '<h1>Accounts</h1><div class="card">' +
       '<div class="field"><label for="acct-search">Search</label>' +
       '<input id="acct-search" type="search" value="' + esc(search || '') + '" placeholder="a ship"></div></div>';
-    if (!kept.length) return out + open_form + '<p class="muted">No accounts yet. One opens when you mint a key.</p>';
+    if (!kept.length) return out + open_form + '<p class="muted">' + (rows.length ? 'No account matches.' : 'No accounts yet. One opens when a ship names this one its vendor.') + '</p>';
     out += '<div class="card">' + thead(['Ship', { name: 'Balance', num: true }, { name: 'Keys', num: true }, 'Lease', 'Last seen', 'State']);
     kept.forEach(function (a) {
       var ls = a.lease_state || 'none';
@@ -332,8 +341,8 @@
     return out + '</tbody></table></div>' + open_form;
   }
 
-  // d is null when the ship has no account yet: the view still draws, so
-  // the owner can mint the first key, which is what opens one
+  // d is null when the ship has no account yet: the view still draws,
+  // and says the ship has to name this one its vendor first
   function account(ship, d, minted) {
     var fresh = !d;
     var a = (d && d.account) || { ship: ship, balance: 0, closed: false };
@@ -342,7 +351,7 @@
     var out = '<h1>' + esc(ship) + '</h1>' +
       '<p><a href="#accounts">All accounts</a></p>' +
       '<div class="card"><h2>Balance</h2><p style="font-size:1.6rem;margin:.2rem 0">' + signed(a.balance) + '</p>' +
-      '<p class="muted">' + (fresh ? 'No account yet. Minting a key opens one.'
+      '<p class="muted">' + (fresh ? 'No account yet. It opens when this ship names yours its vendor, which says hello over ames.'
         : 'Opened ' + fmtTime(a.made) + (a.closed ? ' &middot; closed' : '')) + '</p>' +
       // one Stripe Customer per ship, whether or not it ever subscribed
       (a.stripe_customer
@@ -441,10 +450,14 @@
     var left = Math.max(0, (l.limit || 0) - (l.usage_seen || 0));
     out += '<p>' + state + ' &middot; key <code>' + esc(l.hash) + '</code> on <code>' + esc(l.provider) + '</code>' +
       ' &middot; made ' + fmtTime(l.made) + '</p>';
-    out += '<table><thead><tr><th></th><th class="num">Provider dollars</th><th class="num">Customer dollars</th></tr></thead><tbody>' +
-      '<tr><td>Spent, as billed</td><td class="num">$' + esc(dollars(l.usage_seen)) + '</td><td class="num">$' + esc(dollars(Math.ceil((l.usage_seen || 0) * pct / 100))) + '</td></tr>' +
-      '<tr><td>Cap</td><td class="num">$' + esc(dollars(l.limit)) + '</td><td class="num">$' + esc(dollars(Math.ceil((l.limit || 0) * pct / 100))) + '</td></tr>' +
-      '<tr><td>Left under the cap</td><td class="num">$' + esc(dollars(left)) + '</td><td class="num">$' + esc(dollars(Math.ceil(left * pct / 100))) + '</td></tr>' +
+    // cell() carries each column's name, which a phone shows in place of
+    // the header row it hides
+    var money = function (what, prov) {
+      return '<tr>' + cell('', esc(what)) + cell('Provider', '$' + esc(dollars(prov)), 'num') +
+        cell('Customer', '$' + esc(dollars(Math.ceil((prov || 0) * pct / 100))), 'num') + '</tr>';
+    };
+    out += thead(['', { name: 'Provider dollars', num: true }, { name: 'Customer dollars', num: true }]) +
+      money('Spent, as billed', l.usage_seen) + money('Cap', l.limit) + money('Left under the cap', left) +
       '</tbody></table>';
     out += '<p class="muted">Last reconciled ' + fmtTime(l.checked) + (l.checked ? ' (' + esc(ageWord(l.checked)) + ')' : '') +
       '. The tick reads the key every ten minutes; the cap follows the balance at ' + esc(String(pct)) + ' percent.</p>';
@@ -453,15 +466,16 @@
     else if (lv) {
       var o = lv.openrouter || {};
       var drift = lv.unbilled || 0;
+      var line = function (what, html) { return '<tr>' + cell('', esc(what)) + cell(what, html, 'num') + '</tr>'; };
       out += '<h3>From the provider, read ' + esc(ageWord(lv.at)) + '</h3>' +
-        '<table><tbody>' +
-        '<tr><td>Usage now</td><td class="num">$' + esc(dollars(o.usage)) + '</td></tr>' +
-        '<tr><td>Today / this week / this month</td><td class="num">$' + esc(dollars(o.usage_daily)) + ' / $' + esc(dollars(o.usage_weekly)) + ' / $' + esc(dollars(o.usage_monthly)) + '</td></tr>' +
-        '<tr><td>Cap on the key</td><td class="num">$' + esc(dollars(o.limit)) + '</td></tr>' +
-        '<tr><td>Provider says remaining</td><td class="num">' + (o.limit_remaining == null ? '<span class="muted">no cap</span>' : '$' + esc(dollars(o.limit_remaining))) + '</td></tr>' +
-        '<tr><td>Disabled at the provider</td><td class="num">' + (o.disabled ? '<span class="neg">yes</span>' : 'no') + '</td></tr>' +
-        '<tr><td>Not yet billed</td><td class="num">' + (drift > 0 ? '<span class="neg">$' + esc(dollars(drift)) + ' (bills $' + esc(dollars(Math.ceil(drift * pct / 100))) + ' at the next reconcile)</span>' : '$0.00') + '</td></tr>' +
-        '<tr><td>Key made / last changed</td><td class="num">' + fmtTime(o.created_at) + ' / ' + fmtTime(o.updated_at) + '</td></tr>' +
+        '<table class="pairs"><tbody>' +
+        line('Usage now', '$' + esc(dollars(o.usage))) +
+        line('Today / this week / this month', '$' + esc(dollars(o.usage_daily)) + ' / $' + esc(dollars(o.usage_weekly)) + ' / $' + esc(dollars(o.usage_monthly))) +
+        line('Cap on the key', '$' + esc(dollars(o.limit))) +
+        line('Provider says remaining', o.limit_remaining == null ? '<span class="muted">no cap</span>' : '$' + esc(dollars(o.limit_remaining))) +
+        line('Disabled at the provider', o.disabled ? '<span class="neg">yes</span>' : 'no') +
+        line('Not yet billed', drift > 0 ? '<span class="neg">$' + esc(dollars(drift)) + ' (bills $' + esc(dollars(Math.ceil(drift * pct / 100))) + ' at the next reconcile)</span>' : '$0.00') +
+        line('Key made / last changed', fmtTime(o.created_at) + ' / ' + fmtTime(o.updated_at)) +
         '</tbody></table>';
     }
     var debits = ((d && d.ledger) || []).filter(function (r) { return r.kind === 'debit' && r.mode === 'lease'; });
@@ -539,7 +553,7 @@
     return out + '</select></div><div class="field"><label>&nbsp;</label>' +
       '<button data-save-lease="1">Save</button></div></div></div>';
   }
-  function payments(st, plans, log, editing, provs, refunds) {
+  function payments(st, plans, log, editing, provs, refunds, me) {
     var s = st || {};
     var pub = s.public_url || '';
     var hook = (pub || 'your public URL') + '/apps/armillary/hooks/stripe';
@@ -588,16 +602,28 @@
     var cur = editing ? (plans.filter(function (p) { return p.id === editing; })[0] || null) : null;
     out += planForm(cur);
     out += leaseSetting(s, provs);
-    out += ownUse(s);
+    out += ownUse(s, me);
     out += refundsCard(refunds || []);
     out += ringCard('Recent Stripe outcomes', 'stripe.', log);
     out += ringCard('Recent BTCPay outcomes', 'btcpay.', log);
     return out;
   }
   // whether this ship pays for its own use when it is its own customer
-  function ownUse(s) {
+  // .me is this ship's account read: who it buys from and who it is.
+  // Running your own inference takes the three lines below, each said
+  // done or not, and one button sets the vendor and mints a fresh key.
+  function ownUse(s, me) {
+    me = me || {};
+    var self = me.self || '';
+    var mine = !!self && me.vendor === self;
+    var step = function (ok, text) { return '<li>' + (ok ? '<span class="pos">done</span> ' : '<span class="muted">to do</span> ') + text + '</li>'; };
     return '<div class="card"><h2>Your own use</h2>' +
       '<p class="muted">For running your own inference: with this ship as its own vendor, calls on its own keys need no balance and are not charged, and its own searches neither. Leave it off to test the payment rails on yourself.</p>' +
+      '<ul class="steps">' +
+      step(mine, 'This ship is its own vendor' + (mine || !self ? '' : ' <button data-use-this-ship="' + esc(self) + '">Use this ship</button>')) +
+      step(!!s.public_url, 'A public URL your phone can reach (Stripe card above)') +
+      step(!!s.own_free, 'My own ship is not charged') +
+      '</ul>' +
       '<div class="inline"><div class="field"><label><input id="own-free" type="checkbox"' + (s.own_free ? ' checked' : '') + '> My own ship is not charged</label></div>' +
       '<div class="field"><button data-save-own="1">Save</button></div></div></div>';
   }
@@ -606,12 +632,13 @@
   function refundsCard(rows) {
     if (!rows.length) return '';
     var out = '<div class="card"><h2>Refunds due</h2>' +
-      '<p class="muted">A payment that landed on an account as it was deleted. Refund it from the invoice on BTCPay Server, then mark it done.</p><table><tr><th>Invoice</th><th>Amount</th><th>When</th><th></th></tr>';
+      '<p class="muted">A payment that landed on an account as it was deleted. Refund it from the invoice on BTCPay Server, then mark it done.</p>' +
+      thead(['Invoice', { name: 'Amount', num: true }, 'When', '']);
     rows.forEach(function (r) {
-      out += '<tr><td><code>' + esc(r.id) + '</code></td><td>' + '$' + esc(dollars(r.amount)) + '</td>' +
-        '<td>' + fmtTime(r.at) + '</td><td><button data-refund-done="' + esc(r.id) + '">Done</button></td></tr>';
+      out += '<tr>' + cell('Invoice', '<code>' + esc(r.id) + '</code>') + cell('Amount', '$' + esc(dollars(r.amount)), 'num') +
+        cell('When', fmtTime(r.at)) + cell('', '<button data-refund-done="' + esc(r.id) + '">Done</button>') + '</tr>';
     });
-    return out + '</table></div>';
+    return out + '</tbody></table></div>';
   }
   // the last ten ring rows whose op starts with one rail's name
   function ringCard(title, prefix, log) {
@@ -887,6 +914,8 @@
   }
   // .mine: the customer's own rows, which a pending one can cancel; the
   // owner's view of an account shows them without the button
+  // a vendor's checkout url, if it is a web address, else ''
+  function webUrl(u) { return /^https?:\/\//i.test(String(u || '')) ? String(u) : ''; }
   function checkoutRows(obj, mine) {
     var keys = Object.keys(obj || {});
     if (!keys.length) return '';
@@ -894,7 +923,7 @@
       thead(['Order', 'Rail', { name: 'Amount', num: true }, 'Status', '']);
     keys.forEach(function (n) {
       var c = obj[n] || {};
-      var open = c.url ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">Open</a>' : '';
+      var open = webUrl(c.url) ? '<a href="' + esc(webUrl(c.url)) + '" target="_blank" rel="noopener">Open</a>' : '';
       var cancel = mine && c.status === 'pending'
         ? ' <button data-cancel-checkout="' + esc(n) + '">Cancel</button>' : '';
       out += '<tr>' +
@@ -996,6 +1025,12 @@
     if (!vendor) return out + '<p class="muted">Name a vendor ship above to open an account on it. Talon sets this for you when you add the Armillary provider.</p>' +
       '<p class="muted">Running a service of your own instead? Switch on Provider mode in the header.</p>';
     myCheckouts = (d && d.checkouts) || {};
+    // a ship that is its own vendor with its own use free pays nothing,
+    // so a balance and a top-up would only confuse
+    if (d && d.free) {
+      return out + '<div class="card"><h2>Your own inference</h2><p>This ship serves its own models and nothing is charged. Your apps use the providers set up under Provider mode.</p></div>' +
+        usageCard(d);
+    }
     out += '<div class="card"><h2>Balance</h2>' +
       '<p style="font-size:1.6rem;margin:.2rem 0">$' + signed(d && d.balance) + '</p>' +
       '<p class="muted">' + freshness(d) + '</p>' +
@@ -1037,7 +1072,7 @@
   function myKeys(keys, cfg, minted, acct) {
     var out = '<h1>Keys</h1><div class="card">';
     if (minted) {
-      out += '<div class="secret"><p>Copy this now. The vendor keeps only a salted hash of it.</p>' +
+      out += '<div class="secret"><p>Copy this now. The vendor keeps only a salted hash of it; your ship keeps it for your apps, under Inference config below.</p>' +
         '<code>' + esc(minted.secret) + '</code>' +
         '<p><button data-dismiss="1">Done</button></p></div>';
     }
@@ -1069,7 +1104,10 @@
     return out + '</div>';
   }
   function buyCatalog(rows, filter) {
-    var kept = rankModels(filter, rows || []);
+    // a ship that is its own vendor reads its whole catalog here: only
+    // the rows switched on are offered
+    rows = (rows || []).filter(function (r) { return r.enabled !== false; });
+    var kept = rankModels(filter, rows);
     var out = '<h1>Catalog</h1><div class="card">' +
       '<div class="field"><label for="buy-filter">Filter</label>' +
       '<input id="buy-filter" type="search" value="' + esc(filter || '') + '" placeholder="search: opus 5, gpt mini, kimi" autocomplete="off" spellcheck="false"></div>' +
@@ -1191,18 +1229,20 @@
     }
     function fail(e) { tell(e.message, true, '<p>You can close this tab.</p>'); done(); }
     function land(p) {
-      if (!p.url || p.status === 'refused' || p.status === 'unavailable') {
+      // the url is the vendor's: only a web address is followed, never a
+      // javascript: one, which would run here with this ship's login
+      if (!webUrl(p.url) || p.status === 'refused' || p.status === 'unavailable') {
         tell(who + ' refused the checkout: ' + (p.note || p.status), true, '<p>You can close this tab.</p>');
         return done();
       }
       if (tab) {
         tell('Checkout ready; opening it');
-        tab.location.replace(p.url);
+        tab.location.replace(webUrl(p.url));
         say('Checkout opened in a new tab');
       } else {
         // a blocker refused even the tab opened in the click: a link is
         // a click of its own, which no blocker refuses
-        statusEl.innerHTML = 'Checkout ready: <a href="' + esc(p.url) + '" target="_blank" rel="noopener">open it</a>';
+        statusEl.innerHTML = 'Checkout ready: <a href="' + esc(webUrl(p.url)) + '" target="_blank" rel="noopener">open it</a>';
         statusEl.className = 'status';
       }
       watch(p.nonce);
@@ -1230,9 +1270,14 @@
   }
   // +busy: the status line saying .msg with its seconds counting, until
   // the function it answers is called
+  // the seconds sit outside the screen reader's hearing: the message is
+  // said once, not once a second
   function busy(msg) {
     var t0 = Date.now();
-    function show() { say(msg + ' (' + Math.round((Date.now() - t0) / 1000) + ' s)'); }
+    statusEl.className = 'status';
+    statusEl.innerHTML = esc(msg) + ' <span aria-hidden="true"></span>';
+    var tick = statusEl.lastChild;
+    function show() { tick.textContent = '(' + Math.round((Date.now() - t0) / 1000) + ' s)'; }
     show();
     var iv = setInterval(show, 1000);
     return function () { clearInterval(iv); };
@@ -1337,15 +1382,15 @@
   // the settings PUT replaces the document whole, so a save from one
   // card carries the other card's stored fields back with it. Every
   // secret goes out blank, which is what keeps what the ship holds.
+  // The Stripe card's own fields (mode, public URL) go only with that
+  // card's save, so saving another card never carries an unsaved edit.
   function saveSettings(extra) {
     var was = st0 || {};
-    var modeEl = view.querySelector('input[name="st-mode"]:checked');
-    var pubEl = document.getElementById('st-pub');
     var body = {
       markup_pct: was.markup_pct || 130,
       min_topup: was.min_topup === undefined ? 5000000 : was.min_topup,
-      public_url: pubEl ? pubEl.value.trim() : (was.public_url || ''),
-      mode: modeEl ? modeEl.value : (was.mode || 'stub'),
+      public_url: was.public_url || '',
+      mode: was.mode || 'stub',
       refuse_comets: !!was.refuse_comets,
       stripe_key: '',
       stripe_webhook_secret: '',
@@ -1389,7 +1434,17 @@
     return function (html) { if (location.hash === at) view.innerHTML = html; };
   }
   var refreshing = false, again = false;
+  // the nav link of the view showing says so to a screen reader
+  function markNav() {
+    var here = (location.hash || '#account').split('/')[0];
+    document.querySelectorAll('header nav a').forEach(function (a) {
+      if (a.getAttribute('href') === here) a.setAttribute('aria-current', 'page');
+      else a.removeAttribute('aria-current');
+    });
+  }
   function refresh() {
+    dirty = false;
+    if (typeof document !== 'undefined' && document.querySelectorAll) markNav();
     if (refreshing) { again = true; return; }
     refreshing = true;
     var r = route(location.hash);
@@ -1416,7 +1471,9 @@
           return api('/log').catch(function () { return []; }).then(function (lg) {
             return api('/providers').catch(function () { return []; }).then(function (pv) {
               return api('/refunds-due').catch(function () { return []; }).then(function (rd) {
-                draw(payments(st, pl || [], lg || [], planEditing, pv || [], rd || []));
+                return api('/account').catch(function () { return {}; }).then(function (me) {
+                  draw(payments(st, pl || [], lg || [], planEditing, pv || [], rd || [], me || {}));
+                });
               });
             });
           });
@@ -1507,7 +1564,9 @@
 
   view.addEventListener('input', function (ev) {
     var el = ev.target;
-    if (el.id === 'cat-filter') { catFilter = el.value; view.innerHTML = catalog(catRows, catFilter); var f = document.getElementById('cat-filter'); if (f) { f.focus(); f.setSelectionRange(f.value.length, f.value.length); } }
+    // the switches and prices typed so far go into catRows before the
+    // table is drawn again from it
+    if (el.id === 'cat-filter') { readCatalog(); catFilter = el.value; view.innerHTML = catalog(catRows, catFilter); var f = document.getElementById('cat-filter'); if (f) { f.focus(); f.setSelectionRange(f.value.length, f.value.length); } }
     else if (el.id === 'buy-filter') { buyFilter = el.value; view.innerHTML = buyCatalog(buyRows, buyFilter); var bf = document.getElementById('buy-filter'); if (bf) { bf.focus(); bf.setSelectionRange(bf.value.length, bf.value.length); } }
     else if (el.id === 'acct-search') { acctSearch = el.value; }
     if (el.dataset.tier) sgDraft.tiers[el.dataset.tier] = el.value;
@@ -1530,7 +1589,9 @@
       ev.preventDefault();
       if (!items.length) return;
       var next = ev.key === 'ArrowDown' ? Math.min(items.length - 1, at + 1) : Math.max(0, at - 1);
-      items.forEach(function (li, i) { li.classList.toggle('on', i === next); });
+      // the highlight is the screen reader's too: the box names the option
+      items.forEach(function (li, i) { li.classList.toggle('on', i === next); li.setAttribute('aria-selected', String(i === next)); });
+      el.setAttribute('aria-activedescendant', items[next].id);
       items[next].scrollIntoView({ block: 'nearest' });
     } else if (ev.key === 'Enter' && !list.hidden && at >= 0) {
       ev.preventDefault();
@@ -1574,7 +1635,8 @@
     } else if (d['import']) {
       say('importing from ' + d['import']);
       post('/providers/' + seg(d['import']) + '/import').then(function (r) {
-        tests[d['import']] = { text: 'added ' + r.added + (r.zdr != null ? '; ' + r.zdr + ' tagged zdr from its ZDR list' : ''), bad: false };
+        tests[d['import']] = { text: 'added ' + r.added + ', all switched off: switch on what you sell under Catalog' +
+          (r.zdr ? '; ' + r.zdr + ' keep no data (ZDR)' : '') + (r.transcription ? '; ' + r.transcription + ' speech to text' : ''), bad: false };
         refresh();
       }).catch(function (e) { tests[d['import']] = { text: e.message, bad: true }; refresh(); });
     } else if (d.edit) {
@@ -1582,7 +1644,7 @@
     } else if (d.cancelEdit) {
       editing = null; refresh();
     } else if (d.drop) {
-      if (!confirm('Delete the provider "' + d.drop + '"? Its catalog rows stop answering.')) return;
+      if (!confirm('Delete the provider "' + d.drop + '"? Its catalog rows are deleted with it.')) return;
       api('/providers/' + seg(d.drop), { method: 'DELETE' }).then(later).catch(function (e) { say(e.message, true); });
     } else if (d.saveProvider !== undefined) {
       var body = providerForm();
@@ -1647,6 +1709,12 @@
         held = [statusEl.innerHTML, statusEl.className];
         later();
       }).catch(function (e) { stopSave(); say(e.message, true); });
+    } else if (d.saveBraveCost) {
+      var bc = Number((document.getElementById('brave-cost') || {}).value);
+      if (!(bc >= 0)) { say('price: dollars per 1,000 searches', true); return; }
+      post('/brave', { cost: Math.round(bc * 1000) }, 'PUT')
+        .then(function () { say('Brave price saved'); later(); })
+        .catch(function (e) { say(e.message, true); });
     } else if (d.saveBrave || d.clearBrave) {
       var bk = document.getElementById('brave-key');
       var braveBody = d.clearBrave ? { key: null } : { key: bk ? bk.value.trim() : '' };
@@ -1700,10 +1768,12 @@
       say('asking the vendor for a lease');
       // the card draws from the stored view, so the vendor is read
       // once more before the redraw
-      post('/lease').then(function () {
-        return api('/account?fresh=1').catch(function () { return null; });
-      }).then(function () { say('lease in hand'); refresh(); })
-        .catch(function (e) { say(e.message, true); refresh(); });
+      post('/lease').then(function (r) {
+        var pending = r && r.pending;
+        return api('/account?fresh=1').catch(function () { return null; }).then(function () {
+          say(pending ? 'asked; the vendor is still answering' : 'lease in hand'); refresh();
+        });
+      }).catch(function (e) { say(e.message, true); refresh(); });
     } else if (d.dropMyLease) {
       if (!confirm('Drop the lease? The provider key is deleted and clients fall back to the proxy.')) return;
       api('/lease', { method: 'DELETE' }).then(function () {
@@ -1713,9 +1783,13 @@
     } else if (d.saveStripe) {
       // a blank secret keeps what the ship holds, which is what an
       // untouched field sends
+      var modeEl = view.querySelector('input[name="st-mode"]:checked');
+      var pubEl = document.getElementById('st-pub');
       saveSettings({
         stripe_key: document.getElementById('st-key').value.trim(),
         stripe_webhook_secret: document.getElementById('st-hook').value.trim(),
+        mode: modeEl ? modeEl.value : ((st0 || {}).mode || 'stub'),
+        public_url: pubEl ? pubEl.value.trim() : ((st0 || {}).public_url || ''),
       }).then(function () { say('saved'); later(); })
         .catch(function (e) { say(e.message, true); });
     } else if (d.refundDone) {
@@ -1730,6 +1804,15 @@
         btcpay_webhook_secret: document.getElementById('bt-hook').value.trim(),
       }).then(function () { say('saved'); later(); })
         .catch(function (e) { say(e.message, true); });
+    } else if (d.useThisShip) {
+      // the vendor first, then a key minted by it: a key from the old
+      // vendor does not work on this ship's own proxy
+      say('setting this ship as its own vendor');
+      post('/vendor', { ship: d.useThisShip }, 'PUT').then(function () {
+        say('minting a key from this ship');
+        return post('/keys', { name: 'this ship' });
+      }).then(function () { say('this ship is its own vendor, with a key of its own'); refresh(); })
+        .catch(function (e) { say(e.message, true); refresh(); });
     } else if (d.saveOwn) {
       var of = document.getElementById('own-free');
       saveSettings({ own_free: !!(of && of.checked) })
@@ -1824,7 +1907,13 @@
   });
 
   window.addEventListener('hashchange', refresh);
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
+  // an edit not yet saved holds every automatic redraw off: coming back
+  // to the tab, the minute's refresh and the beacon. A save, or moving
+  // to another view, redraws and clears it.
+  var dirty = false;
+  function idle() { return !document.hidden && !typing() && !dirty; }
+  view.addEventListener('change', function (ev) { if (!/filter|search/.test(ev.target.id || '')) dirty = true; });
+  document.addEventListener('visibilitychange', function () { if (idle()) refresh(); });
 
   // ---- the beacon stream, read raw (the initial event is named "old
   // /rev", which EventSource cannot subscribe to; it carries the current
@@ -1838,9 +1927,9 @@
     return !!(el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') && view.contains(el));
   }
   function bumped() {
-    if (typing()) return;
+    if (!idle()) return;
     clearTimeout(timer);
-    timer = setTimeout(function () { if (!typing()) refresh(); }, 300);
+    timer = setTimeout(function () { if (idle()) refresh(); }, 300);
   }
   async function stream() {
     for (;;) {
@@ -1894,6 +1983,7 @@
     var b = document.getElementById('mode');
     b.className = 'mode' + (providerMode ? ' on' : '');
     b.textContent = providerMode ? 'Provider mode: on' : 'Provider mode';
+    b.setAttribute('aria-pressed', String(providerMode));
     var r = route(location.hash);
     if (!providerMode && VENDOR_VIEWS[r.name]) location.hash = '#account';
   }
@@ -1916,5 +2006,5 @@
   stream();
   // the minute's refresh waits while a field has focus: a redraw would
   // take the box from under the owner's typing
-  setInterval(function () { if (!document.hidden && !typing()) refresh(); }, 60000);
+  setInterval(function () { if (idle()) refresh(); }, 60000);
 })();

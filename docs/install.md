@@ -26,5 +26,6 @@ That is the whole install. Your ship now serves `/apps/armillary`, and Talon can
 
 - **Get Apps shows nothing for ~ricsul-bilwyt.** Your ship cannot reach ricsul over ames yet. Wait a minute and search again; a fresh ship sometimes needs a moment to find a new peer.
 - **The card says "Not on this ship".** The desk is installed but its permissions are not approved yet. Open the bell on the Grubbery home page, or go to Sandbox Settings, and approve Armillary.
+- **Approve every permission it asks for.** Armillary needs all of them: timers, outbound HTTP, the user groups and its link. With one refused, the fibers that use it stop rather than carry on without it, and the app hangs where that permission is first needed.
 - **The balance stays empty after a payment.** A card payment lands within a minute of Stripe confirming it; a bitcoin payment needs one confirmation, usually ten to twenty minutes. Press Refresh on the card. If it still has not landed after that, tell the vendor with the time you paid and the last four digits of the card, or the invoice id.
 - **A request answers "balance is empty".** Top up from the card. Your balance is charged by the vendor's ten-minute reconcile, so a run of requests can overshoot slightly before the warning shows.

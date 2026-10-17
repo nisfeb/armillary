@@ -61,6 +61,7 @@ input.tags { width: 10em; }
 .field { display: inline-block; margin: 0 .8rem .5rem 0; }
 .field label { display: block; color: var(--muted); font-size: .85em; }
 .field input { display: block; }
+.field input[type=radio], .field input[type=checkbox] { display: inline; width: auto; margin-right: .3em; }
 .field .rails { display: block; padding: .3rem 0; }
 .field .rails label { display: inline; margin-right: .8rem; font-size: 1em; color: var(--ink); }
 .field .rails input { display: inline; width: auto; }
@@ -121,4 +122,5 @@ a { color: var(--ink); }
   input, textarea { font-size: 16px; }
   .field { display: block; margin: 0 0 .5rem; }
   .field input { width: 100%; }
+  .field input[type=radio], .field input[type=checkbox] { width: auto; }
 }

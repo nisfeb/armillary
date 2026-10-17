@@ -296,6 +296,39 @@
     (expect-eq !>(`(unit json)`~) !>((decision-answers:arm qs (reply '{"u":{"noul":0.2}}'))))
     (expect-eq !>(`(unit json)`~) !>((decision-answers:arm qs (reply 'I cannot decide.'))))
   ==
+::  a choice's probabilities must be numbers from 0 to 1 on its options,
+::  empty criteria leave the options list in charge, and a type the
+::  decisions API lacks is refused
+::
+++  test-decision-answer-strict
+  =/  q=json  (jo '{"type":"choice","criteria":{"circumstance":"a","feeling":"b"}}')
+  =/  qo=json  (jo '{"type":"choice","criteria":{},"options":["yes","no"]}')
+  ;:  weld
+    (expect-eq !>(`(unit json)`~) !>((decision-answer:arm q (jo '{"choice":"feeling","probabilities":{"anger":"high"}}'))))
+    (expect-eq !>(`(unit json)`~) !>((decision-answer:arm q (jo '{"choice":"feeling","probabilities":{"feeling":1.5}}'))))
+    (expect-eq !>(`(unit json)`~) !>((decision-answer:arm qo (jo '{"choice":"maybe"}'))))
+    (expect !>(!=(~ (decision-answer:arm qo (jo '{"choice":"yes"}')))))
+    (expect-eq !>(`(unit json)`~) !>((decision-answer:arm (jo '{"type":"rank"}') (jo '{"choice":"a"}'))))
+    (expect-eq !>(`(unit json)`~) !>((decision-answer:arm (jo '{}') (jo '{"choice":"a"}'))))
+  ==
+::  one listing naming an id twice, or both of OpenRouter's naming it,
+::  imports it once
+::
+++  test-merge-import-duplicates
+  =/  fresh=(list model-row:arm)
+    :~  ['x' 'stub' 'x' 0 0 0 0 | ~]
+        ['x' 'stub' 'x' 0 0 0 0 | ~]
+        ['y' 'stub' 'y' 0 0 0 0 | ~]
+    ==
+  =/  got=(list model-row:arm)  (merge-import:arm ~ fresh)
+  (expect-eq !>(`(list @t)`~['x' 'y']) !>((turn got |=(r=model-row:arm id.r))))
+::  a prompt with a line break cannot open a field of its own
+::
+++  test-audio-form-flat
+  =/  got  (audio-form:arm (jo '{"model":"m","prompt":"a\\r\\n--x\\r\\nb","input_audio":{"data":"aGk=","format":"wav"}}'))
+  =/  body=@t  ?~(got '' q.body.u.got)
+  =/  want=tape  (trip (rap 3 'name="prompt"' '\0d\0a\0d\0a' 'a--xb' '\0d\0a' ~))
+  (expect !>(!=(~ (find want (trip body)))))
 ++  test-unit-interval
   ;:  weld
     (expect !>((levy `(list @t)`~['0' '1' '0.25' '1.0' '1.000' '0.'] unit-interval:arm)))
@@ -322,6 +355,7 @@
     (expect-eq !>(`(unit [@ud @ud])`[~ 10 5]) !>((read-usage:arm body)))
     (expect-eq !>(`(unit [@ud @ud])`[~ 9 0]) !>((read-usage:arm '{"usage":{"prompt_tokens":9}}')))
     (expect-eq !>(`(unit [@ud @ud])`~) !>((read-usage:arm '{"choices":[]}')))
+    (expect-eq !>(`(unit [@ud @ud])`[~ 83 30]) !>((read-usage:arm '{"usage":{"input_tokens":83,"output_tokens":30}}')))
   ==
 ++  test-read-error
   ;:  weld
@@ -742,12 +776,12 @@
 ++  test-en-tombstone
   =/  j=json  (en-tombstone:arm ~wex 'abc' & '' t0)
   ;:  weld
-    (expect-eq !>('~wex') !>((gs:arm j 'ship')))
+    (expect-eq !>('') !>((gs:arm j 'ship')))
     (expect-eq !>('abc') !>((gs:arm j 'nonce')))
     (expect !>((gb:arm j 'deleted')))
     (expect-eq !>('') !>((gs:arm j 'why')))
     (expect-eq !>(`(unit @da)`[~ t0]) !>((gt:arm j 'at')))
-    (expect-eq !>(5) !>(?:(?=([%o *] j) ~(wyt by p.j) 0)))
+    (expect-eq !>(4) !>(?:(?=([%o *] j) ~(wyt by p.j) 0)))
   ==
 ::  ==  the account view
 ::
@@ -920,7 +954,8 @@
 ::  ==  compaction
 ::
 ::  three months of rows, two kinds, plus one row inside the window and
-::  one summary already written. Only the first four fold.
+::  one credit summary written before charges alone folded. Only the
+::  two old charges fold; the credits stay, refs and all.
 ::
 ++  old-rows
   ^-  (list [name=@ta =row:arm])
@@ -947,16 +982,31 @@
   =/  got  (compact-fold:arm old-rows ~2026.6.1)
   =/  refs=(list @t)  (turn fresh.got |=(r=row:arm ref.r))
   ;:  weld
-    (expect-eq !>(`@ud`3) !>((lent fresh.got)))
-    (expect-eq !>(`@ud`4) !>((lent stale.got)))
-    %+  expect-eq
-      !>(`(list @t)`~['compact-2026-01-credit' 'compact-2026-02-debit' 'compact-2026-03-debit'])
-    !>(refs)
-    (expect-eq !>(`@ud`150) !>(amount:(snag 0 fresh.got)))
-    (expect-eq !>('2 rows') !>(note:(snag 0 fresh.got)))
-    (expect-eq !>(`@ud`30) !>(amount:(snag 1 fresh.got)))
-    (expect-eq !>(`@ud`20) !>(cost:(snag 1 fresh.got)))
-    (expect-eq !>(`@da`~2026.2.1) !>(at:(snag 1 fresh.got)))
+    (expect-eq !>(`(list @t)`~['compact-2026-02-debit' 'compact-2026-03-debit']) !>(refs))
+    (expect-eq !>(`(set @ta)`(silt ~['c' 'd'])) !>((silt stale.got)))
+    (expect-eq !>(`@ud`30) !>(amount:(snag 0 fresh.got)))
+    (expect-eq !>(`@ud`20) !>(cost:(snag 0 fresh.got)))
+    (expect-eq !>('1 rows') !>(note:(snag 0 fresh.got)))
+    (expect-eq !>(`@da`~2026.2.1) !>(at:(snag 0 fresh.got)))
+  ==
+::  a month's summary folds again with that month's newly old charges,
+::  so the month converges to one row; a summary with nothing new beside
+::  it is left alone, and so are two passes in a row
+::
+++  test-compact-fold-converges
+  =/  rows=(list [name=@ta =row:arm])
+    :~  ['s' [%debit 40 30 '' 0 0 '' '' 'compact-2026-02-debit' '3 rows' ~2026.2.1]]
+        ['g' [%debit 5 4 'x' 1 1 'lease' '' 'lease-9' '' ~2026.2.27]]
+        ['t' [%debit 8 6 '' 0 0 '' '' 'compact-2026-01-debit' '2 rows' ~2026.1.1]]
+    ==
+  =/  got  (compact-fold:arm rows ~2026.6.1)
+  =/  again  (compact-fold:arm (weld (turn fresh.got |=(r=row:arm [`@ta`'n' r])) `(list [name=@ta =row:arm])`~[(snag 2 rows)]) ~2026.6.1)
+  ;:  weld
+    (expect-eq !>(`@ud`1) !>((lent fresh.got)))
+    (expect-eq !>(`(set @ta)`(silt ~['s' 'g'])) !>((silt stale.got)))
+    (expect-eq !>(`@ud`45) !>(amount:(snag 0 fresh.got)))
+    (expect-eq !>('4 rows') !>(note:(snag 0 fresh.got)))
+    (expect-eq !>(`@ud`0) !>((lent fresh.again)))
   ==
 ++  test-compact-fold-keeps-the-balance
   ::  a fold moves nothing: the sum over the summaries plus the rows it

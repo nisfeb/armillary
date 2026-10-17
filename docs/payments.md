@@ -41,17 +41,18 @@ In live mode the `stripe-signature` header is checked always: HMAC-SHA256 over `
 
 Stub mode is the one place a blank signing secret is allowed, because the stub runs on the same machine and nothing else can reach the endpoint.
 
-Seven event types do anything:
+Eight event types do anything:
 
 | event | what happens |
 |---|---|
-| `checkout.session.completed` | read the session, credit `amount_subtotal` cents times 10.000, keep its PaymentIntent on the checkout row, mark the row paid, and on a subscription session store the Stripe customer and subscription ids |
+| `checkout.session.completed` | read the session, credit `amount_subtotal` cents times 10.000, keep its PaymentIntent on the checkout row, and mark the row paid. A subscription session credits nothing, since its first invoice credits the first period, and stores the Stripe customer and subscription ids |
 | `checkout.session.async_payment_succeeded` | the same, for a payment method that settles later |
 | `checkout.session.async_payment_failed` | mark the checkout row `failed`. Nothing was credited, so nothing comes off |
 | `invoice.paid` | read the invoice, find the account by its Stripe customer id, credit the plan's `credit`, and set `renews` from the invoice's period end |
 | `customer.subscription.deleted` | find the account holding that subscription id and clear its subscription |
 | `charge.dispute.created` | read the dispute, find the ship by its PaymentIntent, and take the money back off the ledger |
 | `charge.dispute.closed` | note the dispute's final status in the ring and change nothing |
+| `charge.refunded` | read the charge back, find the ship by its PaymentIntent, and take off what was refunded since the last time, at most what the payment credited |
 
 The credit follows `amount_subtotal`, not `amount_total`. Tax collected on a sale is the state's money, not the customer's balance, so a session that one day carries tax credits the goods and nothing else.
 
@@ -104,18 +105,25 @@ On 2026-09-21 at 19:00Z the production vendor `~nisfeb` sold its first five doll
 
 | field | what it is |
 |---|---|
-| `stripe_key` | a restricted key, `rk_live_...` or `rk_test_...`, with write on Checkout Sessions, Customers, Products, Prices, Subscriptions and the Billing Portal, and read on Invoices and Disputes. A full secret key works and is a bigger blast radius. Masked on every read; a blank field on save keeps what is stored, an explicit `null` clears it |
+| `stripe_key` | a restricted key, `rk_live_...` or `rk_test_...`, with write on Checkout Sessions, Customers, Products, Prices, Subscriptions and the Billing Portal, and read on Invoices, Charges and Disputes. A full secret key works and is a bigger blast radius. Masked on every read; a blank field on save keeps what is stored, an explicit `null` clears it |
 | `stripe_webhook_secret` | the endpoint's signing secret, the same rules. Live mode refuses to save without it once a key is set |
 | `stripe_url` | the API base, `https://api.stripe.com` unless the gate points it at `scripts/fake-stripe.py` |
 | `public_url` | where a customer's browser reaches this ship, which is what the return url and the webhook url are built from |
 | `min_topup` | the smallest custom amount, five dollars by default |
-| `mode` | `stub` or `live`. Stub mode never calls Stripe at all |
+| `mode` | `stub` or `live`. Stub mode never calls Stripe at all, and credits only this ship's own account |
+| `stub_open` | stub mode credits other ships too; for the two-ship test rig only (version 33) |
+| `own_free` | this ship's own keys are not charged when it is its own vendor (version 33) |
+| `btcpay_minutes` | how long a bitcoin checkout row and its BTCPay invoice stay open, 60 by default (the invoice follows it since version 36) |
 
 Neither secret ever appears unmasked on a read route, in `/tr/log`, in `/tr/inbox`, or in the account view.
 
 ## The product
 
 There is one product: Talon inference credit, bought in dollars and spent on any model from any connected provider at the vendor's markup, 130 percent of the provider's own price by default, metered per token. A customer buys it as a top-up of $5, $10, $50 or any amount from $5, and it appears on the Stripe page, the receipt and the card statement as "Talon inference credit". The catalog on the vendor page lists the models on offer with their prices, filled at the markup on import, and the same rate applies whether a request goes through the vendor's proxy or straight to the provider under a lease. Subscription plans are supported by the code but the product does not use them.
+
+Brave searches through the vendor are charged the same way (version 32): each answered search at the vendor's cost for it, Brave's list price unless the vendor sets its own, times the markup.
+
+Since version 36 a payment is credited once however old it is: a credit or refund row is never folded by compaction, and a checkout already marked paid is never credited again. A dispute takes back at most what its payment credited, which leaves the tax out, and a refund made on Stripe (`charge.refunded`) takes back the credit it undoes, partial refunds included. A subscription's every period, the first too, is credited by its invoice at the plan's credit.
 
 ## Plans
 
@@ -136,12 +144,13 @@ A top-up plan needs nothing on Stripe: its checkout carries the amount inline. A
 | Subscriptions | write |
 | Refunds | write |
 | Invoices | read |
+| Charges | read |
 | Disputes | read |
 | Billing Portal | write |
 
    A full secret key works too; a restricted one is the smaller blast radius. Billing Portal is there for the self-serve portal that is still to come, and costs nothing to grant now.
 
-2. A webhook endpoint on the public URL, pointing at `<public_url>/apps/armillary/hooks/stripe`, subscribed to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `invoice.paid`, `customer.subscription.deleted`, `charge.dispute.created` and `charge.dispute.closed`.
+2. A webhook endpoint on the public URL, pointing at `<public_url>/apps/armillary/hooks/stripe`, subscribed to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `invoice.paid`, `customer.subscription.deleted`, `charge.dispute.created`, `charge.dispute.closed` and `charge.refunded`.
 3. That endpoint's signing secret, pasted into the Payments view. Live mode will not save without it.
 
 Without a public URL the return page still proves the whole flow: it verifies the session from the browser's own visit. The webhook is proven on the production ship, which is the register rule.

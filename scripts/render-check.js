@@ -64,10 +64,13 @@ is(r.braveCard({}).indexOf('no key set') > 0, 'a vendor without a key is told so
 var cat = [{ id: 'anthropic/claude-opus-4.1', provider: 'openrouter', enabled: true }, { id: 'anthropic/claude-opus-5', provider: 'openrouter', enabled: false },
   { id: 'openai/gpt-5-mini', provider: 'openrouter', enabled: true }];
 var hits = function (html) { return (html.match(/<code>[^<]+<\/code>/g) || []).map(function (c) { return c.slice(6, -7); }); };
-is(hits(r.buyCatalog(cat, 'opus 5'))[0] === 'anthropic/claude-opus-5', 'the buyer\'s filter finds opus 5 first');
-is(hits(r.buyCatalog(cat, 'gpt mini')).length === 1, 'and gpt mini alone');
-is(hits(r.buyCatalog(cat, 'pro')).length === 0, 'a word strewn through the provider\'s name is no match');
-is(hits(r.buyCatalog(cat, 'openrouter')).length === 3, 'the provider\'s name, whole, finds its models');
+// a vendor's public catalog carries no enabled field: every row is sold
+var pub = cat.map(function (x) { return { id: x.id, provider: x.provider }; });
+is(hits(r.buyCatalog(pub, 'opus 5'))[0] === 'anthropic/claude-opus-5', 'the buyer\'s filter finds opus 5 first');
+is(hits(r.buyCatalog(pub, 'gpt mini')).length === 1, 'and gpt mini alone');
+is(hits(r.buyCatalog(pub, 'pro')).length === 0, 'a word strewn through the provider\'s name is no match');
+is(hits(r.buyCatalog(pub, 'openrouter')).length === 3, 'the provider\'s name, whole, finds its models');
+is(hits(r.buyCatalog(cat, 'openrouter')).indexOf('anthropic/claude-opus-5') < 0, 'a ship\'s own row switched off is not offered');
 is(r.buyCatalog(cat, 'zzz').indexOf('No model fits') > 0, 'nothing fits nonsense, and says so');
 is(r.catalog(cat, 'opus 5').indexOf('1 of 3 rows') > 0 || r.catalog(cat, 'opus 5').indexOf('2 of 3 rows') > 0, 'the vendor\'s filter counts what fits');
 // a word a word in the id starts with ranks above one inside a word,
@@ -108,4 +111,12 @@ is(rcard.indexOf('typesafe/jev-1.13') > 0 && pickIds('tier-decision')[0] === 'ty
 var bcard = r.suggestedCard([{ id: 'a/b', enabled: true }]);
 var bsel = bcard.slice(bcard.indexOf('id="feat-orrery_browsing"'), bcard.indexOf('</select>', bcard.indexOf('id="feat-orrery_browsing"')));
 is(bsel.indexOf('value="zdr"') > 0 && bsel.indexOf('value="frontier"') < 0, 'the browsing reader can be put on the zdr tier only');
+var jsrow = r.checkoutRows({ n1: { url: 'javascript:alert(1)', status: 'pending', amount: 1 }, n2: { url: 'https://pay.example/x', status: 'pending', amount: 1 } });
+is(jsrow.indexOf('javascript:') < 0 && jsrow.indexOf('https://pay.example/x') > 0, 'a checkout url that is not a web address is never linked');
+var pay = r.payments({ public_url: 'https://x.io', own_free: false }, [], [], null, [], [], { vendor: '~nisfeb', self: '~syx' });
+is(pay.indexOf('data-use-this-ship="~syx"') > 0 && pay.indexOf('to do</span> My own ship') > 0, 'the own use card offers this ship and says what is left');
+var pay2 = r.payments({ public_url: 'https://x.io', own_free: true }, [], [], null, [], [], { vendor: '~syx', self: '~syx' });
+is(pay2.indexOf('data-use-this-ship') < 0 && (pay2.match(/class="pos">done/g) || []).length === 3, 'and says all three done when they are');
+var freeAcct = r.myAccount({ vendor: '~syx', self: '~syx', free: true, balance: 0, ledger: [] }, []);
+is(freeAcct.indexOf('Top up') < 0 && freeAcct.indexOf('nothing is charged') > 0, 'a free ship is offered no top-up');
 console.log('render-check ok');

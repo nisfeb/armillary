@@ -75,15 +75,38 @@
   =/  zeros=tape  (reap pad '0')
   (crip :(weld whole "." zeros digits))
 ::  +micro-of: a JSON number to microdollars. OpenRouter sends numbers,
-::  not strings, and a json %n carries its digits as text, so the same
-::  decimal reader serves. Anything past six places is truncated: a
-::  fraction of a microdollar is not money we can write down.
+::  not strings, and a json %n carries its text: decimals, and an
+::  exponent for a tiny cost (5e-7). A fraction of a microdollar rounds
+::  up, so a cost is never charged below what it was. A negative number
+::  is refused, except zero written as -0.
 ::
 ++  micro-of
   |=  j=json
   ^-  (unit @ud)
   ?.  ?=([%n *] j)  ~
-  (de-dec `@t`p.j 6)
+  =/  t=tape  (cass (trip p.j))
+  =/  neg=?  &(?=(^ t) =('-' i.t))
+  =?  t  neg  (slag 1 `tape`t)
+  =/  at-e=(unit @ud)  (find "e" t)
+  =/  man=tape  ?~(at-e t (scag u.at-e t))
+  =/  ex=tape   ?~(at-e "" (slag +(u.at-e) t))
+  =/  down=?  &(?=(^ ex) =('-' i.ex))
+  =?  ex  &(?=(^ ex) |(=('-' i.ex) =('+' i.ex)))  (slag 1 `tape`ex)
+  =/  e=(unit @ud)  ?~(at-e `0 (rush (crip ex) dem))
+  ?~  e  ~
+  =/  dot=(unit @ud)  (find "." man)
+  =/  ds=tape  ?~(dot man (weld (scag u.dot man) (slag +(u.dot) man)))
+  =/  k=@ud  ?~(dot 0 (sub (lent man) +(u.dot)))
+  ?~  ds  ~
+  ?.  (levy `tape`ds |=(c=@ &((gte c '0') (lte c '9'))))  ~
+  =/  d=@ud  (rash (crip ds) dem)
+  ?:  &(neg !=(0 d))  ~
+  ::  microdollars are d times ten to the (6 - k +/- e)
+  =/  up=@ud  ?:(down 6 (add 6 u.e))
+  =/  dn=@ud  ?:(down (add k u.e) k)
+  ?:  (gte up dn)  `(mul d (pow 10 (sub up dn)))
+  =/  q=@ud  (pow 10 (sub dn up))
+  `(div (add d (dec q)) q)
 ::  ==  where the keys live
 ::
 ::  +keys-base: the provisioning collection under a provider's base
@@ -94,7 +117,9 @@
 ++  keys-base
   |=  base-url=@t
   ^-  @t
+  ::  a trailing slash comes off first, or the suffix test misses it
   =/  b=tape  (trip base-url)
+  =?  b  &(?=(^ b) =('/' (rear `tape`b)))  (snip `tape`b)
   =/  cut=tape
     ?:  =("/api/v1" (slag (sub (lent b) (min 7 (lent b))) b))
       (scag (sub (lent b) 7) b)
@@ -229,9 +254,13 @@
   =/  d=json  (gj jon 'data')
   =/  hash=@t  (gs d 'hash')
   ?:  =('' hash)  ~
+  ::  a body with no usage says nothing about what was spent; read as
+  ::  zero it moved the recorded usage backwards and charged it again
+  =/  usage=(unit @ud)  (micro-of (gj d 'usage'))
+  ?~  usage  ~
   :-  ~
   :*  hash
-      (fall (micro-of (gj d 'usage')) 0)
+      u.usage
       (fall (micro-of (gj d 'limit')) 0)
       (gb d 'disabled')
   ==

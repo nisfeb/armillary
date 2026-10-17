@@ -623,10 +623,17 @@
     =/  had=(unit @t)  (~(get by owner) id.r)
     ?:  |(?=(~ had) =(u.had provider.r))  r
     r(id (rap 3 provider.r '/' id.r ~))
+  ::  an id may come twice in one listing, or in both of OpenRouter's,
+  ::  and only the first of it is kept: a duplicate id is a catalog the
+  ::  writer refuses whole
   =/  held=(set @t)  ~(key by owner)
-  %+  weld  cat
-  %+  skip  renamed
-  |=(r=model-row |((~(has in held) id.r) (gth (met 3 id.r) max-model-id)))
+  =|  out=(list model-row)
+  |-  ^-  (list model-row)
+  ?~  renamed  (weld cat (flop out))
+  =/  r=model-row  i.renamed
+  ?:  |((~(has in held) id.r) (gth (met 3 id.r) max-model-id))
+    $(renamed t.renamed)
+  $(renamed t.renamed, held (~(put in held) id.r), out [r out])
 ::  +is-transcription: a row that turns speech into text. It is sold on
 ::  /v1/audio/transcriptions only, and kept out of the model lists a
 ::  client offers for chat.
@@ -720,20 +727,33 @@
 ++  decision-answer
   |=  [q=json a=json]
   ^-  (unit json)
-  ?:  =('noul' (gs q 'type'))
+  =/  type=@t  (gs q 'type')
+  ?:  =('noul' type)
     =/  p=json  (gj a 'noul')
     =?  p  ?=([%b *] p)  [%n ?:(p.p '1' '0')]
     ?.  &(?=([%n *] p) (unit-interval p.p))  ~
     `(pairs:enjs:format ~[['noul' p]])
+  ::  a question of a type the decisions API does not have is no
+  ::  question this route can answer
+  ?.  =('choice' type)  ~
   =/  c=@t  (gs a 'choice')
   ?:  =('' c)  ~
+  ::  the options are the criteria's keys, or the options list when the
+  ::  criteria name none
   =/  crit=json  (gj q 'criteria')
-  =/  opts=(list @t)
-    ?:  ?=([%o *] crit)  ~(tap in ~(key by p.crit))
-    (strings (ga q 'options'))
-  ?:  &(?=(^ opts) =(~ (find ~[c] opts)))  ~
+  =/  keys=(list @t)  ?:(?=([%o *] crit) ~(tap in ~(key by p.crit)) ~)
+  =/  opts=(list @t)  ?^(keys keys (strings (ga q 'options')))
+  =/  known  |=(o=@t |(=(~ opts) !=(~ (find ~[o] opts))))
+  ?.  (known c)  ~
   =/  probs=json  (gj a 'probabilities')
-  =?  probs  !?=([%o *] probs)  (pairs:enjs:format ~[[c [%n '1']]])
+  ?.  ?=([%o *] probs)
+    `(pairs:enjs:format ~[['choice' s+c] ['probabilities' (pairs:enjs:format ~[[c [%n '1']]])]])
+  ::  every probability a number from 0 to 1, on an option
+  =/  sane=?
+    %+  levy  ~(tap by p.probs)
+    |=  [k=@t v=json]
+    &(?=([%n *] v) (unit-interval p.v) (known k))
+  ?.  sane  ~
   `(pairs:enjs:format ~[['choice' s+c] ['probabilities' probs]])
 ::  +unit-interval: a JSON number's text from 0 to 1, read by its shape
 ::  alone: 0, 1, 1.0 and 0.x pass, a sign, an exponent or 1.5 do not
@@ -748,6 +768,26 @@
   ?:  =('0' i.s)  (levy t.t.s |=(c=@ &((gte c '0') (lte c '9'))))
   ?:  =('1' i.s)  (levy t.t.s |=(c=@ =('0' c)))
   |
+::  +id-ok: an id a payment rail gave us (a session, invoice, intent or
+::  charge), safe in a URL path: letters, digits, _ and -, at most 255.
+::  vere decodes a path segment before it sends it, so an id with a
+::  slash would reach another endpoint with the vendor's key.
+::
+++  id-ok
+  |=  t=@t
+  ^-  ?
+  =/  n=@ud  (met 3 t)
+  ?&  (gth n 0)
+      (lte n 255)
+      %+  levy  (trip t)
+      |=  c=@
+      ?|  &((gte c 'a') (lte c 'z'))
+          &((gte c 'A') (lte c 'Z'))
+          &((gte c '0') (lte c '9'))
+          =('_' c)
+          =('-' c)
+      ==
+  ==
 ::  +speech-named: the upstream ids among .rows whose name says speech
 ::  to text, the way Talon tells them. A provider that is not
 ::  OpenRouter lists its whisper models with its chat models and marks
@@ -775,8 +815,12 @@
   =/  jon=json  (fall (de:json:html body) ~)
   =/  usage=json  (gj jon 'usage')
   ?.  ?=([%o *] usage)  ~
-  ?.  (has-key usage 'prompt_tokens')  ~
-  `[(gn usage 'prompt_tokens') (gn usage 'completion_tokens')]
+  ::  OpenAI's chat names; speech to text and some servers say input
+  ::  and output instead
+  ?:  (has-key usage 'prompt_tokens')
+    `[(gn usage 'prompt_tokens') (gn usage 'completion_tokens')]
+  ?.  (has-key usage 'input_tokens')  ~
+  `[(gn usage 'input_tokens') (gn usage 'output_tokens')]
 ::  +read-error: what an upstream said went wrong, or ''
 ::
 ++  read-error
@@ -828,9 +872,12 @@
   =/  raw=(unit octs)  (de:base64:mimes:html (gs audio 'data'))
   ?~  raw  ~
   =/  edge=@t  'armillary-0b7e2c94d1f6a35e'
+  ::  a value loses any line break, so a prompt cannot open a field
+  ::  of its own
   =/  field
     |=  [k=@t v=@t]
-    (rap 3 '--' edge '\0d\0aContent-Disposition: form-data; name="' k '"\0d\0a\0d\0a' v '\0d\0a' ~)
+    =/  flat=@t  (crip (skip (trip v) |=(c=@ |(=(c 10) =(c 13)))))
+    (rap 3 '--' edge '\0d\0aContent-Disposition: form-data; name="' k '"\0d\0a\0d\0a' flat '\0d\0a' ~)
   =/  extra=(list @t)
     %+  murn  ~['language' 'prompt']
     |=  k=@t
@@ -893,11 +940,15 @@
       acc(d (~(put by d.acc) i cur(credit (add credit.cur amount.r))))
     ?.  ?=(%debit kind.r)  acc
     =/  ms=model-sum  (~(gut by m.acc) model.r *model-sum)
+    ::  a request is a call through the proxy; a lease's ten minute charge
+    ::  and a compaction's summary spend, but are no request, as in the
+    ::  owner's report
+    =/  call=@ud  ?:(=('proxy' mode.r) 1 0)
     %=  acc
       d  %+  ~(put by d.acc)  i
-         cur(spent (add spent.cur amount.r), cost (add cost.cur cost.r), reqs +(reqs.cur), in (add in.cur in.r), out (add out.cur out.r))
+         cur(spent (add spent.cur amount.r), cost (add cost.cur cost.r), reqs (add reqs.cur call), in (add in.cur in.r), out (add out.cur out.r))
       m  %+  ~(put by m.acc)  model.r
-         ms(spent (add spent.ms amount.r), reqs +(reqs.ms), in (add in.ms in.r), out (add out.ms out.r))
+         ms(spent (add spent.ms amount.r), reqs (add reqs.ms call), in (add in.ms in.r), out (add out.ms out.r))
     ==
   =/  series=(list json)
     %+  turn  (gulf 0 (dec n))
@@ -1017,59 +1068,70 @@
   =/  yr=tape  (a-co:co y.dat)
   =/  mo=tape  ?:((lth m.dat 10) ['0' (a-co:co m.dat)] (a-co:co m.dat))
   (crip :(weld yr "-" mo))
-::  +is-summary: was this row written by a compaction. A summary is
-::  never folded again, however old it gets, or a year of them would
-::  collapse into one line with no month left in it.
+::  +is-summary: was this row written by a compaction
 ::
 ++  is-summary
   |=  ref=@t
   ^-  ?
   =("compact-" (scag 8 (trip ref)))
-::  +compact-fold: old rows folded to one summary per month per kind.
-::  Answers the summaries to write and the grub names they replace, so
-::  the caller writes and culls and the arithmetic stays pure.
+::  +summary-count: how many rows a summary stands for, from its note
+::  ("12 rows"); a row that is no summary stands for itself
+::
+++  summary-count
+  |=  r=row
+  ^-  @ud
+  ?.  (is-summary ref.r)  1
+  =/  t=tape  (trip note.r)
+  (fall (rush (crip (scag (fall (find " " t) (lent t)) t)) dem) 1)
+::  +compact-fold: old charges folded to one summary per month. Answers
+::  the summaries to write and the grub names they replace, so the
+::  caller writes and culls and the arithmetic stays pure.
+::
+::    Only charges fold. A credit or a refund is one row per payment,
+::    and its ref is what stops a payment being credited twice, so it
+::    is kept however old. A month's summary folds again with that
+::    month's newly old rows, so each month converges to one row; a
+::    month with nothing new is left alone rather than rewritten.
 ::
 ++  compact-fold
   |=  [rows=(list [name=@ta =row]) cutoff=@da]
   ^-  [fresh=(list row) stale=(list @ta)]
-  =/  acc=(map [@da @t] [amount=@ud cost=@ud n=@ud])  ~
-  =/  names=(list @ta)  ~
-  =/  todo=(list [name=@ta =row])  rows
+  =/  grouped=(map @da (list [name=@ta =row]))
+    %+  roll  rows
+    |=  [[nam=@ta r=row] acc=(map @da (list [name=@ta =row]))]
+    ?.  &(?=(%debit kind.r) (lth at.r cutoff))  acc
+    =/  k=@da  (month-start at.r)
+    (~(put by acc) k [[nam r] (fall (~(get by acc) k) ~)])
+  =/  months=(list [when=@da grp=(list [name=@ta =row])])
+    (sort ~(tap by grouped) |=([a=[@da *] b=[@da *]] (lth -.a -.b)))
+  =|  fresh=(list row)
+  =|  stale=(list @ta)
   |-  ^-  [fresh=(list row) stale=(list @ta)]
-  ?^  todo
-    =/  r=row  row.i.todo
-    ?.  &((lth at.r cutoff) !(is-summary ref.r))
-      $(todo t.todo)
-    =/  k=[@da @t]  [(month-start at.r) `@t`kind.r]
-    =/  cur=[amount=@ud cost=@ud n=@ud]  (fall (~(get by acc) k) [0 0 0])
-    =/  next=[amount=@ud cost=@ud n=@ud]
-      [(add amount.cur amount.r) (add cost.cur cost.r) +(n.cur)]
-    $(todo t.todo, names [name.i.todo names], acc (~(put by acc) k next))
-  =/  groups=(list [[@da @t] [amount=@ud cost=@ud n=@ud]])
-    %+  sort  ~(tap by acc)
-    |=  [x=[k=[@da @t] *] y=[k=[@da @t] *]]
-    ^-  ?
-    ?:  =(-.k.x -.k.y)  (aor +.k.x +.k.y)
-    (lth -.k.x -.k.y)
-  :_  names
-  %+  turn  groups
-  |=  [k=[when=@da kind=@t] v=[amount=@ud cost=@ud n=@ud]]
-  ^-  row
-  =/  akind=?(%credit %debit %refund)
-    ?:  =('credit' kind.k)  %credit
-    ?:(=('debit' kind.k) %debit %refund)
-  =/  count=tape  (a-co:co n.v)
-  :*  akind
-      amount.v
-      cost.v
-      ''
-      0
-      0
-      ''
-      ''
-      (rap 3 'compact-' (month-of when.k) '-' kind.k ~)
-      (crip (weld count " rows"))
-      when.k
+  ?~  months  [(flop fresh) stale]
+  =/  grp=(list [name=@ta =row])  grp.i.months
+  =/  sums=@ud  (lent (skim grp |=([* r=row] (is-summary ref.r))))
+  ?.  |((lth sums (lent grp)) (gth sums 1))  $(months t.months)
+  =/  tot=[amount=@ud cost=@ud n=@ud]
+    %+  roll  grp
+    |=  [[* r=row] t=[amount=@ud cost=@ud n=@ud]]
+    [(add amount.t amount.r) (add cost.t cost.r) (add n.t (summary-count r))]
+  =/  sum=row
+    :*  %debit
+        amount.tot
+        cost.tot
+        ''
+        0
+        0
+        ''
+        ''
+        (rap 3 'compact-' (month-of when.i.months) '-debit' ~)
+        (crip (weld (a-co:co n.tot) " rows"))
+        when.i.months
+    ==
+  %=  $
+    months  t.months
+    fresh   [sum fresh]
+    stale   (weld (turn grp |=([nam=@ta *] nam)) stale)
   ==
 ::  +row-name: the grub name a ledger row lives under. The seconds sort
 ::  the directory; n is bumped by the writer while the name exists.
@@ -2475,9 +2537,9 @@
 ++  en-tombstone
   |=  [who=@p nonce=@t deleted=? why=@t at=@da]
   ^-  json
+  ::  no ship: the directory may be listed, and a deletion names no one
   %-  pairs:enjs:format
-  :~  ['ship' s+(scot %p who)]
-      ['nonce' s+nonce]
+  :~  ['nonce' s+nonce]
       ['deleted' b+deleted]
       ['why' s+why]
       ['at' (en-time at)]

@@ -350,4 +350,15 @@
     (expect !>(!(verify-signature:ast secret 'nonsense' body-fixture when)))
     (expect !>(!(verify-signature:ast 'other' head body-fixture when)))
   ==
+::  while a signing secret is rolled the header carries two v1s, and the
+::  one that matches may come second
+::
+++  test-verify-signature-two-v1
+  =/  when=@ud  1.789.855.500
+  =/  both=@t  (rap 3 (head-at when 'deadbeef') ',v1=' (good-sig when) ~)
+  =/  none=@t  (rap 3 (head-at when 'deadbeef') ',v1=cafe' ~)
+  ;:  weld
+    (expect !>((verify-signature:ast secret both body-fixture when)))
+    (expect !>(!(verify-signature:ast secret none body-fixture when)))
+  ==
 --
