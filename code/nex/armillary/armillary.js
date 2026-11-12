@@ -5,7 +5,7 @@
   'use strict';
   var API = '/apps/armillary/api';
   var V1 = '/apps/armillary/v1';
-  var KEEP = '/grubbery/api/keep/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/beacon/rev';
+  var KEEP = '/grubbery/api/keep/apps/shell/desks/armillary.desk/desk/data/armillary.armillary_app/beacon/rev';
 
   // ---- render, pure ----
   function esc(s) {

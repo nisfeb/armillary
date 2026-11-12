@@ -1782,11 +1782,12 @@
 ::
 ::  +armillary-instance: where a desk install of this app sits on any
 ::  ship. One ship addresses another's inbox and account view through
-::  this path, since a desk app cannot learn its own.
+::  this path, since a desk app cannot learn its own. The shell lives
+::  at /apps/shell on every kernel this version runs on (version 41)
 ::
 ++  armillary-instance
   ^-  path
-  /apps/'shell.shell'/desks/'armillary.desk'/desk/data/'armillary.armillary_app'
+  /apps/shell/desks/'armillary.desk'/desk/data/'armillary.armillary_app'
 ::  +group-name: the usergroup that lets one customer ship read its own
 ::  account view and nothing else. The ship's name without the sig, so
 ::  ~wex reads armillary-wex.

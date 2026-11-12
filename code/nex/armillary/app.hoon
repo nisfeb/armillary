@@ -86,6 +86,8 @@
           ::  the shell's record of the roads the owner granted, written
           ::  on approval; a load that dropped it would jail every fiber
           [%stay %& [/ %'grant.json']]
+          ::  the /public roads +lay-inbox-road names for the shell
+          [%stay %& [/ %'groups.json']]
           [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'web.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'inbox.sig'] [[/ %sig] ~]]
@@ -288,7 +290,9 @@
 ++  rv  |=([up=@ud p=path] ^-(road:tarball [%| up [%| p]]))
 ++  acct-dir  |=(who=@p ^-(path /accounts/[(scot %p who)]))
 ++  ledger-dir  |=(who=@p ^-(path /accounts/[(scot %p who)]/ledger))
-++  srv  ~(. http-res:io [%| 1 %& ~ %'web.sig'])
+::  develop's http-res is a core, the dist kernel's a door whose road is
+::  unused: taken bare, it builds on both (version 41)
+++  srv  http-res:io
 ::  +vendor-starter: the vendor ship. Empty means this ship is nobody's
 ::  customer; PUT /api/vendor is the only thing that fills it.
 ::
@@ -605,10 +609,21 @@
           (~(has in peek.old) tombs)
       ==
     (pure:m ~)
-  ;<  reg=(unit tang)  bind:m  (reg-register-at-soft:io [u.base %'inbox.sig'])
-  ?^  reg  (pure:m ~)
-  ;<  err=(unit tang)  bind:m
-    (reg-how-soft:io /public [~ (sy road ~) (sy cat plans tombs ~)])
+  ::  the roads go in our own groups.json, relative to our root, and the
+  ::  shell derives the /public group from it once the owner grants it.
+  ::  That is develop's way; our dist kernel's reg-how compat wrote the
+  ::  same file, so one source runs on both (version 41)
+  =/  groups=json
+    %-  pairs:enjs:format
+    :~  :-  '/public'
+        %-  pairs:enjs:format
+        :~  ['poke' a+~[s+'/inbox.sig']]
+            ['peek' a+~[s+'/catalog-public.json' s+'/plans.json' s+'/tombstones/']]
+            ['make' a+~]
+        ==
+    ==
+  ;<  *  bind:m
+    (over-as-soft:io [%& %& u.base %'groups.json'] [[/ %json] groups] [/ %json])
   (pure:m ~)
 ::  +remote-poke-wait: a poke to another ship's grubbery, answered or
 ::  timed out. A timer wake answers yes: grubbery's remote acks are
