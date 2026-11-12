@@ -150,7 +150,7 @@
           [~ %'web.sig']
         ;<  ~  bind:m  (rise prod %'web.sig' %'web.sig' 0)
         ;<  ~  bind:m  (bind-http-self:io [~ /apps/armillary])
-        (http-dispatch:io %armillary)
+        http-dispatch:io
           ::  the vendor's inbox: any ship may poke an account op here,
           ::  through the /public group's weir. The source ship of the
           ::  poke is the account; nothing in the payload names a ship.
