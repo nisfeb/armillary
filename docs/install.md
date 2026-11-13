@@ -7,7 +7,7 @@ Armillary is the paid inference tier for Talon. It runs on your own Urbit ship, 
 1. Open your ship's Grubbery home page and press **Get Apps** at the top.
 2. In the search box type `~ricsul-bilwyt` and press **search**.
 3. Ricsul's published apps appear. Press **Install** on **Armillary**, keep the name `armillary`, and confirm.
-4. Within a minute or two the bell at the top of the home page shows one item. Press **Review**, read the roads Armillary asks for, and approve them all. Each one says why it is there; the two that matter most are ames (your account on the vendor) and gall (the pokes that open it and buy credit).
+4. Within a minute or two the bell at the top of the home page shows one item. Press **Review**, read the roads Armillary asks for, and approve them all. Each one says why it is there; the two that matter most are ames (your account on the vendor) and gall (the pokes that open it and buy credit). Two are marked optional and name `@wallet`: they let Armillary pay a bitcoin top-up from the Wallet your ship runs, when you press that button. On a ship without a Wallet they show as unresolvable; leave them out and approve the rest.
 
 That is the whole install. Your ship now serves `/apps/armillary`, and Talon can find it.
 

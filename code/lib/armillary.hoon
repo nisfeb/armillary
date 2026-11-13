@@ -2349,7 +2349,7 @@
 ::
 ++  de-op-checkout
   |=  jon=json
-  ^-  (each [ship=@p nonce=@t rail=@t plan=@t amount=@ud url=@t sid=@t intent=@t expires=@da status=@t note=@t] @t)
+  ^-  (each [ship=@p nonce=@t rail=@t plan=@t amount=@ud url=@t sid=@t intent=@t expires=@da status=@t note=@t address=@t sats=@ud] @t)
   =/  who  (ship-field jon)
   ?:  ?=(%| -.who)  [%| p.who]
   =/  nonce=@t  (gs jon 'nonce')
@@ -2362,6 +2362,10 @@
   ?:  (gth (met 3 sid) max-name)  [%| 'sid: at most 200 bytes']
   =/  intent=@t  (gs jon 'intent')
   ?:  (gth (met 3 intent) max-name)  [%| 'intent: at most 200 bytes']
+  ::  the on-chain address and the sats due, on a bitcoin row whose
+  ::  vendor read them off the invoice; absent on every other row
+  =/  address=@t  (gs jon 'address')
+  ?:  (gth (met 3 address) max-name)  [%| 'address: at most 200 bytes']
   :-  %&
   :*  p.who
       nonce
@@ -2374,6 +2378,8 @@
       (fall (gt jon 'expires') *@da)
       status
       (gs jon 'note')
+      address
+      (gn jon 'sats')
   ==
 ::  +de-op-compact: one account's old ledger rows, folded
 ::
@@ -2450,6 +2456,70 @@
     ?.  ?=([%o *] op)  'placing'
     ?:((gb op 'sent') 'sent' 'queued')
   (pairs:enjs:format ~[['phase' s+phase]])
+::  ==  the Wallet, for a ship that pays a bitcoin checkout itself
+::
+::  +tool-state: the run grub a grubbery tools nexus keeps for one call,
+::  as the kernel's /lib/tools.hoon declares it; copied so this lib
+::  stays import-free. The app reads one back after it relays a call.
+::
++$  tool-state
+  $:  tool=@t
+      args=(map @t json)
+      step=@tas
+      data=json
+      update=(unit json)
+  ==
+::  +read-wallet-status: the accounts in the Wallet's wallet_status
+::  text (the hatchery wallet app's tool), each as its key and what the
+::  tool said of it. The text is indented lines: "  account: <xpub>",
+::  then "    name: ", "    network: ", "    script: " and "    mode: "
+::  under it. Every other line is passed over, so "No wallets found."
+::  reads as no accounts.
+::
+++  read-wallet-status
+  |=  text=@t
+  ^-  (list [key=@t name=@t network=@t script=@t mode=@t])
+  =/  lines=(list @t)  (to-wain:format text)
+  =|  acc=(list [key=@t name=@t network=@t script=@t mode=@t])
+  |-  ^-  (list [key=@t name=@t network=@t script=@t mode=@t])
+  ?~  lines  (flop acc)
+  =/  t=tape  (unindent (trip i.lines))
+  ?:  =("account: " (scag 9 t))
+    $(lines t.lines, acc [[(crip (slag 9 t)) '' '' '' ''] acc])
+  ?~  acc  $(lines t.lines)
+  =/  cur  i.acc
+  ?:  =("name: " (scag 6 t))
+    $(lines t.lines, acc [cur(name (crip (slag 6 t))) t.acc])
+  ?:  =("network: " (scag 9 t))
+    $(lines t.lines, acc [cur(network (crip (slag 9 t))) t.acc])
+  ?:  =("script: " (scag 8 t))
+    $(lines t.lines, acc [cur(script (crip (slag 8 t))) t.acc])
+  ?:  =("mode: " (scag 6 t))
+    $(lines t.lines, acc [cur(mode (crip (slag 6 t))) t.acc])
+  $(lines t.lines)
+::  +read-wallet-balance: the "balance: N sats" line of the Wallet's
+::  wallet_balances text, or ~ when there is none
+::
+++  read-wallet-balance
+  |=  text=@t
+  ^-  (unit @ud)
+  =/  lines=(list @t)  (to-wain:format text)
+  |-  ^-  (unit @ud)
+  ?~  lines  ~
+  =/  t=tape  (unindent (trip i.lines))
+  ?.  =("balance: " (scag 9 t))  $(lines t.lines)
+  (rush (crip (leading-digits (slag 9 t))) dem)
+++  unindent
+  |=  t=tape
+  ^-  tape
+  ?~  t  ~
+  ?:(=(' ' i.t) $(t t.t) t)
+++  leading-digits
+  |=  t=tape
+  ^-  tape
+  ?~  t  ~
+  ?.  &((gte i.t '0') (lte i.t '9'))  ~
+  [i.t $(t t.t)]
 ::  +de-op-vendor: the vendor ship, or ~ to stop being anyone's customer
 ::
 ++  de-op-vendor

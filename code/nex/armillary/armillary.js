@@ -926,15 +926,42 @@
       var open = webUrl(c.url) ? '<a href="' + esc(webUrl(c.url)) + '" target="_blank" rel="noopener">Open</a>' : '';
       var cancel = mine && c.status === 'pending'
         ? ' <button data-cancel-checkout="' + esc(n) + '">Cancel</button>' : '';
+      var pay = mine && c.status === 'pending' && c.rail === 'btcpay' && c.address && Number(c.sats) > 0
+        ? walletPayControls(n, c) : '';
       out += '<tr>' +
         cell('Order', '<code>' + esc(n) + '</code>') +
         cell('Rail', esc(railName(c.rail))) +
         cell('Amount', esc(dollars(c.amount)), 'num') +
         cell('Status', statusLine(c)) +
-        cell('', open + cancel) +
+        cell('', open + cancel + pay) +
         '</tr>';
     });
     return out + '</tbody></table></div>';
+  }
+  // +walletPayControls: on a pending bitcoin checkout whose row carries
+  // the invoice's address, the ship's own Wallet as a third way to pay.
+  // The accounts come from GET /api/wallet, read after the view drew
+  // (+loadWallet); nothing shows until it has answered, and nothing at
+  // all on a ship without a Wallet this app may ask.
+  function walletPayControls(n, c) {
+    if (!myWallet || !myWallet.present) return '';
+    var accts = myWallet.accounts || [];
+    if (myWallet.error) return ' <span class="muted">Wallet: ' + esc(myWallet.error) + '</span>';
+    if (!accts.length) return ' <span class="muted">Wallet: no mainnet signing account to pay from</span>';
+    function label(a) {
+      return esc(a.name || String(a.key || '').slice(0, 12)) +
+        (a.sats !== undefined && a.sats !== null ? ' · ' + esc(String(a.sats)) + ' sats' : '');
+    }
+    var pick = accts.length === 1
+      ? '<input type="hidden" id="wallet-acct-' + esc(n) + '" value="' + esc(accts[0].key) + '">'
+      : '<select id="wallet-acct-' + esc(n) + '" title="the Wallet account that pays">' +
+        accts.map(function (a) { return '<option value="' + esc(a.key) + '">' + label(a) + '</option>'; }).join('') +
+        '</select> ';
+    var one = accts.length === 1 ? ' <span class="muted">from ' + label(accts[0]) + '</span>' : '';
+    return '<div class="inline"> ' + pick +
+      '<input id="wallet-fee-' + esc(n) + '" value="2" size="3" title="fee rate, sat/vB"> sat/vB ' +
+      '<button data-pay-wallet="' + esc(n) + '">Pay ' + esc(String(c.sats)) + ' sats from this ship\'s Wallet</button>' +
+      one + '</div>';
   }
   // the plans the vendor sells, as buttons. A top-up plan credits what
   // it costs; a subscription says how often it charges.
@@ -1150,6 +1177,7 @@
   // scripts/render-check.js sees it too
   var myVendor = '';                   // the vendor the account view last named
   var myCheckouts = {};                // the checkout rows that view last held
+  var myWallet = null;                 // GET /api/wallet, read once a bitcoin checkout could use it
   var mySuggested = { rev: 0, tiers: {}, features: {}, models: {} };   // the AI this vendor drives
   var myBrave = { key_set: false, searches: {} };   // the vendor's Brave settings, without the key
   var myRouter = false;                              // an OpenRouter provider is set up, for the decision tier
@@ -1349,6 +1377,43 @@
       });
     })();
   }
+  // +loadWallet: the Wallet is asked only when a pending bitcoin
+  // checkout could use it, and after the view has drawn: its tool calls
+  // take seconds, and a ship with no Wallet answers at once. One read
+  // per visit to the account view; Refresh reads it again.
+  function loadWallet(d) {
+    var rows = (d && d.checkouts) || {};
+    var want = Object.keys(rows).some(function (n) {
+      var c = rows[n] || {};
+      return c.rail === 'btcpay' && c.status === 'pending' && c.address && Number(c.sats) > 0;
+    });
+    if (!want || myWallet) return;
+    api('/wallet').then(function (w) {
+      myWallet = w || { present: false };
+      if (route(location.hash).name === 'my-account' && !typing()) refresh();
+    }).catch(function () { myWallet = { present: false }; });
+  }
+  // +payFromWallet: the ship's Wallet pays the checkout. The Wallet
+  // builds, signs and broadcasts from the chosen account; the vendor
+  // sees the payment through BTCPay the way it sees any other, so the
+  // row is watched as usual and the credit lands when it confirms.
+  function payFromWallet(n, btn) {
+    var acct = document.getElementById('wallet-acct-' + n);
+    var fee = Number((document.getElementById('wallet-fee-' + n) || {}).value) || 2;
+    var row = myCheckouts[n] || {};
+    if (!acct || !acct.value) { say('wallet: pick an account', true); return; }
+    if (!confirm('Send ' + row.sats + ' sats to ' + row.address + ' from this ship\'s Wallet, at ' + fee + ' sat/vB?')) return;
+    btn.disabled = true;
+    var stop = busy('Asking the Wallet to build, sign and broadcast the payment');
+    post('/checkout/' + seg(n) + '/pay', { account: acct.value, fee_rate: fee }).then(function (r) {
+      stop();
+      say('Sent ' + r.sats + ' sats from the Wallet. ' + (myVendor || 'The vendor') + ' credits you once it confirms, usually ten to twenty minutes.');
+      held = [statusEl.innerHTML, statusEl.className];
+      myWallet = null;
+      watch(n);
+      later();
+    }).catch(function (e) { stop(); btn.disabled = false; say(e.message, true); });
+  }
   // +cancelCheckout: ask the vendor to stop a pending checkout, with the
   // ask's seconds counting until the row moves; the vendor answers by
   // rewriting the row, cancelled or with its reason
@@ -1462,6 +1527,7 @@
           myPlans = pl || [];
           draw(myAccount(d, myPlans));
           payWatch();   // a checkout opened before a reload is still watched
+          loadWallet(d);
         });
       });
     } else if (r.name === 'payments') {
@@ -1727,9 +1793,12 @@
         held = [statusEl.innerHTML, statusEl.className];
         later();
       }).catch(function (e) { stopBrave(); say(e.message, true); });
+    } else if (d.payWallet) {
+      payFromWallet(d.payWallet, b);
     } else if (d.cancelCheckout) {
       cancelCheckout(d.cancelCheckout, b);
     } else if (d.refreshView) {
+      myWallet = null;
       var stopRead = busy('Reading your balance from ' + (myVendor || 'the vendor'));
       var drawAccount = drawer();
       api('/account?fresh=1').then(function (dd) {

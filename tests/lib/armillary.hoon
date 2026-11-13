@@ -1370,4 +1370,81 @@
     :-  !>(`(unit @t)``'f/1')
     !>((~(get by (resolve:arm [tiers ~])) 'default'))
   ==
+::  ==  the Wallet rail
+::
+++  test-de-op-checkout-wallet
+  =/  doc=@t
+    '{"ship":"~wex","nonce":"n5","rail":"btcpay","amount":10,"url":"u","status":"pending","address":"bc1qdest","sats":15000}'
+  =/  got  (de-op-checkout:arm (jo doc))
+  =/  old
+    (de-op-checkout:arm (jo '{"ship":"~wex","nonce":"n6","rail":"btcpay","amount":10,"url":"u","status":"pending"}'))
+  =/  long=@t  (crip (weld "bc1q" (reap 300 'a')))
+  =/  big=@t
+    (rap 3 '{"ship":"~wex","nonce":"n7","rail":"btcpay","amount":10,"url":"u","status":"pending","address":"' long '"}' ~)
+  ;:  weld
+    (expect !>((taken got)))
+    (expect-eq !>('bc1qdest') !>(?:(?=(%& -.got) address.p.got '')))
+    (expect-eq !>(15.000) !>(?:(?=(%& -.got) sats.p.got 0)))
+    ::  a row from before the Wallet rail has neither, and reads as none
+    (expect !>((taken old)))
+    (expect-eq !>('') !>(?:(?=(%& -.old) address.p.old 'x')))
+    (expect-eq !>(0) !>(?:(?=(%& -.old) sats.p.old 1)))
+    (expect !>((refused (de-op-checkout:arm (jo big)))))
+  ==
+++  wallet-status-text
+  '''
+  wallet: Mint wallet (xpub: xpub6CUGRUo...)
+    account: xpub6Cmain
+      name: Default
+      network: main
+      script: p2tr
+      mode: signing
+      xprv: xprv9zabc...
+    account: xpub6Ctest
+      name: Test
+      network: testnet3
+      script: p2wpkh
+      mode: watch-only
+      xprv: (none)
+  standalone accounts:
+    account: xpub6Cstand
+      name: Imported
+      network: main
+      script: p2tr
+      mode: signing
+  '''
+++  test-read-wallet-status
+  =/  got  (read-wallet-status:arm wallet-status-text)
+  =/  none=[key=@t name=@t network=@t script=@t mode=@t]  ['' '' '' '' '']
+  =/  first=[key=@t name=@t network=@t script=@t mode=@t]  ?~(got none i.got)
+  =/  second=[key=@t name=@t network=@t script=@t mode=@t]
+    ?~(got none ?~(t.got none i.t.got))
+  ;:  weld
+    (expect-eq !>(3) !>((lent got)))
+    (expect-eq !>('xpub6Cmain') !>(key.first))
+    (expect-eq !>('Default') !>(name.first))
+    (expect-eq !>('main') !>(network.first))
+    (expect-eq !>('p2tr') !>(script.first))
+    (expect-eq !>('signing') !>(mode.first))
+    (expect-eq !>('xpub6Ctest') !>(key.second))
+    (expect-eq !>('watch-only') !>(mode.second))
+    (expect-eq !>(0) !>((lent (read-wallet-status:arm 'No wallets found.'))))
+    (expect-eq !>(0) !>((lent (read-wallet-status:arm ''))))
+  ==
+++  wallet-balances-text
+  '''
+  account: xpub6Cmain
+  network: main
+  addresses: 4
+  total funded: 20000 sats
+  total spent: 5000 sats
+  balance: 15000 sats
+  utxos: 2 (value: 15000 sats)
+  '''
+++  test-read-wallet-balance
+  ;:  weld
+    (expect-eq !>(`(unit @ud)`[~ 15.000]) !>((read-wallet-balance:arm wallet-balances-text)))
+    (expect-eq !>(`(unit @ud)`~) !>((read-wallet-balance:arm 'Account not found')))
+    (expect-eq !>(`(unit @ud)`~) !>((read-wallet-balance:arm '')))
+  ==
 --

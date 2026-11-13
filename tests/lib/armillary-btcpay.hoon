@@ -191,4 +191,56 @@
     (expect !>(!(verify-sig:ab secret '' hook-body)))
     (expect !>(!(verify-sig:ab secret good-head 'a different body')))
   ==
+::  ==  the on-chain method, for a ship that pays from its own Wallet
+::
+++  methods-v2
+  '[{"paymentMethodId":"BTC-LN","currency":"BTC","destination":"lnbc1qqq","due":"0.00015000"},{"paymentMethodId":"BTC-CHAIN","currency":"BTC","destination":"bc1qdest","paymentLink":"bitcoin:bc1qdest?amount=0.00015","amount":"0.00015000","due":"0.00015000","rate":"66666.67"}]'
+++  methods-v1
+  '[{"paymentMethod":"BTC","cryptoCode":"BTC","destination":"bc1qold","amount":"0.001","due":"0.0005"}]'
+++  test-payment-methods-request
+  =/  req=request:http  (payment-methods-request:ab url store key 'inv_1')
+  ;:  weld
+    (expect-eq !>(%'GET') !>(method.req))
+    (expect-eq !>('http://127.0.0.1:3401/api/v1/stores/store1/invoices/inv_1/payment-methods') !>(url.req))
+    (expect-eq !>(`(unit octs)`~) !>(body.req))
+    (expect-eq !>(`(unit @t)`[~ 'token k']) !>((get-header:http 'authorization' header-list.req)))
+  ==
+++  test-sats-of
+  ;:  weld
+    (expect-eq !>(`(unit @ud)`[~ 15.000]) !>((sats-of:ab '0.00015000')))
+    (expect-eq !>(`(unit @ud)`[~ 100.000.000]) !>((sats-of:ab '1')))
+    (expect-eq !>(`(unit @ud)`[~ 1]) !>((sats-of:ab '0.00000001')))
+    (expect-eq !>(`(unit @ud)`~) !>((sats-of:ab 'x')))
+    (expect-eq !>(`(unit @ud)`~) !>((sats-of:ab '')))
+  ==
+++  test-read-chain-method
+  =/  got  (read-chain-method:ab methods-v2)
+  ?~  got  (expect !>(|))
+  ;:  weld
+    (expect-eq !>('bc1qdest') !>(address.u.got))
+    (expect-eq !>(15.000) !>(sats.u.got))
+    (expect-eq !>('bitcoin:bc1qdest?amount=0.00015') !>(link.u.got))
+  ==
+++  test-read-chain-method-v1
+  =/  got  (read-chain-method:ab methods-v1)
+  ?~  got  (expect !>(|))
+  ;:  weld
+    (expect-eq !>('bc1qold') !>(address.u.got))
+    (expect-eq !>(50.000) !>(sats.u.got))
+    (expect-eq !>('') !>(link.u.got))
+  ==
+++  test-read-chain-method-amount-when-no-due
+  =/  got  (read-chain-method:ab '[{"paymentMethodId":"BTC-CHAIN","destination":"bc1qx","amount":"0.002"}]')
+  ?~  got  (expect !>(|))
+  (expect-eq !>(200.000) !>(sats.u.got))
+++  test-read-chain-method-none
+  =/  n  |=(body=@t ^-(@ud ?~((read-chain-method:ab body) 0 1)))
+  ;:  weld
+    (expect-eq !>(0) !>((n '[{"paymentMethodId":"BTC-LN","destination":"ln","due":"0.1"}]')))
+    (expect-eq !>(0) !>((n '[{"paymentMethodId":"BTC-CHAIN","destination":"","due":"0.1"}]')))
+    (expect-eq !>(0) !>((n '[{"paymentMethodId":"BTC-CHAIN","destination":"bc1qx","due":"x"}]')))
+    (expect-eq !>(0) !>((n '{"id":"inv"}')))
+    (expect-eq !>(0) !>((n 'junk')))
+    (expect-eq !>(0) !>((n '[]')))
+  ==
 --

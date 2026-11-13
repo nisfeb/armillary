@@ -320,6 +320,9 @@
 ++  weir-json
   ^-  json
   =/  line  |=([r=@t w=@t] `json`(pairs:enjs:format ~[['road' s+r] ['why' s+w]]))
+  ::  an optional road is one the app works without; the two below reach
+  ::  the ship's Wallet, which a ship may not have
+  =/  opt  |=([r=@t w=@t] `json`(pairs:enjs:format ~[['road' s+r] ['why' s+w] ['optional' b+&]]))
   %-  pairs:enjs:format
   :~  :-  'poke'
       :-  %a
@@ -329,12 +332,14 @@
           (line '/sys/behn/' 'give up on a provider that does not answer within two minutes')
           (line '/sys/gall/' 'poke the vendor\'s inbox: open your account, mint keys, ask for a lease, buy credit. Refuse this and this ship cannot be a customer')
           (line '/sys/ames/registry' 'let customer ships poke this ship\'s inbox. Refuse this and this ship cannot be a vendor')
+          (opt '@wallet/tools.tools/main.sig' 'ask this ship\'s Wallet to pay a bitcoin checkout, only when you press that button. Optional: refuse it and you pay bitcoin from any other wallet, on the checkout page')
       ==
       :-  'peek'
       :-  %a
       :~  (line '/sys/link/' 'find where this app is installed, so the page can address its own writer')
           (line '/sys/ames/ships/' 'read your account on the vendor ship. Refuse this and this ship cannot be a customer')
           (line '/sys/ames/usergroups/' 'one group per customer, so each ship reads its own account and nothing else. Refuse this and this ship cannot be a vendor')
+          (opt '@wallet/tools.tools/runs/' 'read what the Wallet answered to that payment, and which accounts it holds. Optional, with the one above')
       ==
       :-  'make'
       :-  %a
@@ -1887,6 +1892,8 @@
         ['expires' (en-time:arm expires.c)]
         ['status' s+status.c]
         ['note' s+note.c]
+        ['address' s+address.c]
+        ['sats' (en-num:arm sats.c)]
     ==
   ?:  =(old row)  (note-then-no 'set-checkout' 'unchanged' who)
   ;<  ~  bind:m
@@ -3391,6 +3398,8 @@
           expires=@da
           status=@t
           note=@t
+          address=@t
+          sats=@ud
       ==
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
@@ -3407,6 +3416,8 @@
       ['expires' (en-time:arm expires)]
       ['status' s+status]
       ['note' s+note]
+      ['address' s+address]
+      ['sats' (en-num:arm sats)]
   ==
 ::  +refuse-checkout: a refused row and a line in /tr/inbox, one arm, so
 ::  every refusal below reads the same
@@ -3415,7 +3426,7 @@
   |=  [src=@p nonce=@t rail=@t plan=@t amount=@ud expires=@da status=@t why=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  ~  bind:m  (put-checkout src nonce rail plan amount '' '' expires status why)
+  ;<  ~  bind:m  (put-checkout src nonce rail plan amount '' '' expires status why '' 0)
   (note-inbox 'checkout' | why (scot %p src))
 ::  +public-of: where a customer reaches this vendor over HTTP
 ::
@@ -3458,7 +3469,7 @@
           nonce
       ==
     ;<  ~  bind:m
-      (put-checkout src nonce rail plan amount url '' expires 'pending' '')
+      (put-checkout src nonce rail plan amount url '' expires 'pending' '' '' 0)
     (note-inbox 'checkout' & '' who)
   ?:  =('stripe' rail)  (stripe-checkout src s plan amount nonce card)
   ?:  =('btcpay' rail)  (btcpay-checkout src s plan amount nonce coin)
@@ -3620,12 +3631,16 @@
         back
         btcpay-minutes.s
     ==
-  (finish-btc-checkout src nonce plan micro expires req)
+  (finish-btc-checkout src nonce plan micro expires req btcpay-url.s btcpay-store.s btcpay-key.s)
 ::  +finish-btc-checkout: the call to BTCPay and the row it leaves
-::  behind. The checkout link is the page that offers both rails.
+::  behind. The checkout link is the page that offers both rails. The
+::  invoice's on-chain address and the sats due ride the row too, read
+::  from its payment methods, so a customer ship with a Wallet can pay
+::  without the page; when that read fails the row goes out without
+::  them and the page is the way to pay, as before.
 ::
 ++  finish-btc-checkout
-  |=  [src=@p nonce=@t plan=@t amount=@ud expires=@da req=request:http]
+  |=  [src=@p nonce=@t plan=@t amount=@ud expires=@da req=request:http url=@t store=@t key=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  who=@t  (scot %p src)
@@ -3640,9 +3655,15 @@
   ?.  &(=(who ship.u.got) =(nonce nonce.u.got))
     %-  refuse-checkout
     [src nonce 'btcpay' plan amount expires 'refused' 'btcpay answered for another checkout; try again']
+  ;<  pm=[status=@ud body=@t]  bind:m
+    (fetch (payment-methods-request:abtc url store key id.u.got))
+  =/  chain=(unit [address=@t sats=@ud link=@t])
+    ?.((two-xx status.pm) ~ (read-chain-method:abtc body.pm))
+  =/  address=@t  ?~(chain '' address.u.chain)
+  =/  sats=@ud  ?~(chain 0 sats.u.chain)
   ;<  ~  bind:m
     %-  put-checkout
-    [src nonce 'btcpay' plan amount link.u.got id.u.got expires 'pending' '']
+    [src nonce 'btcpay' plan amount link.u.got id.u.got expires 'pending' '' address sats]
   (note-inbox 'checkout' & '' who)
 ::  +finish-checkout: the call to Stripe and the row it leaves behind
 ::
@@ -3672,7 +3693,7 @@
     [src nonce 'stripe' plan amount expires 'refused' 'stripe answered for another checkout; try again']
   ;<  ~  bind:m
     %-  put-checkout
-    [src nonce 'stripe' plan amount url.u.got id.u.got expires 'pending' '']
+    [src nonce 'stripe' plan amount url.u.got id.u.got expires 'pending' '' '' 0]
   (note-inbox 'checkout' & '' who)
 ::  ==  the tick: the vendor's housekeeping
 ::
@@ -4536,6 +4557,9 @@
   ?:  &(=('GET' meth) ?=([%api %checkout @ ~] suffix))   (own (serve-checkout-phase eyre-id s2 args))
   ?:  &(=('POST' meth) ?=([%api %checkout @ %cancel ~] suffix))
     (own (serve-my-cancel-checkout eyre-id s2 jon))
+  ?:  &(=('GET' meth) ?=([%api %wallet ~] suffix))       (own (serve-my-wallet eyre-id))
+  ?:  &(=('POST' meth) ?=([%api %checkout @ %pay ~] suffix))
+    (own (serve-pay-from-wallet eyre-id s2 jon))
   ?:  &(=('GET' meth) ?=([%api %inference ~] suffix))    (own (serve-inference eyre-id))
   ?:  &(=('POST' meth) ?=([%api %lease ~] suffix))       (own (serve-take-lease eyre-id))
   ?:  &(=('DELETE' meth) ?=([%api %lease ~] suffix))     (own (serve-give-lease eyre-id))
@@ -6305,6 +6329,155 @@
   ?:  =(got row)  (send-json eyre-id 202 (pairs:enjs:format ~[['pending' b+&]]))
   %^  send-json  eyre-id  200
   (pairs:enjs:format ~[['status' s+(gs:arm got 'status')] ['note' s+(gs:arm got 'note')]])
+::  ==  the Wallet: paying a bitcoin checkout from this ship
+::
+::  +wallet-tools: the Wallet's tools nexus, from the alias the shell
+::  resolved into grant.json on approval (the @wallet roads in the
+::  ask). ~ when no Wallet is installed, or its roads were not granted.
+::
+++  wallet-tools
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  ;<  grant=json  bind:m  (read-json (rf up / %'grant.json'))
+  ::  the shell keys the binding map by the alias as the ask names it,
+  ::  '@' and all: {"aliases":{"@wallet":"/apps/shell/desks/.../wallet.wallet_app"}}
+  ::  (read off a comet's grant.json, 2026-10-30; 'wallet' found nothing)
+  =/  root=@t  (gs:arm (gj:arm grant 'aliases') '@wallet')
+  ?:  =('' root)  (pure:m ~)
+  =/  pax=(unit path)  (rush root stap)
+  ?~  pax  (pure:m ~)
+  (pure:m `(snoc u.pax %'tools.tools'))
+::  +relay-tool: one run of a tool in another app's tools nexus, the
+::  way the kernel's call_tool relays it: poke that nexus's main.sig,
+::  watch the run grub it makes, read the result at %done. The tool
+::  runs THERE, under that app's weir, which is the point: the Wallet's
+::  keys never leave it. Copied from grubbery's call-tool.hoon. Answers
+::  the tool's text, or its refusal.
+::
+++  relay-tool
+  |=  [nex=path name=@t args=json]
+  =/  m  (fiber:fiber:nexus ,(each @t @t))
+  ^-  form:m
+  ;<  now=@da  bind:m  get-time:io
+  =/  id=@t  (scot %da now)
+  =/  main-road=road:tarball  [%& %& nex %'main.sig']
+  =/  run-road=road:tarball  [%& %& (snoc nex %runs) `@ta`id]
+  ;<  *  bind:m  (keep:io /relay run-road ~)
+  ;<  err=(unit tang)  bind:m
+    %^  poke-soft:io  main-road  [/ %json]
+    (pairs:enjs:format ~[['cmd' s+'call'] ['id' s+id] ['name' s+name] ['arguments' args]])
+  ?^  err
+    ;<  ~  bind:m  (drop:io /relay run-road)
+    (pure:m [%| 'the Wallet refused the call; are its roads granted in the shell?'])
+  ::  the run's %done, by its change notices, re-read every few seconds
+  ::  in case a notice is lost. Two minutes is the most any of it waits,
+  ::  whether the run never appears or sits there unfinished: a tool
+  ::  that crashes leaves its run grub banged at its last step, never
+  ::  %done, and waiting on that alone held GET /api/wallet open for
+  ::  ever on a comet whose Wallet died on a peek (2026-10-30).
+  ;<  start=@da  bind:m  get-time:io
+  ;<  res=(unit json)  bind:m
+    =/  mr  (fiber:fiber:nexus ,(unit json))
+    |-  ^-  form:mr
+    ;<  now=@da  bind:mr  get-time:io
+    ?:  (gth now (add start ~m2))  (pure:mr ~)
+    ;<  *  bind:mr
+      %^  (with-timeout:io ,wave:nexus)  /relay-poll  ~s5
+      (take-news:io /relay)
+    ;<  v=view:nexus  bind:mr  (peek:io run-road ~)
+    ?.  ?=([%file *] v)  $
+    =/  got  (mule |.(!<(tool-state:arm (need-vase:tarball sang.v))))
+    ?:  ?=(%| -.got)  $
+    ?.  =(%done step.p.got)  $
+    (pure:mr update.p.got)
+  ;<  ~  bind:m  (drop:io /relay run-road)
+  ?~  res  (pure:m [%| 'no answer from the Wallet: the run never finished'])
+  ?.  ?=([%o *] u.res)  (pure:m [%| 'the Wallet answered nothing'])
+  =/  type=@t  (gs:arm u.res 'type')
+  ?:  =('error' type)  (pure:m [%| (gs:arm u.res 'message')])
+  (pure:m [%& (gs:arm u.res 'text')])
+::  +serve-my-wallet: GET /api/wallet. Whether this ship has a Wallet
+::  this app may ask, and its mainnet signing accounts with their
+::  balances, read through the Wallet's own wallet_status and
+::  wallet_balances tools. {"present": false} with no Wallet or no
+::  grant; {"present": true, "error"} when the Wallet would not answer.
+::
+++  serve-my-wallet
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  nex=(unit path)  bind:m  (wallet-tools 1)
+  ?~  nex  (send-json eyre-id 200 (pairs:enjs:format ~[['present' b+|]]))
+  ;<  st=(each @t @t)  bind:m  (relay-tool u.nex 'wallet_status' [%o ~])
+  ?:  ?=(%| -.st)
+    %^  send-json  eyre-id  200
+    (pairs:enjs:format ~[['present' b+&] ['error' s+p.st] ['accounts' [%a ~]]])
+  =/  usable
+    %+  skim  (read-wallet-status:arm p.st)
+    |=([key=@t name=@t network=@t script=@t mode=@t] &(=('main' network) =('signing' mode)))
+  ;<  rows=(list json)  bind:m  (wallet-balances u.nex (scag 4 usable))
+  %^  send-json  eyre-id  200
+  (pairs:enjs:format ~[['present' b+&] ['accounts' [%a rows]]])
+::  +wallet-balances: each account's balance, one wallet_balances call
+::  each. A balance the Wallet will not give reads as absent, not zero.
+::
+++  wallet-balances
+  |=  [nex=path accts=(list [key=@t name=@t network=@t script=@t mode=@t])]
+  =/  m  (fiber:fiber:nexus ,(list json))
+  ^-  form:m
+  ?~  accts  (pure:m ~)
+  ;<  bal=(each @t @t)  bind:m
+    (relay-tool nex 'wallet_balances' (pairs:enjs:format ~[['account' s+key.i.accts]]))
+  =/  sats=(unit @ud)  ?:(?=(%| -.bal) ~ (read-wallet-balance:arm p.bal))
+  =/  row=json
+    %-  pairs:enjs:format
+    :~  ['key' s+key.i.accts]
+        ['name' s+name.i.accts]
+        ['script' s+script.i.accts]
+        ['sats' ?~(sats ~ (en-num:arm u.sats))]
+    ==
+  ;<  rest=(list json)  bind:m  (wallet-balances nex t.accts)
+  (pure:m [row rest])
+::  +serve-pay-from-wallet: POST /api/checkout/<nonce>/pay, {"account",
+::  "fee_rate"}. The pending bitcoin checkout's address and sats, as the
+::  vendor wrote them into the row, go to the Wallet's wallet_send under
+::  the chosen account; the Wallet builds, signs and broadcasts, and
+::  BTCPay sees the payment the way it sees any other. Answers {"ok",
+::  "sats", "text"} with what the Wallet said, or 502 with its refusal.
+::  Nothing is recorded here: the row moves when the vendor reads the
+::  payment back, and the page watches it as it watches any checkout.
+::
+++  serve-pay-from-wallet
+  |=  [eyre-id=@ta n=@ta jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vw=json  bind:m  (read-json (rf 1 / %'view.json'))
+  =/  row=json  (gj:arm (gj:arm vw 'checkouts') `@t`n)
+  ?.  ?=([%o *] row)  (send-err eyre-id 404 'no such checkout')
+  ?.  =('btcpay' (gs:arm row 'rail'))  (send-err eyre-id 409 'checkout: not a bitcoin checkout')
+  ?.  =('pending' (gs:arm row 'status'))  (send-err eyre-id 409 'checkout: not pending')
+  =/  address=@t  (gs:arm row 'address')
+  =/  sats=@ud  (gn:arm row 'sats')
+  ?:  |(=('' address) =(0 sats))
+    (send-err eyre-id 409 'checkout: the vendor gave no address to pay; open its page instead')
+  =/  account=@t  (gs:arm jon 'account')
+  ?:  =('' account)  (send-err eyre-id 400 'account: required')
+  =/  fee=@ud  (gn:arm jon 'fee_rate')
+  =/  fee=@ud  ?:(=(0 fee) 2 (min fee 500))
+  ;<  nex=(unit path)  bind:m  (wallet-tools 1)
+  ?~  nex  (send-err eyre-id 409 'wallet: no Wallet this app may ask; approve its roads in the shell')
+  ;<  sent=(each @t @t)  bind:m
+    %^  relay-tool  u.nex  'wallet_send'
+    %-  pairs:enjs:format
+    :~  ['account' s+account]
+        ['address' s+address]
+        ['amount' s+(crip (a-co:co sats))]
+        ['fee-rate' s+(crip (a-co:co fee))]
+    ==
+  ?:  ?=(%| -.sent)  (send-err eyre-id 502 (rap 3 'the Wallet did not send: ' p.sent ~))
+  %^  send-json  eyre-id  200
+  (pairs:enjs:format ~[['ok' b+&] ['sats' (en-num:arm sats)] ['text' s+p.sent]])
 ::  +await-row-moved: a checkout row's status or note changed in the
 ::  view, or thirty seconds gone; the row as it stands either way
 ::

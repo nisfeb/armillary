@@ -219,6 +219,44 @@
       (gs meta 'ship')
       (gs meta 'nonce')
   ==
+::  +payment-methods-request: an invoice's payment methods, where the
+::  on-chain address and what is due in BTC live. The store's route,
+::  like +invoice-get-request; the key needs btcpay.store.canviewinvoices.
+::
+++  payment-methods-request
+  |=  [url=@t store=@t key=@t id=@t]
+  ^-  request:http
+  =/  full=@t  (rap 3 (invoices-at url store) '/' id '/payment-methods' ~)
+  [%'GET' full (auth-only key) ~]
+::  +sats-of: a BTC amount as BTCPay writes it, "0.00015000", in sats
+::
+++  sats-of  |=(t=@t ^-((unit @ud) (de-dec t 8)))
+::  +read-chain-method: the on-chain bitcoin method out of a
+::  payment-methods answer: its address, what is due in sats, and the
+::  bitcoin: link. BTCPay 2 names it BTC-CHAIN in paymentMethodId;
+::  BTCPay 1 named it BTC in paymentMethod. Lightning is passed over.
+::  The sats are what is due, else the amount. ~ when the body is not a
+::  list, or no on-chain method with an address is in it.
+::
+++  read-chain-method
+  |=  body=@t
+  ^-  (unit [address=@t sats=@ud link=@t])
+  =/  jon=json  (de-body body)
+  ?.  ?=([%a *] jon)  ~
+  =/  rows=(list json)  p.jon
+  |-  ^-  (unit [address=@t sats=@ud link=@t])
+  ?~  rows  ~
+  =/  row=json  i.rows
+  =/  chain=?
+    ?|  =('BTC-CHAIN' (gs row 'paymentMethodId'))
+        =('BTC' (gs row 'paymentMethod'))
+    ==
+  =/  address=@t  (gs row 'destination')
+  =/  due=@t  (gs row 'due')
+  =/  sats=(unit @ud)  (sats-of ?:(=('' due) (gs row 'amount') due))
+  ?.  &(chain !=('' address))  $(rows t.rows)
+  ?~  sats  $(rows t.rows)
+  `[address u.sats (gs row 'paymentLink')]
 ::  +settled: the one status that means the money is final. Processing
 ::  means seen and not yet confirmed.
 ::
