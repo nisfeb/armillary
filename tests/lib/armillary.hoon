@@ -633,6 +633,60 @@
     (expect-eq !>('armillary-wex') !>((group-name:arm ~wex)))
     (expect-eq !>('armillary-sampel-palnet') !>((group-name:arm ~sampel-palnet)))
   ==
+::  one group per account: its one ship peeks its own three files,
+::  by roads relative to our root, and nothing else
+++  test-account-groups
+  =/  grp
+    |=  s=@t
+    ^-  json
+    %-  pairs:enjs:format
+    :~  ['members' a+~[s+(rap 3 '~' s ~)]]
+        ['make' a+~]
+        ['poke' a+~]
+        :-  'peek'
+        :-  %a
+        :~  s+(rap 3 '/accounts/~' s '/view.json' ~)
+            s+(rap 3 '/accounts/~' s '/status.json' ~)
+            s+(rap 3 '/accounts/~' s '/history.json' ~)
+        ==
+    ==
+  =/  want=json
+    %-  pairs:enjs:format
+    :~  ['armillary-wex' (grp 'wex')]
+        ['armillary-sampel-palnet' (grp 'sampel-palnet')]
+    ==
+  ;:  weld
+    (expect-eq !>(want) !>((account-groups:arm ~[~wex ~sampel-palnet])))
+    ::  the order the accounts were listed in does not matter
+    (expect-eq !>(want) !>((account-groups:arm ~[~sampel-palnet ~wex])))
+    (expect-eq !>(`json`[%o ~]) !>((account-groups:arm ~)))
+  ==
+::  groups.json gains /public and /armillary/ and keeps every other
+::  key; laid again it does not change, so nothing is written
+++  test-put-groups
+  =/  other=json  (jo '{"peek":["/x.json"]}')
+  =/  pub=json
+    (jo '{"poke":["/inbox.sig"],"peek":["/catalog-public.json","/plans.json","/tombstones/"],"make":[]}')
+  =/  cur=json  (pairs:enjs:format ~[['/other' other] ['/public' s+'old']])
+  =/  got=json  (put-groups:arm cur ~[~wex])
+  =/  want=json
+    %-  pairs:enjs:format
+    :~  ['/other' other]
+        ['/public' pub]
+        ['/armillary/' (account-groups:arm ~[~wex])]
+    ==
+  ;:  weld
+    (expect-eq !>(want) !>(got))
+    (expect-eq !>(got) !>((put-groups:arm got ~[~wex])))
+    ::  the last account gone, the key stays, empty
+    %+  expect-eq
+      !>((pairs:enjs:format ~[['/other' other] ['/public' pub] ['/armillary/' [%o ~]]]))
+      !>((put-groups:arm got ~))
+    ::  a file that is not an object starts over
+    %+  expect-eq
+      !>((pairs:enjs:format ~[['/public' pub] ['/armillary/' [%o ~]]]))
+      !>((put-groups:arm s+'junk' ~))
+  ==
 ::  a comet is any identity past 64 bits; the literal name is sixteen
 ::  syllables, so the test names one by its value instead
 ++  test-is-comet

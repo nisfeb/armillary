@@ -1796,6 +1796,50 @@
   |=  who=@p
   ^-  @t
   (rap 3 'armillary-' (rsh [3 1] (scot %p who)) ~)
+::  +account-groups: the /armillary/ key of our groups.json, one group
+::  per account, from the ships that hold one. The shell runs each as
+::  /armillary/<group-name>. Its one member peeks the three files of its
+::  own account and nothing else. Roads are relative to our root, and a
+::  text without a trailing slash is a file.
+::
+++  account-groups
+  |=  ships=(list @p)
+  ^-  json
+  :-  %o
+  %-  ~(gas by *(map @t json))
+  %+  turn  ships
+  |=  who=@p
+  ^-  [@t json]
+  =/  dir=tape  (weld "/accounts/" (trip (scot %p who)))
+  =/  file  |=(n=tape `json`s+(crip (weld dir n)))
+  :-  (group-name who)
+  %-  pairs:enjs:format
+  :~  ['members' a+~[s+(scot %p who)]]
+      ['make' a+~]
+      ['poke' a+~]
+      ['peek' a+~[(file "/view.json") (file "/status.json") (file "/history.json")]]
+  ==
+::  +public-group: the /public key of our groups.json. Any ship may poke
+::  our inbox, read the public catalog and the plans, and read a delete
+::  op's answer, filed under a nonce only its customer knows.
+::
+++  public-group
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['poke' a+~[s+'/inbox.sig']]
+      ['peek' a+~[s+'/catalog-public.json' s+'/plans.json' s+'/tombstones/']]
+      ['make' a+~]
+  ==
+::  +put-groups: our groups.json with its /public and /armillary/ keys
+::  made from our own records. Every other key stays as it was. The
+::  /armillary/ key stands even with no account, so the ask holds still.
+::
+++  put-groups
+  |=  [cur=json ships=(list @p)]
+  ^-  json
+  =/  obj=(map @t json)  ?:(?=([%o *] cur) p.cur ~)
+  =.  obj  (~(put by obj) '/public' public-group)
+  [%o (~(put by obj) '/armillary/' (account-groups ships))]
 ::  +is-comet: a self-signed identity. On the groundwire network a comet
 ::  is paid for before ames will carry it, so the vendor takes them; a
 ::  vendor elsewhere turns refuse_comets on.

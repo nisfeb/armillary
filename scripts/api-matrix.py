@@ -1064,7 +1064,7 @@ print('account deletion')
 # the vendor's answer is read locally; the two-ship shape is
 # ship-matrix's. This runs last: a deletion scrubs every ring row that
 # names the ship, and the ring checks above want those rows.
-GROUP = '/sys/ames/usergroups/armillary-' + SELF.lstrip('~') + '.grp/who.ships'
+GROUP = '/sys/ames/usergroups/armillary/armillary-' + SELF.lstrip('~') + '.grp/who.ships'
 code, d = curl('POST', API + '/delete-account', jar=None)
 check('delete-account without the cookie is 403', code == 403, (code, d))
 curl('PUT', API + '/vendor', {'ship': ''})
