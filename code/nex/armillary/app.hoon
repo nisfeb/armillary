@@ -317,12 +317,10 @@
           (line '/sys/iris/' 'talk to your model providers over HTTPS. Refuse this and no request can be answered')
           (line '/sys/behn/' 'give up on a provider that does not answer within two minutes')
           (line '/sys/gall/' 'poke the vendor\'s inbox: open your account, mint keys, ask for a lease, buy credit. Refuse this and this ship cannot be a customer')
-          (line '/sys/ames/registry' 'let customer ships poke this ship\'s inbox. Refuse this and this ship cannot be a vendor')
       ==
       :-  'peek'
       :-  %a
-      :~  (line '/sys/link/' 'find where this app is installed, so the page can address its own writer')
-          (line '/sys/ames/ships/' 'read your account on the vendor ship. Refuse this and this ship cannot be a customer')
+      :~  (line '/sys/ames/ships/' 'read your account on the vendor ship. Refuse this and this ship cannot be a customer')
       ==
       ['make' a+~]
   ==
@@ -485,35 +483,8 @@
     ;<  *  bind:(fiber:fiber:nexus ,~)  (make-soft:io (rv up dir) &+empty-dir:loader)
     (pure:(fiber:fiber:nexus ,~) ~)
   (ensure-dirs up dir t.segs)
-::  ==  ames: where we are, who may read what, and talking to a peer
+::  ==  ames: who may read what, and talking to a peer
 ::
-::  +self-base: where this instance lives, from the shell's link registry
-::  (/sys/link/armillary/dest.lanes: every instance claiming the name,
-::  ours among them). ~ when the road is refused or the registry is
-::  empty. A usergroup's own roads are absolute, so they need this;
-::  everything else on this ship is nexus-relative.
-::
-++  self-base
-  =/  m  (fiber:fiber:nexus ,(unit path))
-  ^-  form:m
-  ;<  vw=(unit view:nexus)  bind:m
-    (peek-soft:io [%& %& /sys/link/armillary %'dest.lanes'] ~)
-  ?.  ?=([~ %file *] vw)  (pure:m ~)
-  ::  an ordered list (earliest claimant first) on a kernel from
-  ::  develop's line, a set on the older one: read either, so this
-  ::  instance finds itself on both
-  =/  ls=(unit (list lane:tarball))
-    =/  l  (mole |.(!<((list lane:tarball) (need-vase:tarball sang.u.vw))))
-    ?^  l  l
-    %+  bind  (mole |.(!<((set lane:tarball) (need-vase:tarball sang.u.vw))))
-    |=(s=(set lane:tarball) ~(tap in s))
-  ?~  ls  (pure:m ~)
-  =/  dirs=(list path)
-    (murn u.ls |=(=lane:tarball ?:(?=(%| -.lane) `p.lane ~)))
-  ?~  dirs  (pure:m ~)
-  ::  an arbitrary lane: a desk app cannot learn its own path, so two
-  ::  instances claiming the name leave nothing here to tell them apart
-  (pure:m `i.dirs)
 ::  +lay-groups: our groups.json, the facts the shell derives our
 ::  usergroups from. The shell owns /sys/ames/usergroups and undoes any
 ::  write there, so we only ever name groups here. /public lets any ship
