@@ -107,6 +107,20 @@ on both ships (3 min each, in parallel; the platform's kernel parks
 inbox, client and tick while jailed, and the script culls and reloads
 them), then the test desks.
 
+The scripts speak both kernels. Each asks `/grubbery/api/peek/apps/`
+first. The current kernel answers it, keeps the shell at `/apps/shell`
+and reads and writes through `/grubbery/api/peek`, `make` and `cull`.
+An older kernel does not answer, keeps it at `/apps/shell.shell` and
+goes through the explorer at `/grubbery/ball`, as below. On a ship whose
+stock armillary desk follows the forge, `--add --replace` culls that
+desk first. dev-deploy ends with what did not build and what is banged
+under the desk, and exits 1 if anything is.
+
+A `fleet clone` runs in its own network namespace, so it cannot reach
+stubs on the host's loopback: every check that needs the provider, the
+Stripe or BTCPay API or Brave fails there with a 504. Run the gates on
+a set's own ships.
+
 ## Looking inside with u
 
 ```sh

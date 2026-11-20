@@ -90,21 +90,53 @@ def v1(host):
     return host + '/apps/armillary/v1'
 
 
-def instance(host):
-    return (host + '/grubbery/ball/apps/shell.shell/desks/armillary.desk'
-                   '/desk/data/armillary.armillary_app')
+KERNELS = {}
 
 
-def raw(host, jar, path):
-    """a grub's text straight out of the ball browser"""
-    return subprocess.run(['curl', '-sL', '-m', '30', '-b', jar, instance(host) + path + '?raw=1'],
-                          capture_output=True, text=True).stdout
+def kernel(host, jar):
+    """where this ship's shell is, and whether it reads through the
+    current kernel's /grubbery/api/peek. The current kernel answers
+    /grubbery/api/peek/apps/ with its directories, the shell among them
+    at /apps/shell. An older kernel does not answer: its shell is at
+    /apps/shell.shell and it reads through the explorer at /grubbery/ball."""
+    if host not in KERNELS:
+        out = subprocess.run(['curl', '-s', '-m', '30', '-b', jar, host + '/grubbery/api/peek/apps/'],
+                             capture_output=True, text=True).stdout
+        try:
+            dirs = json.loads(out).get('dirs')
+        except (ValueError, AttributeError):
+            dirs = None
+        if isinstance(dirs, list):
+            KERNELS[host] = (True, '/apps/shell' if 'shell' in dirs else '/apps/shell.shell')
+        else:
+            KERNELS[host] = (False, '/apps/shell.shell')
+    return KERNELS[host]
 
 
 def ball(host, jar, path):
-    return subprocess.run(['curl', '-sL', '-m', '30', '-b', jar,
-                           host + '/grubbery/ball' + path + '?raw=1'],
+    """a grub's text, by its absolute path in the ball"""
+    peek, _ = kernel(host, jar)
+    url = host + ('/grubbery/api/peek' + path if peek else '/grubbery/ball' + path + '?raw=1')
+    return subprocess.run(['curl', '-sL', '-m', '30', '-b', jar, url],
                           capture_output=True, text=True).stdout
+
+
+def listing(host, jar, path):
+    """a ball directory's listing, the names of what is in it"""
+    peek, _ = kernel(host, jar)
+    url = host + ('/grubbery/api/peek' + path + '/' if peek else '/grubbery/ball' + path + '?info=1')
+    return subprocess.run(['curl', '-sL', '-m', '30', '-b', jar, url],
+                          capture_output=True, text=True).stdout
+
+
+def instance(host, jar):
+    """the armillary instance's path in the ball"""
+    return kernel(host, jar)[1] + '/desks/armillary.desk/desk/data/armillary.armillary_app'
+
+
+def raw(host, jar, path):
+    """a grub's text under the instance"""
+    return ball(host, jar, instance(host, jar) + path)
 
 
 def message(text):
@@ -188,13 +220,6 @@ def refs_of(host, jar, ship):
     return [r.get('ref') for r in ledger_of(host, jar, ship)]
 
 
-def listing(host, jar, path):
-    """a ball directory's listing, as the explorer prints it"""
-    return subprocess.run(['curl', '-sL', '-m', '30', '-b', jar,
-                           host + '/grubbery/ball' + path + '?info=1'],
-                          capture_output=True, text=True).stdout
-
-
 def vendor_answers():
     code, d = curl('GET', HOST + '/apps/armillary', timeout=5)
     return code != 0
@@ -265,8 +290,7 @@ check('the view names the vendor', view.get('vendor') == VENDOR, view.get('vendo
 ships = ball(HOST, JAR, '/sys/ames/usergroups/armillary/' + GROUP + '.grp/who.ships')
 check('the vendor made a group holding only that ship', CUST in ships and ships.count('~') == 1,
       (GROUP, ships[:200]))
-noke = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR, instance(PEER) + '/app-inference.json?raw=1'],
-                      capture_output=True, text=True).stdout
+noke = raw(PEER, PJAR, '/app-inference.json')
 check('a customer with no key yet offers other apps nothing to call',
       dictish(json.loads(noke or '{}')).get('mode') in ('none', None) and not dictish(json.loads(noke or '{}')).get('key'),
       noke[:200])
@@ -319,14 +343,10 @@ code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
 check('the inference config carries it, and no search while the vendor has no Brave key',
       dictish(dictish(inf).get('suggested')).get('rev') == REV
       and dictish(inf).get('search') == {}, {'suggested': dictish(inf).get('suggested'), 'search': dictish(inf).get('search')})
-filed = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR,
-                        instance(PEER) + '/vendor-suggested.json?raw=1'],
-                       capture_output=True, text=True).stdout
+filed = raw(PEER, PJAR, '/vendor-suggested.json')
 check('and the file another app may read holds it',
       dictish(json.loads(filed or '{}')).get('rev') == REV, filed[:200])
-appinf = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR,
-                         instance(PEER) + '/app-inference.json?raw=1'],
-                        capture_output=True, text=True).stdout
+appinf = raw(PEER, PJAR, '/app-inference.json')
 ai = dictish(json.loads(appinf or '{}'))
 check('the app inference file holds the proxy, its key and the suggestion',
       ai.get('mode') == 'proxy' and ai.get('key') == secret
@@ -1148,7 +1168,7 @@ print('account deletion')
 # left on the vendor: not a directory, not an index entry, not a
 # usergroup, not a ring row. The tombstone the customer read is the
 # one thing that may name it, and it expires.
-ACCTS = '/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/accounts'
+ACCTS = instance(HOST, JAR) + '/accounts'
 code, d = settings(HOST, JAR, stripe_key=STRIPE_KEY, stripe_webhook_secret=WHSEC,
                    stripe_url=SSTUB, public_url=HOST, mode='live', lease_provider='stub')
 check('the vendor goes live for the deletion', code == 200, (code, d))
