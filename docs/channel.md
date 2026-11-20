@@ -6,8 +6,8 @@ Everything a customer ship does that is not inference is a JSON op poked from it
 
 - `PUT /apps/armillary/api/vendor` with `{"ship": "~wex"}` on the customer ship records the vendor in `vendor.json` and queues a `hello`. `{"ship": ""}` clears it and the client fiber goes back to sleep.
 - The client fiber at `/client.sig` sends every op in `client.json` that is not yet sent, waits two seconds, peeks the account's status, and stores it. Only then does it take the sends' acks, so the answer never waits behind a round trip that only says an op landed. It does that again every five minutes, whenever a request fiber prods it, and whenever the vendor nudges it (below). Each prod is stamped with when it was sent, and one sent before the last pass began is skipped, since that pass already did what it asked.
-- On the vendor, `/inbox.sig` is registered on the `/public` usergroup, so any ship may poke it. The source ship of the poke is the account: no op names a ship, and the inbox never trusts one that did. A ship with no account gets one on its first op.
-- The vendor's writer rewrites `/accounts/<ship>/view.json`, `status.json` and `history.json` whole at the end of every op that touches that account, so they are never stale. The grant is a usergroup named for the ship, `armillary-<name>.grp` under `/sys/ames/usergroups`, holding that one ship with peek on those three files.
+- On the vendor, `/inbox.sig` is named in the `/public` key of our `groups.json`, so any ship may poke it. The source ship of the poke is the account: no op names a ship, and the inbox never trusts one that did. A ship with no account gets one on its first op.
+- The vendor's writer rewrites `/accounts/<ship>/view.json`, `status.json` and `history.json` whole at the end of every op that touches that account, so they are never stale. The grant is a usergroup named for the ship, `armillary-<name>`, in the `/armillary/` key of our `groups.json`, holding that one ship with peek on those three files. The writer makes that key whole from `/accounts` on its rise and whenever an account is opened, deleted or rebuilt. The shell owns `/sys/ames/usergroups` and runs each one as `/sys/ames/usergroups/armillary/armillary-<name>.grp` once the owner approves the key on Permits.
 - Since version 37 the vendor tells the customer when its view changed: the writer hands the ship to `/push.sig`, which pokes `{"op": "nudge"}` into the customer's `/inbox.sig` through the road every install lays for any ship, and the customer's inbox prods its client when the nudge comes from its own vendor. A charge, one a call, is not pushed, and a ship not seen for a week is not nudged. A nudge from any other ship does nothing and leaves no ring row. Nothing about one account is readable by another ship.
 - `catalog-public.json` and `plans.json` are granted to `/public`, so a customer can read what the vendor sells before it has an account.
 
@@ -15,7 +15,7 @@ Everything a customer ship does that is not inference is a JSON op poked from it
 
 | op | fields | what the vendor does |
 |---|---|---|
-| `hello` | | opens the account, makes the ship's usergroup, writes the view |
+| `hello` | | opens the account, names the ship's usergroup in `groups.json`, writes the view |
 | `refresh` | | rewrites the view |
 | `checkout` | `rail`, `plan` or `amount`, `nonce` | writes a checkout row into the view. In stub mode the url is the vendor's own `/pay/stub` page; in live mode it is a Stripe Checkout Session, and a refusal is a row with status `refused` and a `note` saying which field was wrong. `docs/payments.md` |
 | `mint-key` | `name`, `nonce` | mints an inference key, stores the salted hash, and writes `{nonce, id, name, secret}` into the view's `keys_pending` |
@@ -65,4 +65,4 @@ The routes that wait do so for thirty seconds and then answer 202 with the nonce
 - Ship traffic is logged in `/tr/inbox`, a ring of 500 of its own, so nothing a stranger sends can push the owner's audit log out of `/tr/log`. Read it at `GET /grubbery/ball/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/tr/inbox?raw=1`.
 - No secret reaches either ring. The vendor's audit row for a mint names the op and the ship; the customer's names the key id.
 - Deleting an account, from either side, removes its usergroup as well as its directory, so the ship loses the peek with the account.
-- The ask grows by poke on `/sys/gall/` and `/sys/ames/registry`, peek on `/sys/ames/ships/` and `/sys/ames/usergroups/`, and make on `/sys/ames/usergroups/`. Refuse the two vendor roads and this ship cannot sell; refuse the two customer roads and it cannot buy. Everything else keeps working either way.
+- The ask grows by poke on `/sys/gall/` and `/sys/ames/registry`, and peek on `/sys/ames/ships/`, and the `/public` and `/armillary/` keys of `groups.json`. Refuse the two vendor roads and this ship cannot sell; refuse the two customer roads and it cannot buy. Everything else keeps working either way.

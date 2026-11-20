@@ -87,13 +87,14 @@ if '--add' in sys.argv:
     print(f'desks/add: {s} {b.decode(errors="replace")}')
     time.sleep(20)
 if '--add' in sys.argv or '--approve' in sys.argv:
-    #  the ten-road ask, granted whole: without `granted` the shell records
+    #  the eight-road ask and both groups keys, granted whole: without `granted` the shell records
     #  an empty grant, and a customer-only ship has no use for a smaller one
     #  in a test
     grant = {'poke': ['/sys/bowl.sig', '/sys/eyre/', '/sys/iris/', '/sys/behn/',
                       '/sys/gall/', '/sys/ames/registry'],
-             'peek': ['/sys/link/', '/sys/ames/ships/', '/sys/ames/usergroups/'],
-             'make': ['/sys/ames/usergroups/']}
+             'peek': ['/sys/link/', '/sys/ames/ships/'],
+             'make': [],
+             'groups': ['/public', '/armillary/']}
     s, b = call('POST', 'apps/grubbery/permits',
                 body={'action': 'approve-weir', 'app': '/' + INSTANCE, 'granted': grant})
     print(f'permits: {s} {b.decode(errors="replace")[:200]}')

@@ -23,6 +23,7 @@
 ::    /tr/log                            the audit ring, the last 500 ops
 ::    /tr/crashes                        one row per fiber that crashed since the last load
 ::    /grant.json                        the shell's grant, kept across loads
+::    /groups.json                       our usergroups, which the shell runs (+lay-groups)
 ::    the page and the manifests         laid fresh on every load, not %fall
 ::
 ::  ROADS ARE NEXUS-RELATIVE. A desk-installed app cannot learn its own
@@ -86,7 +87,8 @@
           ::  the shell's record of the roads the owner granted, written
           ::  on approval; a load that dropped it would jail every fiber
           [%stay %& [/ %'grant.json']]
-          ::  the /public roads +lay-inbox-road names for the shell
+          ::  our groups for the shell to run, /public and the
+          ::  /armillary/ accounts, written by the writer alone (+lay-groups)
           [%stay %& [/ %'groups.json']]
           [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'web.sig'] [[/ %sig] ~]]
@@ -142,6 +144,8 @@
         ::  on file belong to calls that are gone. A crash restarts the
         ::  writer alone, and leaves them.
         ;<  ~  bind:m  ?~(prod drop-holds (pure:m ~))
+        ::  on every rise, so groups the shell dropped come back
+        ;<  ~  bind:m  lay-groups
         |-
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
         ;<  changed=?  bind:m  (apply from sage)
@@ -159,10 +163,8 @@
           ::  A local poke is this ship acting as its own customer.
           [~ %'inbox.sig']
         ;<  ~  bind:m  (rise prod %'inbox.sig' %'inbox.sig' 0)
-        ::  the road a stranger pokes is laid from here: the registry
-        ::  keys a grant to the poking fiber's own rail, so only a fiber
-        ::  at the root can grant a road at the root
-        ;<  ~  bind:m  lay-inbox-road
+        ::  the road a stranger pokes is in groups.json's /public key,
+        ::  which the writer lays (+lay-groups)
         |-
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-quiet
         ;<  our=@p  bind:m  get-our:io
@@ -300,19 +302,6 @@
 ::  +client-starter: the ops sent and not yet seen in the view, by nonce
 ::
 ++  client-starter  ^-(json (pairs:enjs:format ~[['ops' [%o ~]]]))
-::  +ug-base: where this ship keeps its usergroups
-::
-++  ug-base     `path`/sys/ames/usergroups
-::  +public-grp: the group every ship is in, whose weir carries the road
-::  to our inbox
-::
-++  public-grp  `path`/sys/ames/usergroups/'public.grp'
-::  +group-dir: one customer's group directory
-::
-++  group-dir
-  |=  who=@p
-  ^-  path
-  (snoc ug-base (crip (weld (trip (group-name:arm who)) ".grp")))
 ::  ==  the ask
 ::
 ::  every why says what refusing it costs, so consent is informed
@@ -334,12 +323,8 @@
       :-  %a
       :~  (line '/sys/link/' 'find where this app is installed, so the page can address its own writer')
           (line '/sys/ames/ships/' 'read your account on the vendor ship. Refuse this and this ship cannot be a customer')
-          (line '/sys/ames/usergroups/' 'one group per customer, so each ship reads its own account and nothing else. Refuse this and this ship cannot be a vendor')
       ==
-      :-  'make'
-      :-  %a
-      :~  (line '/sys/ames/usergroups/' 'one group per customer, so each ship reads its own account and nothing else. Refuse this and this ship cannot be a vendor')
-      ==
+      ['make' a+~]
   ==
 ::  ==  the writer
 ::
@@ -529,102 +514,38 @@
   ::  an arbitrary lane: a desk app cannot learn its own path, so two
   ::  instances claiming the name leave nothing here to tell them apart
   (pure:m `i.dirs)
-::  +ug-read-weir: a usergroup's how, read whole
+::  +lay-groups: our groups.json, the facts the shell derives our
+::  usergroups from. The shell owns /sys/ames/usergroups and undoes any
+::  write there, so we only ever name groups here. /public lets any ship
+::  poke our inbox and read the public documents; /armillary/ holds one
+::  group per account, made whole from /accounts, so a group the shell
+::  dropped comes back on the next lay. The writer alone calls this, on
+::  its rise and when an account is opened, deleted or rebuilt, so two
+::  writes never cross. Written only when it differs: each write has the
+::  shell derive every group again.
 ::
-++  ug-read-weir
-  |=  gdir=path
-  =/  m  (fiber:fiber:nexus ,weir:nexus)
-  ^-  form:m
-  ;<  hv=(unit view:nexus)  bind:m  (peek-soft:io [%& %& gdir %'how.weir'] ~)
-  ?~  hv  (pure:m *weir:nexus)
-  ?.  ?=([%file *] u.hv)  (pure:m *weir:nexus)
-  (pure:m (fall (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hv)))) *weir:nexus))
-::  +ug-set: a usergroup's who and how, written whole: the ships in it
-::  and the roads they reach through it
-::
-++  ug-set
-  |=  [gname=@t ships=(set @p) pk=(set road:tarball) pok=(set road:tarball)]
+++  lay-groups
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
-  ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
-  =/  =weir:nexus  [make.old pok pk]
-  ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] ships])
-  ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
-  (pure:m ~)
-::  +ensure-group: the one customer ship may peek its own account view
-::  and nothing else. One group per account, named for the ship.
+  ;<  cur=json  bind:m  (read-json (rf 0 / %'groups.json'))
+  ;<  ships=(list @p)  bind:m  account-ships
+  =/  new=json  (put-groups:arm cur ships)
+  ?:  =(new cur)  (pure:m ~)
+  (over:io (rf 0 / %'groups.json') [[/ %json] new])
+::  +account-ships: every ship with an account row under /accounts
 ::
-++  ensure-group
-  |=  who=@p
-  =/  m  (fiber:fiber:nexus ,~)
+++  account-ships
+  =/  m  (fiber:fiber:nexus ,(list @p))
   ^-  form:m
-  ;<  base=(unit path)  bind:m  self-base
-  ?~  base  (pure:m ~)
-  =/  dir=path  (weld u.base (acct-dir who))
-  =/  roads=(set road:tarball)
-    (sy [%& %& dir %'view.json'] [%& %& dir %'status.json'] [%& %& dir %'history.json'] ~)
-  (ug-set (group-name:arm who) (sy who ~) roads ~)
-::  +group-current: is this account's group laid, with the status road
-::
-++  group-current
-  |=  who=@p
-  =/  m  (fiber:fiber:nexus ,?)
-  ^-  form:m
-  ;<  ex=?  bind:m  (group-exists who)
-  ?.  ex  (pure:m |)
-  ;<  base=(unit path)  bind:m  self-base
-  ?~  base  (pure:m &)
-  ;<  w=weir:nexus  bind:m  (ug-read-weir (group-dir who))
-  (pure:m (~(has in peek.w) [%& %& (weld u.base (acct-dir who)) %'status.json']))
-::  +group-exists: has this account's group been laid yet
-::
-++  group-exists
-  |=  who=@p
-  =/  m  (fiber:fiber:nexus ,?)
-  ^-  form:m
-  ;<  vw=(unit view:nexus)  bind:m
-    (peek-soft:io [%& %& (group-dir who) %'who.ships'] ~)
-  (pure:m ?=([~ %file *] vw))
-::  +lay-inbox-road: any ship may poke our inbox, and any ship may read
-::  the two public documents, both through the /public group's weir.
-::  Quiet when the roads are refused: a ship that will not be a vendor
-::  still works as a customer.
-::
-++  lay-inbox-road
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  base=(unit path)  bind:m  self-base
-  ?~  base  (pure:m ~)
-  ;<  old=weir:nexus  bind:m  (ug-read-weir public-grp)
-  =/  road=road:tarball  [%& %& u.base %'inbox.sig']
-  =/  cat=road:tarball   [%& %& u.base %'catalog-public.json']
-  =/  plans=road:tarball  [%& %& u.base %'plans.json']
-  ::  a whole directory: a delete op's answer is filed under the nonce
-  ::  the customer chose, which only that customer knows
-  =/  tombs=road:tarball  [%& %| (weld u.base /tombstones)]
-  ?:  ?&  (~(has in poke.old) road)
-          (~(has in peek.old) cat)
-          (~(has in peek.old) plans)
-          (~(has in peek.old) tombs)
-      ==
-    (pure:m ~)
-  ::  the roads go in our own groups.json, relative to our root, and the
-  ::  shell derives the /public group from it once the owner grants it.
-  ::  That is develop's way; our dist kernel's reg-how compat wrote the
-  ::  same file, so one source runs on both (version 41)
-  =/  groups=json
-    %-  pairs:enjs:format
-    :~  :-  '/public'
-        %-  pairs:enjs:format
-        :~  ['poke' a+~[s+'/inbox.sig']]
-            ['peek' a+~[s+'/catalog-public.json' s+'/plans.json' s+'/tombstones/']]
-            ['make' a+~]
-        ==
-    ==
-  ;<  *  bind:m
-    (over-as-soft:io [%& %& u.base %'groups.json'] [[/ %json] groups] [/ %json])
-  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io (rv 0 /accounts) ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  %-  pure:m
+  %+  murn  ~(tap by dir.ball.u.vw)
+  |=  [nam=@ta ab=ball:tarball]
+  ^-  (unit @p)
+  ?~  fil.ab  ~
+  ?.  (~(has by contents.u.fil.ab) %'account.json')  ~
+  (slaw %p nam)
 ::  +remote-poke-wait: a poke to another ship's grubbery, answered or
 ::  timed out. A timer wake answers yes: grubbery's remote acks are
 ::  unobservable and a poke that timed out usually landed. A veto or a
@@ -1023,7 +944,8 @@
   ?:  ?&(?=(^ held) closed.u.held)
     (refuse 'open-account' 'account closed' (scot %p who))
   ;<  made=?  bind:m  (ensure-account who)
-  ;<  ~  bind:m  (ensure-group who)
+  ::  its group in groups.json before the view it lets the ship read
+  ;<  ~  bind:m  lay-groups
   ;<  ~  bind:m  (do-write-view who)
   ;<  ~  bind:m
     (note 'open-account' & ?:(made '' 'already open') (scot %p who) --0)
@@ -1383,11 +1305,11 @@
   ;<  ~  bind:m  (index-del i.ids)
   (index-drop-each t.ids)
 ::  +do-delete-account: the account and everything else that names the
-::  ship: the directory, the key-index entries, the usergroup, and the
-::  rows in both rings. The tombstone the customer peeks is written
-::  last, so a 200 over there never runs ahead of the cull here. The
-::  ring row for the deletion itself names no ship, and neither does
-::  /tr/last. The owner's delete comes here with no nonce.
+::  ship: the directory, the key-index entries, its usergroup in
+::  groups.json, and the rows in both rings. The tombstone the customer
+::  peeks is written last, so a 200 over there never runs ahead of the
+::  cull here. The ring row for the deletion itself names no ship, and
+::  neither does /tr/last. The owner's delete comes here with no nonce.
 ::
 ++  do-delete-account
   |=  jon=json
@@ -1408,6 +1330,8 @@
     (note-then-no 'delete-account' why txt)
   ;<  ex=?  bind:m  (peek-exists:io (rv 0 (acct-dir who)))
   ;<  ~  bind:m  ?.(ex (pure:(fiber:fiber:nexus ,~) ~) (drop-account-files who))
+  ::  the account gone, groups.json no longer names its group
+  ;<  ~  bind:m  lay-groups
   ;<  ~  bind:m  (scrub-ring %log txt)
   ;<  ~  bind:m  (scrub-ring %inbox txt)
   ;<  ~  bind:m
@@ -1415,10 +1339,8 @@
     (write-tombstone who nonce.p.got & '')
   ;<  ~  bind:m  (note 'delete-account' & ?:(ex '' 'no account') '' --0)
   (pure:m &)
-::  +drop-account-files: the directory, every key-index entry that
-::  names the ship, and its usergroup. The group directory is culled
-::  where the weir allows it, and emptied where it does not, which
-::  leaves the ship nothing to peek either way.
+::  +drop-account-files: the directory and every key-index entry that
+::  names the ship. Its usergroup goes with the next +lay-groups.
 ::
 ++  drop-account-files
   |=  who=@p
@@ -1433,9 +1355,7 @@
     ?:  =((lent kept) ~(wyt by im))  (pure:(fiber:fiber:nexus ,~) ~)
     (over:io (rf 0 / %'key-index.json') [[/ %json] [%o (malt kept)]])
   ;<  *  bind:m  (cull-soft:io (rv 0 (acct-dir who)))
-  ;<  err=(unit tang)  bind:m  (cull-soft:io [%& %| (group-dir who)])
-  ?~  err  (pure:m ~)
-  (ug-set (group-name:arm who) ~ ~ ~)
+  (pure:m ~)
 ::  +scrub-ring: every row naming the ship out of one of the two rings
 ::
 ++  scrub-ring
@@ -1554,6 +1474,8 @@
   ?.  ?=([%ball *] vw)  (note-then-no 'rebuild' 'no accounts' '')
   =/  ships=(list @ta)  ~(tap in ~(key by dir.ball.vw))
   ;<  ~  bind:m  (rebuild-each ships)
+  ::  and every account's group in groups.json, made whole again
+  ;<  ~  bind:m  lay-groups
   ;<  ~  bind:m  (note 'rebuild' & '' '' --0)
   (pure:m &)
 ++  rebuild-each
@@ -1625,11 +1547,6 @@
   ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir who) %'account.json'))
   =/  a=(unit account:arm)  (de-account:arm aj)
   ?~  a  (pure:m ~)
-  ::  a group refused or lost at rise is laid again here, so a view is
-  ::  never written that nobody may read, and one from before the
-  ::  status and history files gains their roads
-  ;<  current=?  bind:m  (group-current who)
-  ;<  ~  bind:m  ?:(current (pure:(fiber:fiber:nexus ,~) ~) (ensure-group who))
   ;<  keys=json  bind:m  (read-json (rf 0 (acct-dir who) %'keys.json'))
   =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
   =/  key-rows=(list json)

@@ -262,7 +262,7 @@ view = wait_view(PEER, PJAR, lambda v: v.get('ship') == CUST)
 check('the view arrives with the customer as its ship', view.get('ship') == CUST, view)
 check('a fresh account is empty', view.get('balance') == 0 and view.get('keys') == [], view)
 check('the view names the vendor', view.get('vendor') == VENDOR, view.get('vendor'))
-ships = ball(HOST, JAR, '/sys/ames/usergroups/' + GROUP + '.grp/who.ships')
+ships = ball(HOST, JAR, '/sys/ames/usergroups/armillary/' + GROUP + '.grp/who.ships')
 check('the vendor made a group holding only that ship', CUST in ships and ships.count('~') == 1,
       (GROUP, ships[:200]))
 noke = subprocess.run(['curl', '-sL', '-m', '30', '-b', PJAR, instance(PEER) + '/app-inference.json?raw=1'],
@@ -1193,8 +1193,8 @@ check('the vendor keeps no directory for the ship', CUST not in listing(HOST, JA
       listing(HOST, JAR, ACCTS)[:200])
 check('nor a key-index entry', CUST not in raw(HOST, JAR, '/key-index.json'),
       raw(HOST, JAR, '/key-index.json')[:200])
-check('nor its usergroup', GROUP not in listing(HOST, JAR, '/sys/ames/usergroups'),
-      listing(HOST, JAR, '/sys/ames/usergroups')[:300])
+check('nor its usergroup', GROUP not in listing(HOST, JAR, '/sys/ames/usergroups/armillary'),
+      listing(HOST, JAR, '/sys/ames/usergroups/armillary')[:300])
 check('nor a ring row', CUST not in raw(HOST, JAR, '/tr/log') and CUST not in raw(HOST, JAR, '/tr/inbox'),
       [r for r in json.loads(raw(HOST, JAR, '/tr/log') or '[]') if r.get('ship') == CUST][:2])
 code, sst = curl('GET', SSTUB + '/stub/state')
