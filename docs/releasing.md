@@ -227,11 +227,11 @@ A vendor is not a thing you hand out casually: whoever installs armillary and po
 `scripts/ship-matrix.py` with four arguments runs the account channel between two ships, which needs armillary installed on both. With `~wex` as the vendor and `~feb` as the customer, over HTTP with each ship's owner cookie:
 
 1. On `~wex`, open the desk's code to every ship: `POST /grubbery/desk/armillary/share {"add":"/public"}`.
-2. On `~feb`, follow it: `POST /apps/grubbery/desks/add {"name":"armillary","code":"~wex/apps/shell.shell/desks/armillary.desk/desk/code"}`.
-3. Poll `~feb`'s instance until the code arrives and the compile settles: `GET /grubbery/ball/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app?info=1` every fifteen seconds, for at most three minutes. A bang string is a compile error, not a slow sync.
-4. Approve the ask on `~feb`: `POST /apps/grubbery/permits {"action":"approve-weir","app":"/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app","granted":{"poke":["/sys/bowl.sig","/sys/eyre/","/sys/iris/","/sys/behn/","/sys/gall/","/sys/ames/registry"],"peek":["/sys/link/","/sys/ames/ships/","/sys/ames/usergroups/"],"make":["/sys/ames/usergroups/"]}}`, then `POST /apps/grubbery/permits/reload {"app":"<the same app path>"}`, then read the weir back.
+2. On `~feb`, follow it: `POST /apps/grubbery/desks/add {"name":"armillary","code":"~wex/apps/shell/desks/armillary.desk/desk/code"}`.
+3. Poll `~feb`'s instance until the code arrives and the compile settles: `GET /grubbery/api/peek/apps/shell/desks/armillary.desk/desk/data/armillary.armillary_app/` every fifteen seconds, for at most three minutes, then `GET /grubbery/api/bang/apps/shell/desks/armillary.desk/`. A hit there is a compile error, not a slow sync. On an older kernel the shell is `/apps/shell.shell` throughout.
+4. Approve the ask on `~feb`: `POST /apps/grubbery/permits {"action":"approve-weir","app":"/apps/shell/desks/armillary.desk/desk/data/armillary.armillary_app","granted":{"poke":["/sys/bowl.sig","/sys/eyre/","/sys/iris/","/sys/behn/","/sys/gall/"],"peek":["/sys/ames/ships/"],"make":[],"groups":["/public","/armillary/"]}}`, then `POST /apps/grubbery/permits/reload {"app":"<the same app path>"}`, then read the weir back.
 5. Run the gate: `python3 scripts/ship-matrix.py http://localhost:8080 <wex jar> http://localhost:8081 <feb jar>`, with the stub provider listening on 3399.
 
-A customer ship needs the four customer roads and nothing else, but the ten-road grant is what the desk asks for and approving it whole is one prompt rather than an argument about which half of the app this ship is.
+A customer ship needs the customer roads and nothing else, but the whole grant is what the desk asks for and approving it whole is one prompt rather than an argument about which half of the app this ship is.
 
 Two ships on different grubbery generations can print `send to ~feb timed out` on the console for a poke that landed. The code treats a timeout as unknown rather than failure and peeks the view, which is the truth; the gate does the same.

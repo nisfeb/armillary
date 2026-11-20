@@ -27,7 +27,6 @@ RETURN = HOST + '/apps/armillary/pay/return'
 API = HOST + '/apps/armillary/api'
 V1 = HOST + '/apps/armillary/v1'
 STUB = 'http://127.0.0.1:' + PORT
-INSTANCE = HOST + '/grubbery/ball/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app'
 SHIP = '~feb'
 MARKUP = 130
 COST_IN, COST_OUT = 3000000, 15000000          # stub/alpha, dollars per token as a string
@@ -58,6 +57,41 @@ def check(label, cond, detail=''):
     print(('  ok   ' if cond else '  FAIL ') + label + ('' if cond else '   ' + str(detail)[:400]))
     if not cond:
         fails.append(label)
+
+KERNELS = {}
+
+
+def kernel(host, jar):
+    """where this ship's shell is, and whether it reads through the
+    current kernel's /grubbery/api/peek. The current kernel answers
+    /grubbery/api/peek/apps/ with its directories, the shell among them
+    at /apps/shell. An older kernel does not answer: its shell is at
+    /apps/shell.shell and it reads through the explorer at /grubbery/ball."""
+    if host not in KERNELS:
+        out = subprocess.run(['curl', '-s', '-m', '30', '-b', jar, host + '/grubbery/api/peek/apps/'],
+                             capture_output=True, text=True).stdout
+        try:
+            dirs = json.loads(out).get('dirs')
+        except (ValueError, AttributeError):
+            dirs = None
+        if isinstance(dirs, list):
+            KERNELS[host] = (True, '/apps/shell' if 'shell' in dirs else '/apps/shell.shell')
+        else:
+            KERNELS[host] = (False, '/apps/shell.shell')
+    return KERNELS[host]
+
+
+def ball(host, jar, path):
+    """a grub's text, by its absolute path in the ball"""
+    peek, _ = kernel(host, jar)
+    url = host + ('/grubbery/api/peek' + path if peek else '/grubbery/ball' + path + '?raw=1')
+    return subprocess.run(['curl', '-sL', '-m', '30', '-b', jar, url],
+                          capture_output=True, text=True).stdout
+
+
+def instance(host, jar):
+    """the armillary instance's path in the ball"""
+    return kernel(host, jar)[1] + '/desks/armillary.desk/desk/data/armillary.armillary_app'
 
 
 def settle(seconds=1.0):
@@ -153,9 +187,8 @@ def page(url):
 
 
 def raw(path):
-    """a grub's text straight out of the ball browser"""
-    return subprocess.run(['curl', '-sL', '-m', '30', '-b', JAR, INSTANCE + path + '?raw=1'],
-                          capture_output=True, text=True).stdout
+    """a grub's text under the instance"""
+    return ball(HOST, JAR, instance(HOST, JAR) + path)
 
 
 def stub_state():
@@ -1055,8 +1088,7 @@ for op in ('set-provider', 'set-catalog', 'set-plan', 'drop-plan',
 check('the ring never carries a secret', 'stub-key' not in text and 'prov-key' not in text and
       STRIPE_KEY not in text and WHSEC not in text and BTC_KEY not in text
       and (SEC1 or 'x') not in text, text[:300])
-out = subprocess.run(['curl', '-sL', '-m', '30', '-b', JAR, INSTANCE + '/tr/last?raw=1'],
-                     capture_output=True, text=True).stdout
+out = raw('/tr/last')
 check('tr/last reads ok after the last op', '"ok"' in out and 'stub-key' not in out, out[:200])
 
 print('account deletion')
@@ -1097,8 +1129,7 @@ check('a card checkout opens a session on the stub', code == 200 and SID.startsw
 code, acct = curl('GET', API + '/accounts/' + SELF)
 CUS = dictish(dictish(acct).get('account')).get('stripe_customer', '')
 check('the account holds a Stripe customer', CUS.startswith('cus_'), dictish(acct).get('account'))
-groups = subprocess.run(['curl', '-sL', '-m', '30', '-b', JAR, HOST + '/grubbery/ball' + GROUP + '?raw=1'],
-                        capture_output=True, text=True).stdout
+groups = ball(HOST, JAR, GROUP)
 check('the ship has its usergroup', SELF in groups, groups[:120])
 curl('POST', SSTUB + '/stub/broken/on', jar=None)
 code, d = curl('POST', API + '/delete-account', timeout=120)
@@ -1131,8 +1162,7 @@ check('the stub saw the customer deleted',
       dictish(dictish(st.get('customers')).get(CUS)).get('deleted') is True, st.get('customers'))
 refunds = [r for r in dictish(st.get('refunds')).values() if r.get('payment_intent') == PI]
 check('the paid session was refunded', len(refunds) == 1, st.get('refunds'))
-groups = subprocess.run(['curl', '-sL', '-m', '30', '-b', JAR, HOST + '/grubbery/ball' + GROUP + '?raw=1'],
-                        capture_output=True, text=True).stdout
+groups = ball(HOST, JAR, GROUP)
 check('the usergroup is gone', SELF not in groups, groups[:120])
 ix = raw('/key-index.json')
 check('the key index names the ship nowhere', SELF not in ix, ix[:200])
