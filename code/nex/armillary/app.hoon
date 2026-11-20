@@ -317,6 +317,11 @@
           (line '/sys/iris/' 'talk to your model providers over HTTPS. Refuse this and no request can be answered')
           (line '/sys/behn/' 'give up on a provider that does not answer within two minutes')
           (line '/sys/gall/' 'poke the vendor\'s inbox: open your account, mint keys, ask for a lease, buy credit. Refuse this and this ship cannot be a customer')
+        ::  nothing pokes the registry since version 42, but the line stays:
+        ::  a kernel migrating an older ship reads a grant of this road as
+        ::  the owner's consent to armillary's groups (+migrate-approval),
+        ::  and an approved ask that loses it could lose those groups
+          (line '/sys/ames/registry' 'let customer ships poke this ship\'s inbox. Refuse this and this ship cannot be a vendor')
       ==
       :-  'peek'
       :-  %a
